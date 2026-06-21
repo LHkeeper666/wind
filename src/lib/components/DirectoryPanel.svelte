@@ -178,20 +178,17 @@
       selectedIndex = index;
       selectedPathInternal = files[index].path;
 
-      // Only call onSelect for files, not directories
-      if (!files[index].is_dir) {
-        // Debounce onSelect to avoid rapid file loading
-        if (selectTimeout) {
-          clearTimeout(selectTimeout);
-        }
-        const capturedIndex = index;
-        selectTimeout = setTimeout(() => {
-          // Only fire if user is still on the same item
-          if (selectedIndex === capturedIndex) {
-            onSelect(files[capturedIndex].path);
-          }
-        }, 200);
+      // Debounce onSelect to avoid rapid file loading
+      if (selectTimeout) {
+        clearTimeout(selectTimeout);
       }
+      const capturedIndex = index;
+      selectTimeout = setTimeout(() => {
+        // Only fire if user is still on the same item
+        if (selectedIndex === capturedIndex) {
+          onSelect(files[capturedIndex].path);
+        }
+      }, 200);
     }
   }
 

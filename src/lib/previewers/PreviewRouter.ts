@@ -3,6 +3,7 @@ import { TextPreviewer } from './TextPreviewer';
 import { MarkdownPreviewer } from './MarkdownPreviewer';
 import { ImagePreviewer } from './ImagePreviewer';
 import { JsonPreviewer } from './JsonPreviewer';
+import { ArchivePreviewer } from './ArchivePreviewer';
 
 export class PreviewRouter {
   private previewers: Previewer[] = [];
@@ -10,6 +11,7 @@ export class PreviewRouter {
 
   constructor() {
     this.previewers = [
+      new ArchivePreviewer(),
       new JsonPreviewer(),
       new MarkdownPreviewer(),
       new ImagePreviewer(),

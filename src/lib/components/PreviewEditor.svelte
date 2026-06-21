@@ -2,12 +2,20 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
   import { PreviewRouter } from '$lib/previewers';
+  import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { vim } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
+
+  interface FileEntry {
+    name: string;
+    path: string;
+    is_dir: boolean;
+    size: number | null;
+  }
 
   let {
     filePath = null,
@@ -30,6 +38,7 @@
   let editorContainer: HTMLElement | undefined = $state(undefined);
   let panelElement: HTMLElement | undefined = $state(undefined);
   let previewRouter: PreviewRouter | undefined;
+  let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
   let renderRequestId: number = 0;
 
@@ -84,8 +93,6 @@
 
     if (content || binaryContent) {
       renderPreview();
-    } else {
-      previewContainer.innerHTML = '';
     }
   });
 
@@ -99,6 +106,13 @@
       previewRouter = new PreviewRouter();
     }
     return previewRouter;
+  }
+
+  function getDirectoryPreviewer(): DirectoryPreviewer {
+    if (!directoryPreviewer) {
+      directoryPreviewer = new DirectoryPreviewer();
+    }
+    return directoryPreviewer;
   }
 
   function isTextFile(path: string): boolean {
@@ -123,8 +137,31 @@
     return IMAGE_EXTENSIONS.has(ext);
   }
 
+  const ARCHIVE_EXTENSIONS = new Set(['zip']);
+
+  function isArchiveFile(path: string): boolean {
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    return ARCHIVE_EXTENSIONS.has(ext);
+  }
+
   async function loadFile(path: string) {
     isModified = false;
+
+    // Directory: list contents
+    try {
+      await invoke<FileEntry[]>('read_directory', { path });
+      content = '';
+      binaryContent = null;
+      if (editorView) {
+        editorView.destroy();
+        editorView = undefined;
+      }
+      mode = 'global-normal';
+      renderDirectoryPreview();
+      return;
+    } catch {
+      // Not a directory, continue
+    }
 
     // Binary image files (SVG is text, handled below)
     if (isImageFile(path) && !path.toLowerCase().endsWith('.svg')) {
@@ -143,6 +180,18 @@
         content = '';
       }
       mode = 'global-normal';
+      return;
+    }
+
+    if (isArchiveFile(path)) {
+      content = '';
+      binaryContent = null;
+      if (editorView) {
+        editorView.destroy();
+        editorView = undefined;
+      }
+      mode = 'global-normal';
+      renderArchivePreview(path);
       return;
     }
 
@@ -175,6 +224,23 @@
     const requestId = ++renderRequestId;
     const previewContent: string | ArrayBuffer = binaryContent ?? content;
     await getPreviewRouter().preview(filePath, previewContent, previewContainer);
+    if (requestId !== renderRequestId) return;
+  }
+
+  async function renderDirectoryPreview() {
+    if (!previewContainer || !filePath) return;
+    const requestId = ++renderRequestId;
+    const previewer = getDirectoryPreviewer();
+    previewContainer.dataset.filePath = filePath;
+    await previewer.render('', previewContainer);
+    if (requestId !== renderRequestId) return;
+  }
+
+  async function renderArchivePreview(path: string) {
+    if (!previewContainer) return;
+    const requestId = ++renderRequestId;
+    previewContainer.dataset.filePath = path;
+    await getPreviewRouter().preview(path, '', previewContainer);
     if (requestId !== renderRequestId) return;
   }
 
@@ -466,5 +532,81 @@
 
   :global(.cm-editor) {
     height: 100%;
+  }
+
+  :global(.dir-list) {
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+  }
+
+  :global(.dir-entry) {
+    display: flex;
+    align-items: center;
+    padding: 2px 0;
+    gap: 6px;
+  }
+
+  :global(.entry-icon) {
+    flex-shrink: 0;
+    font-size: 14px;
+  }
+
+  :global(.entry-name) {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #cccccc;
+  }
+
+  :global(.entry-size) {
+    flex-shrink: 0;
+    color: #888888;
+    font-size: 12px;
+    min-width: 60px;
+    text-align: right;
+  }
+
+  :global(.entry-size.dir) {
+    visibility: hidden;
+  }
+
+  :global(.archive-header) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0 12px;
+    border-bottom: 1px solid #333333;
+    margin-bottom: 8px;
+  }
+
+  :global(.archive-icon) {
+    font-size: 16px;
+  }
+
+  :global(.archive-name) {
+    font-weight: 600;
+    color: #cccccc;
+    font-size: 14px;
+  }
+
+  :global(.archive-meta) {
+    color: #888888;
+    font-size: 12px;
+    margin-left: auto;
+  }
+
+  :global(.preview-empty) {
+    color: #888888;
+    text-align: center;
+    padding: 24px;
+    font-size: 13px;
+  }
+
+  :global(.preview-unsupported) {
+    color: #888888;
+    text-align: center;
+    padding: 24px;
+    font-size: 13px;
   }
 </style>

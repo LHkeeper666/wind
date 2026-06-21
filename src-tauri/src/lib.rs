@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::fs::File;
 use tauri::{Manager, State};
 
 static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -22,6 +23,7 @@ fn list_drives() -> Vec<FileEntry> {
                 name: drive.clone(),
                 path: drive,
                 is_dir: true,
+                size: None,
                 children: None,
             });
         }
@@ -34,7 +36,16 @@ pub struct FileEntry {
     name: String,
     path: String,
     is_dir: bool,
+    size: Option<u64>,
     children: Option<Vec<FileEntry>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ArchiveEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
 }
 
 struct AppState {
@@ -82,16 +93,17 @@ fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
                         let file_name = entry.file_name().to_string_lossy().to_string();
                         let file_path = entry.path().to_string_lossy().to_string();
                         let is_dir = entry.path().is_dir();
-
-                        // Skip hidden files (starting with .)
-                        if file_name.starts_with('.') {
-                            continue;
-                        }
+                        let size = if is_dir {
+                            None
+                        } else {
+                            entry.metadata().ok().map(|m| m.len())
+                        };
 
                         entries.push(FileEntry {
                             name: file_name,
                             path: file_path,
                             is_dir,
+                            size,
                             children: None,
                         });
                     }
@@ -114,6 +126,79 @@ fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
             std::cmp::Ordering::Greater
         } else {
             a.name.to_lowercase().cmp(&b.name.to_lowercase())
+        }
+    });
+
+    Ok(entries)
+}
+
+#[tauri::command]
+fn list_archive_entries(path: String) -> Result<Vec<ArchiveEntry>, String> {
+    let file = File::open(&path).map_err(|e| format!("Failed to open archive: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read archive: {}", e))?;
+
+    let mut files = Vec::new();
+    let mut dir_set = std::collections::HashSet::new();
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| format!("Failed to read entry: {}", e))?;
+        let entry_path = entry
+            .enclosed_name()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry.name().to_string());
+
+        if entry.is_dir() {
+            continue;
+        }
+
+        // Collect parent directories from file paths
+        let mut parent = std::path::Path::new(&entry_path).parent();
+        while let Some(p) = parent {
+            if p.as_os_str().is_empty() {
+                break;
+            }
+            dir_set.insert(p.to_string_lossy().to_string());
+            parent = p.parent();
+        }
+
+        let name = std::path::Path::new(&entry_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry_path.clone());
+        let size = entry.size();
+
+        files.push(ArchiveEntry {
+            name,
+            path: entry_path,
+            is_dir: false,
+            size,
+        });
+    }
+
+    let mut entries: Vec<ArchiveEntry> = dir_set
+        .into_iter()
+        .map(|dir_path| {
+            let name = std::path::Path::new(&dir_path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| dir_path.clone());
+            ArchiveEntry {
+                name,
+                path: dir_path,
+                is_dir: true,
+                size: 0,
+            }
+        })
+        .collect();
+    entries.append(&mut files);
+
+    entries.sort_by(|a, b| {
+        if a.is_dir && !b.is_dir {
+            std::cmp::Ordering::Less
+        } else if !a.is_dir && b.is_dir {
+            std::cmp::Ordering::Greater
+        } else {
+            a.path.to_lowercase().cmp(&b.path.to_lowercase())
         }
     });
 
@@ -575,6 +660,7 @@ pub fn run() {
             greet,
             get_home_dir,
             read_directory,
+            list_archive_entries,
             list_drives,
             delete_file,
             rename_file,

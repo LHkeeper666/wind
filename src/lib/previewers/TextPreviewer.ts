@@ -15,6 +15,9 @@ export class TextPreviewer implements Previewer {
 
   match(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const fileName = filePath.split(/[/\\]/).pop()?.toLowerCase() || '';
+    // Dotfiles like .gitignore, .env, .eslintrc
+    if (fileName.startsWith('.') && !fileName.includes('.', 1)) return true;
     return SUPPORTED_EXTENSIONS.has(ext) || filePath.toLowerCase().includes('readme');
   }
 
@@ -36,6 +39,15 @@ export class TextPreviewer implements Previewer {
 
   private getLanguage(filePath: string): string {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const fileName = filePath.split(/[/\\]/).pop()?.toLowerCase() || '';
+    const dotfileLangMap: Record<string, string> = {
+      '.gitignore': 'gitignore', '.gitattributes': 'gitignore',
+      '.editorconfig': 'ini', '.env': 'bash', '.eslintrc': 'json',
+      '.prettierrc': 'json', '.babelrc': 'json', '.npmrc': 'ini',
+      '.dockerignore': 'gitignore', '.eslintignore': 'gitignore',
+      '.prettierignore': 'gitignore',
+    };
+    if (dotfileLangMap[fileName]) return dotfileLangMap[fileName];
     const langMap: Record<string, string> = {
       'js': 'javascript', 'ts': 'typescript', 'jsx': 'jsx', 'tsx': 'tsx',
       'py': 'python', 'rb': 'ruby', 'rs': 'rust', 'go': 'go',
