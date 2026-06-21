@@ -32,6 +32,7 @@
   let content: string = $state('');
   let savedContent: string = $state('');
   let binaryContent: ArrayBuffer | null = $state(null);
+  let thumbnailMeta: { width: number; height: number; originalSize: number; isThumbnail: boolean } | null = $state(null);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
   let previewContainer: HTMLElement | undefined = $state(undefined);
@@ -165,18 +166,57 @@
 
     // Binary image files (SVG is text, handled below)
     if (isImageFile(path) && !path.toLowerCase().endsWith('.svg')) {
+      const isGif = path.toLowerCase().endsWith('.gif');
       try {
-        const base64 = await invoke<string>('read_binary_file', { path });
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
+        if (isGif) {
+          // GIF: load original to preserve animation
+          const base64 = await invoke<string>('read_binary_file', { path });
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          binaryContent = bytes.buffer;
+          thumbnailMeta = null;
+        } else {
+          // Other images: use thumbnail for large, binary for small
+          const result = await invoke<{ data: string; width: number; height: number; original_size: number; is_thumbnail: boolean }>('read_image_thumbnail', { path });
+          if (result.data) {
+            // Large image: use compressed thumbnail
+            const binary = atob(result.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            binaryContent = bytes.buffer;
+            thumbnailMeta = {
+              width: result.width,
+              height: result.height,
+              originalSize: result.original_size,
+              isThumbnail: result.is_thumbnail,
+            };
+          } else {
+            // Small image: load original directly
+            const base64 = await invoke<string>('read_binary_file', { path });
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            binaryContent = bytes.buffer;
+            thumbnailMeta = {
+              width: result.width,
+              height: result.height,
+              originalSize: result.original_size,
+              isThumbnail: false,
+            };
+          }
         }
-        binaryContent = bytes.buffer;
         content = '[Binary Image]';
       } catch (error) {
         console.error('Failed to load image:', error);
         binaryContent = null;
+        thumbnailMeta = null;
         content = '';
       }
       mode = 'global-normal';
@@ -222,6 +262,18 @@
   async function renderPreview() {
     if (!previewContainer || !filePath) return;
     const requestId = ++renderRequestId;
+    // Pass thumbnail metadata via dataset
+    if (thumbnailMeta) {
+      previewContainer.dataset.thumbWidth = String(thumbnailMeta.width);
+      previewContainer.dataset.thumbHeight = String(thumbnailMeta.height);
+      previewContainer.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
+      previewContainer.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
+    } else {
+      delete previewContainer.dataset.thumbWidth;
+      delete previewContainer.dataset.thumbHeight;
+      delete previewContainer.dataset.thumbOriginalSize;
+      delete previewContainer.dataset.thumbIsThumbnail;
+    }
     const previewContent: string | ArrayBuffer = binaryContent ?? content;
     await getPreviewRouter().preview(filePath, previewContent, previewContainer);
     if (requestId !== renderRequestId) return;
@@ -468,6 +520,8 @@
     height: 100%;
     overflow: auto;
     padding: 12px;
+    display: flex;
+    flex-direction: column;
   }
 
   .editor-area {
@@ -608,5 +662,44 @@
     text-align: center;
     padding: 24px;
     font-size: 13px;
+  }
+
+  :global(.preview-image) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    min-height: 0;
+  }
+
+  :global(.image-info-bar) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background-color: #252526;
+    border-top: 1px solid #333333;
+    color: #888888;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  :global(.image-view-original) {
+    background: none;
+    border: 1px solid #555555;
+    color: #cccccc;
+    padding: 2px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  :global(.image-view-original:hover) {
+    background-color: #3c3c3c;
+  }
+
+  :global(.image-view-original:disabled) {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

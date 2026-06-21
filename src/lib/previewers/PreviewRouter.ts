@@ -41,6 +41,12 @@ export class PreviewRouter {
     container.parentElement?.appendChild(staging);
     container.dataset.filePath = filePath;
     staging.dataset.filePath = filePath;
+    // Copy thumbnail metadata to staging
+    for (const key of ['thumbWidth', 'thumbHeight', 'thumbOriginalSize', 'thumbIsThumbnail']) {
+      if (container.dataset[key] !== undefined) {
+        staging.dataset[key] = container.dataset[key];
+      }
+    }
     await previewer.render(content, staging);
 
     // Swap: replace old content with new, then clean up old previewer

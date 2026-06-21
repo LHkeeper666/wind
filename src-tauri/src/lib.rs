@@ -365,6 +365,15 @@ fn read_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[derive(Debug, Serialize)]
+pub struct ImageThumbnail {
+    data: String,
+    width: u32,
+    height: u32,
+    original_size: u64,
+    is_thumbnail: bool,
+}
+
 #[tauri::command]
 fn read_binary_file(path: String) -> Result<String, String> {
     let file_path = Path::new(&path);
@@ -380,6 +389,70 @@ fn read_binary_file(path: String) -> Result<String, String> {
     let bytes = fs::read(file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
+    let file_path = Path::new(&path).to_path_buf();
+
+    if !file_path.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    if file_path.is_dir() {
+        return Err(format!("Path is a directory, not a file: {}", path));
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let original_size = fs::metadata(&file_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // Step 1: Read dimensions only (no pixel decode)
+        let reader = image::ImageReader::open(&file_path)
+            .map_err(|e| format!("Failed to open image: {}", e))?;
+        let reader = reader.with_guessed_format()
+            .map_err(|e| format!("Failed to detect image format: {}", e))?;
+        let (orig_w, orig_h) = reader.into_dimensions()
+            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+        let max_side = orig_w.max(orig_h);
+
+        // Small image: skip processing, signal frontend to use read_binary_file
+        if max_side <= 2000 {
+            return Ok(ImageThumbnail {
+                data: String::new(),
+                width: orig_w,
+                height: orig_h,
+                original_size,
+                is_thumbnail: false,
+            });
+        }
+
+        // Step 2: Decode + resize only for large images
+        let img = image::open(&file_path)
+            .map_err(|e| format!("Failed to open image: {}", e))?;
+
+        let ratio = 2000.0 / max_side as f64;
+        let final_w = (orig_w as f64 * ratio).round() as u32;
+        let final_h = (orig_h as f64 * ratio).round() as u32;
+
+        let output_img = img.resize_exact(final_w, final_h, image::imageops::FilterType::Triangle);
+
+        let mut buf: Vec<u8> = Vec::new();
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+        output_img.write_with_encoder(encoder)
+            .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+        Ok(ImageThumbnail {
+            data: STANDARD.encode(&buf),
+            width: final_w,
+            height: final_h,
+            original_size,
+            is_thumbnail: true,
+        })
+    })
+    .await
+    .map_err(|e| format!("Image processing task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -668,6 +741,7 @@ pub fn run() {
             copy_file,
             read_file,
             read_binary_file,
+            read_image_thumbnail,
             write_file,
             terminal_spawn,
             terminal_input,
