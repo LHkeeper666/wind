@@ -373,7 +373,7 @@
       mode = 'editor-normal';
     } else if (event.key === 'E' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (!filePath || !isTextFile(filePath)) {
+      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath))) {
         onToast('此文件类型不支持编辑');
         return;
       }

@@ -41,6 +41,14 @@
   let isSearchModalOpen: boolean = $state(false);
   let searchMode: 'current' | 'recursive' = $state('current');
 
+  const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
+
+  export function getImageFiles(): FileEntry[] {
+    return files.filter(f => !f.is_dir && IMAGE_EXTENSIONS.has(
+      f.name.split('.').pop()?.toLowerCase() || ''
+    ));
+  }
+
   // Directory content cache
   const directoryCache: Map<string, FileEntry[]> = new Map();
 

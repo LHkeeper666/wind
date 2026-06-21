@@ -20,6 +20,9 @@ export interface LayoutState {
   // Fullscreen editor state
   fullscreenEditorOpen: boolean;
 
+  // Fullscreen image viewer state
+  fullscreenImageViewerOpen: boolean;
+
   // Terminal state
   terminalVisible: boolean;
 }
@@ -32,6 +35,7 @@ const initialState: LayoutState = {
   activeColumn: 'current',
   previewMode: 'global-normal',
   fullscreenEditorOpen: false,
+  fullscreenImageViewerOpen: false,
   terminalVisible: false,
 };
 
@@ -103,6 +107,16 @@ function createLayoutStore() {
     // Close fullscreen editor
     closeFullscreenEditor() {
       update(state => ({ ...state, fullscreenEditorOpen: false }));
+    },
+
+    // Open fullscreen image viewer
+    openFullscreenImageViewer() {
+      update(state => ({ ...state, fullscreenImageViewerOpen: true }));
+    },
+
+    // Close fullscreen image viewer
+    closeFullscreenImageViewer() {
+      update(state => ({ ...state, fullscreenImageViewerOpen: false }));
     },
 
     // Toggle terminal visibility

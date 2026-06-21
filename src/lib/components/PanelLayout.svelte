@@ -6,6 +6,7 @@
   import DirectoryPanel from './DirectoryPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
+  import FullscreenImageViewer from './FullscreenImageViewer.svelte';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import SearchModal from './SearchModal.svelte';
 
@@ -34,6 +35,15 @@
 
   // Track active column before fullscreen for restoration
   let preFullscreenColumn: 'parent' | 'current' | 'preview' | null = null;
+
+  // Fullscreen image viewer state
+  let fullscreenImageList: { name: string; path: string }[] = $state([]);
+  let fullscreenImageIndex: number = $state(0);
+
+  function isImageFile(filePath: string): boolean {
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext);
+  }
 
   // Drag state for column resizing
   let isDragging: 'first' | 'second' | null = $state(null);
@@ -119,8 +129,17 @@
   }
 
   function handleFullscreenEditor() {
-    preFullscreenColumn = $layout.activeColumn;
-    layout.openFullscreenEditor();
+    if (selectedFile && isImageFile(selectedFile)) {
+      const imageFiles = currentDirectoryPanel?.getImageFiles() || [];
+      const idx = imageFiles.findIndex(f => f.path === selectedFile);
+      fullscreenImageList = imageFiles;
+      fullscreenImageIndex = idx >= 0 ? idx : 0;
+      preFullscreenColumn = $layout.activeColumn;
+      layout.openFullscreenImageViewer();
+    } else {
+      preFullscreenColumn = $layout.activeColumn;
+      layout.openFullscreenEditor();
+    }
   }
 
   function handleCloseFullscreen() {
@@ -142,6 +161,17 @@
     layout.hideTerminal();
   }
 
+  function handleCloseImageViewer() {
+    layout.closeFullscreenImageViewer();
+    const restoreTo = preFullscreenColumn || 'current';
+    preFullscreenColumn = null;
+    focusPanel(restoreTo);
+  }
+
+  function handleImageViewerNavigate(index: number) {
+    fullscreenImageIndex = index;
+  }
+
   async function handleGlobalKeydown(event: KeyboardEvent) {
     // Ctrl+` to toggle terminal
     if (event.ctrlKey && event.key === '`') {
@@ -151,7 +181,7 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
@@ -368,6 +398,16 @@
       content={previewEditor?.getContent() || ''}
       onClose={handleCloseFullscreen}
       onSave={handleSaveFullscreen}
+    />
+  {/if}
+
+  <!-- Fullscreen Image Viewer Overlay -->
+  {#if $layout.fullscreenImageViewerOpen && fullscreenImageList.length > 0}
+    <FullscreenImageViewer
+      imageList={fullscreenImageList}
+      currentIndex={fullscreenImageIndex}
+      onClose={handleCloseImageViewer}
+      onNavigate={handleImageViewerNavigate}
     />
   {/if}
 
