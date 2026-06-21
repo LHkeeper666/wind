@@ -25,6 +25,7 @@
 
   let searchInput: HTMLInputElement | undefined = $state(undefined);
   let resultsContainer: HTMLDivElement | undefined = $state(undefined);
+  let modalContent: HTMLDivElement | undefined = $state(undefined);
   let query: string = $state('');
   let currentMode: 'current' | 'recursive' = $state(mode);
   let results: SearchResult[] = $state([]);
@@ -178,16 +179,20 @@
         if (results.length > 0) {
           focusMode = 'list';
           selectedIndex = 0;
+          searchInput?.blur();
+          modalContent?.focus();
           scrollSelectedIntoView();
         }
         break;
-      case 'j':
-        // Only move to list if Ctrl is held (to allow typing j)
-        if (event.ctrlKey) {
+      default:
+        // Use event.code for letter keys to support Chinese IME
+        if (event.code === 'KeyJ' && event.ctrlKey) {
           event.preventDefault();
           if (results.length > 0) {
             focusMode = 'list';
             selectedIndex = 0;
+            searchInput?.blur();
+            modalContent?.focus();
             scrollSelectedIntoView();
           }
         }
@@ -202,14 +207,6 @@
         focusMode = 'input';
         tick().then(() => searchInput?.focus());
         break;
-      case 'j':
-        event.preventDefault();
-        selectNext();
-        break;
-      case 'k':
-        event.preventDefault();
-        selectPrev();
-        break;
       case 'Enter':
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < results.length) {
@@ -217,17 +214,6 @@
           onSelect(result.path, result.is_dir);
           onClose();
         }
-        break;
-      case 'g':
-        // gg - go to top
-        event.preventDefault();
-        selectedIndex = 0;
-        scrollSelectedIntoView();
-        break;
-      case 'G':
-        event.preventDefault();
-        selectedIndex = results.length - 1;
-        scrollSelectedIntoView();
         break;
       case 'Tab':
         event.preventDefault();
@@ -237,6 +223,30 @@
         if (query && isValidRegex) {
           if (debounceTimer) clearTimeout(debounceTimer);
           performSearch();
+        }
+        break;
+      default:
+        // Use event.code for letter keys to support Chinese IME
+        switch (event.code) {
+          case 'KeyJ':
+            event.preventDefault();
+            selectNext();
+            break;
+          case 'KeyK':
+            event.preventDefault();
+            selectPrev();
+            break;
+          case 'KeyG':
+            event.preventDefault();
+            if (event.shiftKey) {
+              // G - go to bottom
+              selectedIndex = results.length - 1;
+            } else {
+              // g - go to top
+              selectedIndex = 0;
+            }
+            scrollSelectedIntoView();
+            break;
         }
         break;
     }
@@ -285,7 +295,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="modal-overlay" onkeydown={handleKeydown} onclick={onClose}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="modal-content" onclick={(e) => e.stopPropagation()}>
+    <div class="modal-content" bind:this={modalContent} tabindex="-1" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <span class="search-icon">🔍</span>
         <input

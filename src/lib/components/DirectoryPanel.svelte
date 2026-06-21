@@ -230,30 +230,10 @@
     event.stopPropagation();
 
     const now = Date.now();
-    const isDoubleG = lastKey === 'g' && event.key === 'g' && now - lastKeyTime < 500;
-    const isGSlash = lastKey === 'g' && event.key === '/' && now - lastKeyTime < 500;
+    const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
+    const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
 
     switch (event.key) {
-      case 'j':
-        event.preventDefault();
-        selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
-        break;
-      case 'k':
-        event.preventDefault();
-        selectByIndex(Math.max(selectedIndex - 1, 0));
-        break;
-      case 'g':
-        if (isDoubleG) {
-          event.preventDefault();
-          selectByIndex(0);
-          lastKey = '';
-          return;
-        }
-        break;
-      case 'G':
-        event.preventDefault();
-        selectByIndex(files.length - 1);
-        break;
       case 'Enter':
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < files.length) {
@@ -273,27 +253,52 @@
         event.preventDefault();
         onFullscreen();
         break;
-      case 'h':
-        event.preventDefault();
-        onSwitchPanel('left');
-        break;
-      case 'l':
-        event.preventDefault();
-        onSwitchPanel('right');
-        break;
-      case '/':
-        event.preventDefault();
-        if (isGSlash) {
-          searchMode = 'recursive';
-          lastKey = '';
-        } else {
-          searchMode = 'current';
+      default:
+        // Use event.code for letter keys to support Chinese IME
+        switch (event.code) {
+          case 'KeyJ':
+            event.preventDefault();
+            selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
+            break;
+          case 'KeyK':
+            event.preventDefault();
+            selectByIndex(Math.max(selectedIndex - 1, 0));
+            break;
+          case 'KeyG':
+            if (isDoubleG) {
+              event.preventDefault();
+              selectByIndex(0);
+              lastKey = '';
+              return;
+            }
+            if (event.shiftKey) {
+              event.preventDefault();
+              selectByIndex(files.length - 1);
+            }
+            break;
+          case 'KeyH':
+            event.preventDefault();
+            onSwitchPanel('left');
+            break;
+          case 'KeyL':
+            event.preventDefault();
+            onSwitchPanel('right');
+            break;
+          case 'Slash':
+            event.preventDefault();
+            if (isGSlash) {
+              searchMode = 'recursive';
+              lastKey = '';
+            } else {
+              searchMode = 'current';
+            }
+            openSearchModal();
+            break;
         }
-        openSearchModal();
         break;
     }
 
-    lastKey = event.key;
+    lastKey = event.code;
     lastKeyTime = now;
   }
 
