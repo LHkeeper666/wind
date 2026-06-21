@@ -31,5 +31,6 @@ tokio = { version = "1", features = ["rt"] }
 base64 = "0.22"
 zip = "2"
 image = "0.25"
-zune-jpeg = "0.4"
+turbojpeg = "1.4"
+fast_image_resize = "5"
 

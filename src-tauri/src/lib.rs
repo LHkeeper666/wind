@@ -403,31 +403,43 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
         return Err(format!("Path is a directory, not a file: {}", path));
     }
 
-    let is_jpeg = {
-        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-        ext == "jpg" || ext == "jpeg"
-    };
-
     tokio::task::spawn_blocking(move || {
         let original_size = fs::metadata(&file_path)
             .map(|m| m.len())
             .unwrap_or(0);
 
-        if is_jpeg {
-            // JPEG: use zune-jpeg (pure Rust, fast decode)
-            let t0 = std::time::Instant::now();
-            let jpeg_data = fs::read(&file_path)
-                .map_err(|e| format!("Failed to read file: {}", e))?;
+        // 读取文件头检测实际格式
+        let file_data = fs::read(&file_path)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
 
-            let mut decoder = zune_jpeg::JpegDecoder::new(&jpeg_data);
-            decoder.decode_headers()
-                .map_err(|e| format!("Failed to read JPEG headers: {}", e))?;
-            let (orig_w, orig_h) = decoder.dimensions()
-                .map(|(w, h)| (w as u32, h as u32))
-                .unwrap_or((0, 0));
+        let is_actual_jpeg = file_data.len() >= 2 && file_data[0] == 0xFF && file_data[1] == 0xD8;
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let is_jpeg_ext = ext == "jpg" || ext == "jpeg";
+
+        eprintln!("[thumbnail] Processing: {} ({} bytes, ext={}, actual_jpeg={})", path, original_size, ext, is_actual_jpeg);
+
+        if is_actual_jpeg {
+            // JPEG: use turbojpeg + fast_image_resize
+            let t0 = std::time::Instant::now();
+
+            let mut decompressor = turbojpeg::Decompressor::new()
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to create decompressor: {}", e);
+                    format!("Failed to create decompressor: {}", e)
+                })?;
+            let header = decompressor.read_header(&file_data)
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to read JPEG headers {}: {}", path, e);
+                    format!("Failed to read JPEG headers: {}", e)
+                })?;
+            let orig_w = header.width as u32;
+            let orig_h = header.height as u32;
             let max_side = orig_w.max(orig_h);
 
-            if max_side <= 2000 {
+            eprintln!("[thumbnail] JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
+
+            if max_side <= 400 {
+                eprintln!("[thumbnail] Image too small, returning original");
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -438,28 +450,51 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
             }
 
             let t1 = std::time::Instant::now();
-            let pixels = decoder.decode()
-                .map_err(|e| format!("Failed to decode JPEG: {}", e))?;
+            let image = turbojpeg::decompress(&file_data, turbojpeg::PixelFormat::RGB)
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to decode JPEG {}: {}", path, e);
+                    format!("Failed to decode JPEG: {}", e)
+                })?;
             let t2 = std::time::Instant::now();
 
-            let img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
-                image::ImageBuffer::from_raw(orig_w, orig_h, pixels)
-                    .ok_or("Failed to create image buffer from decoded pixels")?;
-
-            let ratio = 2000.0 / max_side as f64;
+            let ratio = 400.0 / max_side as f64;
             let final_w = (orig_w as f64 * ratio).round() as u32;
             let final_h = (orig_h as f64 * ratio).round() as u32;
 
-            let resized = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
+            let src_image = fast_image_resize::images::Image::from_vec_u8(
+                orig_w,
+                orig_h,
+                image.pixels,
+                fast_image_resize::PixelType::U8x3,
+            ).map_err(|e| format!("Failed to create source image: {}", e))?;
+
+            let mut dst_image = fast_image_resize::images::Image::new(
+                final_w,
+                final_h,
+                fast_image_resize::PixelType::U8x3,
+            );
+
+            let mut resizer = fast_image_resize::Resizer::new();
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2);
+            }
+            let options = fast_image_resize::ResizeOptions::new()
+                .resize_alg(fast_image_resize::ResizeAlg::Nearest);
+            resizer.resize(&src_image, &mut dst_image, &options)
+                .map_err(|e| format!("Failed to resize image: {}", e))?;
             let t3 = std::time::Instant::now();
 
             let mut buf: Vec<u8> = Vec::new();
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-            resized.write_with_encoder(encoder)
+            let resized_img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
+                image::ImageBuffer::from_raw(final_w, final_h, dst_image.into_vec())
+                    .ok_or("Failed to create resized image buffer")?;
+            resized_img.write_with_encoder(encoder)
                 .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
             let t4 = std::time::Instant::now();
 
-            eprintln!("[zune-jpeg] {}x{} -> {}x{}, read={}ms decode={}ms resize={}ms encode={}ms total={}ms",
+            eprintln!("[turbojpeg+fast-resize] {}x{} -> {}x{}, read={}ms decode={}ms resize={}ms encode={}ms total={}ms",
                 orig_w, orig_h, final_w, final_h,
                 (t1-t0).as_millis(), (t2-t1).as_millis(), (t3-t2).as_millis(), (t4-t3).as_millis(), (t4-t0).as_millis());
 
@@ -471,16 +506,37 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
                 is_thumbnail: true,
             })
         } else {
-            // Non-JPEG: use image crate
-            let reader = image::ImageReader::open(&file_path)
-                .map_err(|e| format!("Failed to open image: {}", e))?;
-            let reader = reader.with_guessed_format()
-                .map_err(|e| format!("Failed to detect image format: {}", e))?;
+            // Non-JPEG: use image crate + fast_image_resize
+            // 包括扩展名是 jpg 但实际不是 JPEG 的文件
+            if is_jpeg_ext && !is_actual_jpeg {
+                eprintln!("[thumbnail] Warning: {} has .jpg extension but is not JPEG format", path);
+            }
+
+            // 从文件内容猜测实际格式
+            let format = image::guess_format(&file_data)
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to guess format {}: {}", path, e);
+                    format!("Failed to guess image format: {}", e)
+                })?;
+            eprintln!("[thumbnail] Detected format: {:?}", format);
+
+            let reader = image::ImageReader::new(std::io::Cursor::new(&file_data))
+                .with_guessed_format()
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to create reader {}: {}", path, e);
+                    format!("Failed to create image reader: {}", e)
+                })?;
             let (orig_w, orig_h) = reader.into_dimensions()
-                .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to read dimensions {}: {}", path, e);
+                    format!("Failed to read image dimensions: {}", e)
+                })?;
             let max_side = orig_w.max(orig_h);
 
-            if max_side <= 2000 {
+            eprintln!("[thumbnail] Non-JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
+
+            if max_side <= 400 {
+                eprintln!("[thumbnail] Image too small, returning original");
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -490,18 +546,46 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
                 });
             }
 
-            let img = image::open(&file_path)
-                .map_err(|e| format!("Failed to open image: {}", e))?;
+            let img = image::load_from_memory(&file_data)
+                .map_err(|e| {
+                    eprintln!("[thumbnail] Failed to load image {}: {}", path, e);
+                    format!("Failed to load image: {}", e)
+                })?;
+            let rgb_img = img.to_rgb8();
 
-            let ratio = 2000.0 / max_side as f64;
+            let ratio = 400.0 / max_side as f64;
             let final_w = (orig_w as f64 * ratio).round() as u32;
             let final_h = (orig_h as f64 * ratio).round() as u32;
 
-            let output_img = img.resize_exact(final_w, final_h, image::imageops::FilterType::Triangle);
+            let src_image = fast_image_resize::images::Image::from_vec_u8(
+                orig_w,
+                orig_h,
+                rgb_img.into_raw(),
+                fast_image_resize::PixelType::U8x3,
+            ).map_err(|e| format!("Failed to create source image: {}", e))?;
+
+            let mut dst_image = fast_image_resize::images::Image::new(
+                final_w,
+                final_h,
+                fast_image_resize::PixelType::U8x3,
+            );
+
+            let mut resizer = fast_image_resize::Resizer::new();
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                resizer.set_cpu_extensions(fast_image_resize::CpuExtensions::Avx2);
+            }
+            let options = fast_image_resize::ResizeOptions::new()
+                .resize_alg(fast_image_resize::ResizeAlg::Nearest);
+            resizer.resize(&src_image, &mut dst_image, &options)
+                .map_err(|e| format!("Failed to resize image: {}", e))?;
 
             let mut buf: Vec<u8> = Vec::new();
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-            output_img.write_with_encoder(encoder)
+            let resized_img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
+                image::ImageBuffer::from_raw(final_w, final_h, dst_image.into_vec())
+                    .ok_or("Failed to create resized image buffer")?;
+            resized_img.write_with_encoder(encoder)
                 .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
 
             Ok(ImageThumbnail {
