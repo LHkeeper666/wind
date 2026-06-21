@@ -114,28 +114,9 @@
     });
     resizeObserver.observe(terminalContainer);
 
-    // Handle backspace via keyboard event to prevent xterm cursor movement
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (mode !== 'insert') return true;
-
-      if (event.key === 'Backspace' && event.type === 'keydown') {
-        // Send DEL to shell, shell will handle cursor movement
-        invoke('terminal_input', { data: '\x7f' }).catch(console.error);
-        return false; // Prevent xterm from handling
-      }
-      return true;
-    });
-
+    // Send all input directly to PTY - no special handling needed
     terminal.onData((data) => {
       if (mode === 'insert') {
-        // Intercept clear/cls commands - only clear locally, don't send to shell
-        if (data.startsWith('clear') || data.startsWith('cls') || data.startsWith('Clear-Host')) {
-          terminal?.clear();
-          terminal?.write('\x1b[2J\x1b[H');
-          return;
-        }
-        // Skip backspace - handled by custom key handler
-        if (data === '\x7f') return;
         invoke('terminal_input', { data }).catch(console.error);
       }
     });

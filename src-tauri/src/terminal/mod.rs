@@ -1,20 +1,22 @@
+use portable_pty::{ChildKiller, CommandBuilder, PtyPair, PtySize, native_pty_system};
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
 pub struct Terminal {
-    child: Arc<Mutex<Option<Child>>>,
-    stdin: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    pty_pair: Arc<Mutex<Option<PtyPair>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child_killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
     app_handle: Option<AppHandle>,
 }
 
 impl Terminal {
     pub fn new() -> Self {
         Terminal {
-            child: Arc::new(Mutex::new(None)),
-            stdin: Arc::new(Mutex::new(None)),
+            pty_pair: Arc::new(Mutex::new(None)),
+            writer: Arc::new(Mutex::new(None)),
+            child_killer: Arc::new(Mutex::new(None)),
             app_handle: None,
         }
     }
@@ -27,21 +29,32 @@ impl Terminal {
         // Kill existing process if any
         self.kill();
 
-        let mut cmd = match shell {
+        let pty_system = native_pty_system();
+
+        // Create PTY with default size
+        let pty_pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to create PTY: {}", e))?;
+
+        // Build command based on shell type
+        let cmd = match shell {
             "powershell" => {
-                let mut c = Command::new("powershell.exe");
+                let mut c = CommandBuilder::new("powershell.exe");
                 c.arg("-NoLogo");
                 c.arg("-NoProfile");
                 c
             }
             "cmd" => {
-                let mut c = Command::new("cmd.exe");
-                c.arg("/K");
-                c.arg("echo."); // Print empty line to initialize
+                let c = CommandBuilder::new("cmd.exe");
                 c
             }
             "git-bash" => {
-                let mut c = Command::new("C:\\Program Files\\Git\\bin\\bash.exe");
+                let mut c = CommandBuilder::new("C:\\Program Files\\Git\\bin\\bash.exe");
                 c.arg("--login");
                 c.arg("-i");
                 c
@@ -49,91 +62,97 @@ impl Terminal {
             _ => return Err(format!("Unknown shell: {}", shell)),
         };
 
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
+        // Spawn child process in PTY
+        let child = pty_pair
+            .slave
+            .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
 
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        // Store child killer for cleanup
+        let killer = child.clone_killer();
+        *self.child_killer.lock().unwrap() = Some(killer);
 
-        *self.child.lock().unwrap() = Some(child);
+        // Get writer for sending input
+        let writer = pty_pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
+        *self.writer.lock().unwrap() = Some(writer);
 
-        if let Some(stdin) = stdin {
-            *self.stdin.lock().unwrap() = Some(Box::new(stdin));
-        }
+        // Get reader for receiving output
+        let mut reader = pty_pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to get PTY reader: {}", e))?;
 
+        // Store PTY pair
+        *self.pty_pair.lock().unwrap() = Some(pty_pair);
+
+        // Spawn thread to read output
         let app_handle = self.app_handle.clone();
-
-        // Spawn thread to read stdout
-        if let Some(mut stdout) = stdout {
-            let handle = app_handle.clone();
-            thread::spawn(move || {
-                let mut buffer = [0u8; 1024];
-                loop {
-                    match stdout.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                            if let Some(ref handle) = handle {
-                                let _ = handle.emit("terminal-output", &data);
-                            }
+        thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&buffer[..n]).to_string();
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit("terminal-output", &data);
                         }
-                        Err(_) => break,
                     }
+                    Err(_) => break,
                 }
-            });
-        }
-
-        // Spawn thread to read stderr
-        if let Some(mut stderr) = stderr {
-            let handle = app_handle.clone();
-            thread::spawn(move || {
-                let mut buffer = [0u8; 1024];
-                loop {
-                    match stderr.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                            if let Some(ref handle) = handle {
-                                let _ = handle.emit("terminal-output", &data);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
+            }
+        });
 
         Ok(())
     }
 
     pub fn write_input(&self, data: &str) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().unwrap();
-        if let Some(ref mut stdin) = *stdin {
-            stdin
+        let mut writer = self.writer.lock().unwrap();
+        if let Some(ref mut writer) = *writer {
+            writer
                 .write_all(data.as_bytes())
-                .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-            stdin
+                .map_err(|e| format!("Failed to write to PTY: {}", e))?;
+            writer
                 .flush()
-                .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+                .map_err(|e| format!("Failed to flush PTY: {}", e))?;
             Ok(())
         } else {
-            Err("No stdin available".to_string())
+            Err("No PTY writer available".to_string())
+        }
+    }
+
+    pub fn resize(&self, cols: u32, rows: u32) -> Result<(), String> {
+        let pty_pair = self.pty_pair.lock().unwrap();
+        if let Some(ref pty_pair) = *pty_pair {
+            pty_pair
+                .master
+                .resize(PtySize {
+                    rows: rows as u16,
+                    cols: cols as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+            Ok(())
+        } else {
+            Err("No PTY available".to_string())
         }
     }
 
     pub fn kill(&self) {
-        let mut child = self.child.lock().unwrap();
-        if let Some(ref mut child) = *child {
-            let _ = child.kill();
+        // Kill child process
+        if let Some(mut killer) = self.child_killer.lock().unwrap().take() {
+            let _ = killer.kill();
         }
-        *child = None;
-        *self.stdin.lock().unwrap() = None;
+
+        // Clear writer
+        *self.writer.lock().unwrap() = None;
+
+        // Drop PTY pair (this will close the handles)
+        *self.pty_pair.lock().unwrap() = None;
     }
 }
 

@@ -327,9 +327,9 @@ fn terminal_input(data: String, state: State<'_, AppState>) -> Result<(), String
 }
 
 #[tauri::command]
-fn terminal_resize(_cols: u32, _rows: u32, _state: State<'_, AppState>) -> Result<(), String> {
-    // TODO: Implement resize for ConPTY
-    Ok(())
+fn terminal_resize(cols: u32, rows: u32, state: State<'_, AppState>) -> Result<(), String> {
+    let terminal = state.terminal.lock().unwrap();
+    terminal.resize(cols, rows)
 }
 
 #[tauri::command]
