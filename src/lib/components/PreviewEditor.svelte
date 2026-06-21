@@ -42,6 +42,7 @@
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
   let renderRequestId: number = 0;
+  let loadGeneration: number = 0;
 
   // Load file when filePath changes
   $effect(() => {
@@ -146,11 +147,13 @@
   }
 
   async function loadFile(path: string) {
+    const gen = ++loadGeneration;
     isModified = false;
 
     // Directory: list contents
     try {
       await invoke<FileEntry[]>('read_directory', { path });
+      if (gen !== loadGeneration) return;
       content = '';
       binaryContent = null;
       if (editorView) {
@@ -166,11 +169,15 @@
 
     // Binary image files (SVG is text, handled below)
     if (isImageFile(path) && !path.toLowerCase().endsWith('.svg')) {
+      const fileName = path.split(/[/\\]/).pop() || path;
       const isGif = path.toLowerCase().endsWith('.gif');
       try {
         if (isGif) {
           // GIF: load original to preserve animation
+          const t0 = performance.now();
           const base64 = await invoke<string>('read_binary_file', { path });
+          console.log(`[image] ${fileName} gif loaded in ${(performance.now() - t0).toFixed(0)}ms, raw ${base64.length} chars`);
+          if (gen !== loadGeneration) return;
           const binary = atob(base64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
@@ -180,9 +187,13 @@
           thumbnailMeta = null;
         } else {
           // Other images: use thumbnail for large, binary for small
+          const t0 = performance.now();
           const result = await invoke<{ data: string; width: number; height: number; original_size: number; is_thumbnail: boolean }>('read_image_thumbnail', { path });
+          const loadMs = (performance.now() - t0).toFixed(0);
+          if (gen !== loadGeneration) return;
           if (result.data) {
             // Large image: use compressed thumbnail
+            console.log(`[image] ${fileName} thumbnail loaded in ${loadMs}ms, original ${(result.original_size / 1024 / 1024).toFixed(1)}MB → ${result.width}x${result.height}, data ${result.data.length} chars`);
             const binary = atob(result.data);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) {
@@ -197,7 +208,10 @@
             };
           } else {
             // Small image: load original directly
+            const t1 = performance.now();
             const base64 = await invoke<string>('read_binary_file', { path });
+            console.log(`[image] ${fileName} original loaded in ${(performance.now() - t1).toFixed(0)}ms, ${result.width}x${result.height}, data ${base64.length} chars`);
+            if (gen !== loadGeneration) return;
             const binary = atob(base64);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) {
@@ -214,6 +228,7 @@
         }
         content = '[Binary Image]';
       } catch (error) {
+        if (gen !== loadGeneration) return;
         console.error('Failed to load image:', error);
         binaryContent = null;
         thumbnailMeta = null;
@@ -244,6 +259,7 @@
 
     try {
       const newContent = await invoke<string>('read_file', { path });
+      if (gen !== loadGeneration) return;
       content = newContent;
       binaryContent = null;
       savedContent = newContent;
@@ -252,6 +268,7 @@
         editorView = undefined;
       }
     } catch (error) {
+      if (gen !== loadGeneration) return;
       console.error('Failed to load file:', error);
       content = '';
       binaryContent = null;

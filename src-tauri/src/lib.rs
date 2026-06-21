@@ -403,53 +403,115 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
         return Err(format!("Path is a directory, not a file: {}", path));
     }
 
+    let is_jpeg = {
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        ext == "jpg" || ext == "jpeg"
+    };
+
     tokio::task::spawn_blocking(move || {
         let original_size = fs::metadata(&file_path)
             .map(|m| m.len())
             .unwrap_or(0);
 
-        // Step 1: Read dimensions only (no pixel decode)
-        let reader = image::ImageReader::open(&file_path)
-            .map_err(|e| format!("Failed to open image: {}", e))?;
-        let reader = reader.with_guessed_format()
-            .map_err(|e| format!("Failed to detect image format: {}", e))?;
-        let (orig_w, orig_h) = reader.into_dimensions()
-            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
-        let max_side = orig_w.max(orig_h);
+        if is_jpeg {
+            // JPEG: use zune-jpeg (pure Rust, fast decode)
+            let t0 = std::time::Instant::now();
+            let jpeg_data = fs::read(&file_path)
+                .map_err(|e| format!("Failed to read file: {}", e))?;
 
-        // Small image: skip processing, signal frontend to use read_binary_file
-        if max_side <= 2000 {
-            return Ok(ImageThumbnail {
-                data: String::new(),
-                width: orig_w,
-                height: orig_h,
+            let mut decoder = zune_jpeg::JpegDecoder::new(&jpeg_data);
+            decoder.decode_headers()
+                .map_err(|e| format!("Failed to read JPEG headers: {}", e))?;
+            let (orig_w, orig_h) = decoder.dimensions()
+                .map(|(w, h)| (w as u32, h as u32))
+                .unwrap_or((0, 0));
+            let max_side = orig_w.max(orig_h);
+
+            if max_side <= 2000 {
+                return Ok(ImageThumbnail {
+                    data: String::new(),
+                    width: orig_w,
+                    height: orig_h,
+                    original_size,
+                    is_thumbnail: false,
+                });
+            }
+
+            let t1 = std::time::Instant::now();
+            let pixels = decoder.decode()
+                .map_err(|e| format!("Failed to decode JPEG: {}", e))?;
+            let t2 = std::time::Instant::now();
+
+            let img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
+                image::ImageBuffer::from_raw(orig_w, orig_h, pixels)
+                    .ok_or("Failed to create image buffer from decoded pixels")?;
+
+            let ratio = 2000.0 / max_side as f64;
+            let final_w = (orig_w as f64 * ratio).round() as u32;
+            let final_h = (orig_h as f64 * ratio).round() as u32;
+
+            let resized = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
+            let t3 = std::time::Instant::now();
+
+            let mut buf: Vec<u8> = Vec::new();
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+            resized.write_with_encoder(encoder)
+                .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+            let t4 = std::time::Instant::now();
+
+            eprintln!("[zune-jpeg] {}x{} -> {}x{}, read={}ms decode={}ms resize={}ms encode={}ms total={}ms",
+                orig_w, orig_h, final_w, final_h,
+                (t1-t0).as_millis(), (t2-t1).as_millis(), (t3-t2).as_millis(), (t4-t3).as_millis(), (t4-t0).as_millis());
+
+            Ok(ImageThumbnail {
+                data: STANDARD.encode(&buf),
+                width: final_w,
+                height: final_h,
                 original_size,
-                is_thumbnail: false,
-            });
+                is_thumbnail: true,
+            })
+        } else {
+            // Non-JPEG: use image crate
+            let reader = image::ImageReader::open(&file_path)
+                .map_err(|e| format!("Failed to open image: {}", e))?;
+            let reader = reader.with_guessed_format()
+                .map_err(|e| format!("Failed to detect image format: {}", e))?;
+            let (orig_w, orig_h) = reader.into_dimensions()
+                .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+            let max_side = orig_w.max(orig_h);
+
+            if max_side <= 2000 {
+                return Ok(ImageThumbnail {
+                    data: String::new(),
+                    width: orig_w,
+                    height: orig_h,
+                    original_size,
+                    is_thumbnail: false,
+                });
+            }
+
+            let img = image::open(&file_path)
+                .map_err(|e| format!("Failed to open image: {}", e))?;
+
+            let ratio = 2000.0 / max_side as f64;
+            let final_w = (orig_w as f64 * ratio).round() as u32;
+            let final_h = (orig_h as f64 * ratio).round() as u32;
+
+            let output_img = img.resize_exact(final_w, final_h, image::imageops::FilterType::Triangle);
+
+            let mut buf: Vec<u8> = Vec::new();
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+            output_img.write_with_encoder(encoder)
+                .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+            Ok(ImageThumbnail {
+                data: STANDARD.encode(&buf),
+                width: final_w,
+                height: final_h,
+                original_size,
+                is_thumbnail: true,
+            })
         }
-
-        // Step 2: Decode + resize only for large images
-        let img = image::open(&file_path)
-            .map_err(|e| format!("Failed to open image: {}", e))?;
-
-        let ratio = 2000.0 / max_side as f64;
-        let final_w = (orig_w as f64 * ratio).round() as u32;
-        let final_h = (orig_h as f64 * ratio).round() as u32;
-
-        let output_img = img.resize_exact(final_w, final_h, image::imageops::FilterType::Triangle);
-
-        let mut buf: Vec<u8> = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-        output_img.write_with_encoder(encoder)
-            .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
-
-        Ok(ImageThumbnail {
-            data: STANDARD.encode(&buf),
-            width: final_w,
-            height: final_h,
-            original_size,
-            is_thumbnail: true,
-        })
     })
     .await
     .map_err(|e| format!("Image processing task failed: {}", e))?
