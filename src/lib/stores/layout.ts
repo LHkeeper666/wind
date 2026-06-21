@@ -23,6 +23,9 @@ export interface LayoutState {
   // Fullscreen image viewer state
   fullscreenImageViewerOpen: boolean;
 
+  // Fullscreen PDF viewer state
+  fullscreenPdfViewerOpen: boolean;
+
   // Terminal state
   terminalVisible: boolean;
 }
@@ -36,6 +39,7 @@ const initialState: LayoutState = {
   previewMode: 'global-normal',
   fullscreenEditorOpen: false,
   fullscreenImageViewerOpen: false,
+  fullscreenPdfViewerOpen: false,
   terminalVisible: false,
 };
 
@@ -117,6 +121,16 @@ function createLayoutStore() {
     // Close fullscreen image viewer
     closeFullscreenImageViewer() {
       update(state => ({ ...state, fullscreenImageViewerOpen: false }));
+    },
+
+    // Open fullscreen PDF viewer
+    openFullscreenPdfViewer() {
+      update(state => ({ ...state, fullscreenPdfViewerOpen: true }));
+    },
+
+    // Close fullscreen PDF viewer
+    closeFullscreenPdfViewer() {
+      update(state => ({ ...state, fullscreenPdfViewerOpen: false }));
     },
 
     // Toggle terminal visibility

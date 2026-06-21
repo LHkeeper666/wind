@@ -139,12 +139,24 @@
     return IMAGE_EXTENSIONS.has(ext);
   }
 
+  function isPdfFile(path: string): boolean {
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    return ext === 'pdf';
+  }
+
   const ARCHIVE_EXTENSIONS = new Set(['zip']);
 
   function isArchiveFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
     return ARCHIVE_EXTENSIONS.has(ext);
   }
+
+  // PDF state
+  let pdfPageCount: number = $state(0);
+  let pdfCurrentPage: number = $state(0);
+  let pdfFileSize: number = $state(0);
+  let pdfTitle: string | null = $state(null);
+  let pdfRenderScale: number = 1.5;
 
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
@@ -238,6 +250,37 @@
       return;
     }
 
+    // PDF files
+    if (isPdfFile(path)) {
+      const fileName = path.split(/[/\\]/).pop() || path;
+      try {
+        const t0 = performance.now();
+        const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number }>('get_pdf_info', { path });
+        console.log(`[pdf] ${fileName} info loaded in ${(performance.now() - t0).toFixed(0)}ms, ${info.page_count} pages`);
+        if (gen !== loadGeneration) return;
+
+        pdfPageCount = info.page_count;
+        pdfCurrentPage = 0;
+        pdfFileSize = info.file_size;
+        pdfTitle = info.title;
+
+        // Render first page
+        await loadPdfPage(path, 0, gen);
+        if (gen !== loadGeneration) return;
+
+        content = '[PDF]';
+        mode = 'global-normal';
+      } catch (error) {
+        if (gen !== loadGeneration) return;
+        console.error('Failed to load PDF:', error);
+        pdfPageCount = 0;
+        pdfCurrentPage = 0;
+        content = '';
+        binaryContent = null;
+      }
+      return;
+    }
+
     if (isArchiveFile(path)) {
       content = '';
       binaryContent = null;
@@ -294,6 +337,44 @@
     const previewContent: string | ArrayBuffer = binaryContent ?? content;
     await getPreviewRouter().preview(filePath, previewContent, previewContainer);
     if (requestId !== renderRequestId) return;
+
+    // Add PDF info bar
+    if (isPdfFile(filePath) && pdfPageCount > 0) {
+      addPdfInfoBar(previewContainer);
+    }
+  }
+
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function addPdfInfoBar(container: HTMLElement) {
+    // Remove existing info bar
+    container.querySelector('.pdf-info-bar')?.remove();
+
+    const bar = document.createElement('div');
+    bar.className = 'pdf-info-bar image-info-bar';
+
+    const info = document.createElement('span');
+    info.textContent = `${pdfCurrentPage + 1}/${pdfPageCount}`;
+    if (pdfFileSize > 0) {
+      info.textContent += ` · ${formatSize(pdfFileSize)}`;
+    }
+    if (pdfTitle) {
+      info.textContent += ` · ${pdfTitle}`;
+    }
+    bar.appendChild(info);
+
+    const hints = document.createElement('span');
+    hints.className = 'pdf-hints';
+    hints.textContent = 'J/K:翻页 E:全屏';
+    hints.style.color = '#666';
+    hints.style.fontSize = '11px';
+    bar.appendChild(hints);
+
+    container.appendChild(bar);
   }
 
   async function renderDirectoryPreview() {
@@ -311,6 +392,32 @@
     previewContainer.dataset.filePath = path;
     await getPreviewRouter().preview(path, '', previewContainer);
     if (requestId !== renderRequestId) return;
+  }
+
+  async function loadPdfPage(path: string, page: number, gen?: number) {
+    const g = gen ?? loadGeneration;
+    try {
+      const t0 = performance.now();
+      const result = await invoke<{ data: string; width: number; height: number }>('render_pdf_page', {
+        path,
+        page,
+        scale: pdfRenderScale,
+      });
+      console.log(`[pdf] page ${page} rendered in ${(performance.now() - t0).toFixed(0)}ms, ${result.width}x${result.height}`);
+      if (g !== loadGeneration) return;
+
+      // Convert base64 to ArrayBuffer
+      const binary = atob(result.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      binaryContent = bytes.buffer;
+      pdfCurrentPage = page;
+    } catch (error) {
+      if (g !== loadGeneration) return;
+      console.error(`Failed to render PDF page ${page}:`, error);
+    }
   }
 
   function initEditor() {
@@ -373,11 +480,23 @@
       mode = 'editor-normal';
     } else if (event.key === 'E' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath))) {
-        onToast('此文件类型不支持编辑');
+      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath) && !isPdfFile(filePath))) {
+        onToast('此文件类型不支持全屏查看');
         return;
       }
       onFullscreen();
+    } else if (event.key === 'J' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      // PDF: next page
+      if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) {
+        event.preventDefault();
+        loadPdfPage(filePath, pdfCurrentPage + 1);
+      }
+    } else if (event.key === 'K' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      // PDF: previous page
+      if (filePath && isPdfFile(filePath) && pdfCurrentPage > 0) {
+        event.preventDefault();
+        loadPdfPage(filePath, pdfCurrentPage - 1);
+      }
     } else if (event.key === 'h') {
       event.preventDefault();
       onSwitchPanel('left');
@@ -419,6 +538,16 @@
 
   export function getFile(): string | null {
     return filePath;
+  }
+
+  export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } {
+    return { currentPage: pdfCurrentPage, pageCount: pdfPageCount, filePath };
+  }
+
+  export function setPdfPage(page: number) {
+    if (filePath && isPdfFile(filePath) && page >= 0 && page < pdfPageCount) {
+      loadPdfPage(filePath, page);
+    }
   }
 </script>
 
@@ -718,5 +847,19 @@
   :global(.image-view-original:disabled) {
     opacity: 0.5;
     cursor: default;
+  }
+
+  :global(.preview-pdf-page) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    min-height: 0;
+  }
+
+  :global(.pdf-info-bar) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 </style>

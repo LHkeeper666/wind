@@ -4,6 +4,7 @@ import { MarkdownPreviewer } from './MarkdownPreviewer';
 import { ImagePreviewer } from './ImagePreviewer';
 import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
+import { PdfPreviewer } from './PdfPreviewer';
 
 export class PreviewRouter {
   private previewers: Previewer[] = [];
@@ -14,6 +15,7 @@ export class PreviewRouter {
       new ArchivePreviewer(),
       new JsonPreviewer(),
       new MarkdownPreviewer(),
+      new PdfPreviewer(),
       new ImagePreviewer(),
       new TextPreviewer(), // Fallback
     ];

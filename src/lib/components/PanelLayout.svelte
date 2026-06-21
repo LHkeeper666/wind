@@ -7,6 +7,7 @@
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
+  import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import SearchModal from './SearchModal.svelte';
 
@@ -40,9 +41,20 @@
   let fullscreenImageList: { name: string; path: string }[] = $state([]);
   let fullscreenImageIndex: number = $state(0);
 
+  // Fullscreen PDF viewer state
+  let fullscreenPdfPath: string = $state('');
+  let fullscreenPdfPage: number = $state(0);
+  let fullscreenPdfPageCount: number = $state(0);
+  let fullscreenPdfFileSize: number = $state(0);
+
   function isImageFile(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
     return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext);
+  }
+
+  function isPdfFile(filePath: string): boolean {
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    return ext === 'pdf';
   }
 
   // Drag state for column resizing
@@ -136,6 +148,14 @@
       fullscreenImageIndex = idx >= 0 ? idx : 0;
       preFullscreenColumn = $layout.activeColumn;
       layout.openFullscreenImageViewer();
+    } else if (selectedFile && isPdfFile(selectedFile)) {
+      const pdfInfo = previewEditor?.getPdfInfo();
+      fullscreenPdfPath = selectedFile;
+      fullscreenPdfPage = pdfInfo?.currentPage ?? 0;
+      fullscreenPdfPageCount = pdfInfo?.pageCount ?? 0;
+      fullscreenPdfFileSize = 0; // Will be shown from FullscreenPdfViewer's own info
+      preFullscreenColumn = $layout.activeColumn;
+      layout.openFullscreenPdfViewer();
     } else {
       preFullscreenColumn = $layout.activeColumn;
       layout.openFullscreenEditor();
@@ -168,6 +188,13 @@
     focusPanel(restoreTo);
   }
 
+  function handleClosePdfViewer() {
+    layout.closeFullscreenPdfViewer();
+    const restoreTo = preFullscreenColumn || 'current';
+    preFullscreenColumn = null;
+    focusPanel(restoreTo);
+  }
+
   function handleImageViewerNavigate(index: number) {
     fullscreenImageIndex = index;
   }
@@ -181,7 +208,7 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
@@ -408,6 +435,17 @@
       currentIndex={fullscreenImageIndex}
       onClose={handleCloseImageViewer}
       onNavigate={handleImageViewerNavigate}
+    />
+  {/if}
+
+  <!-- Fullscreen PDF Viewer Overlay -->
+  {#if $layout.fullscreenPdfViewerOpen && fullscreenPdfPath}
+    <FullscreenPdfViewer
+      pdfPath={fullscreenPdfPath}
+      initialPage={fullscreenPdfPage}
+      pageCount={fullscreenPdfPageCount}
+      fileSize={fullscreenPdfFileSize}
+      onClose={handleClosePdfViewer}
     />
   {/if}
 
