@@ -25,7 +25,7 @@ impl Terminal {
         self.app_handle = Some(handle);
     }
 
-    pub fn spawn(&mut self, shell: &str) -> Result<(), String> {
+    pub fn spawn(&mut self, shell: &str, cwd: Option<&str>) -> Result<(), String> {
         // Kill existing process if any
         self.kill();
 
@@ -42,7 +42,7 @@ impl Terminal {
             .map_err(|e| format!("Failed to create PTY: {}", e))?;
 
         // Build command based on shell type
-        let cmd = match shell {
+        let mut cmd = match shell {
             "powershell" => {
                 let mut c = CommandBuilder::new("powershell.exe");
                 c.arg("-NoLogo");
@@ -61,6 +61,11 @@ impl Terminal {
             }
             _ => return Err(format!("Unknown shell: {}", shell)),
         };
+
+        // Set working directory if provided
+        if let Some(dir) = cwd {
+            cmd.cwd(dir);
+        }
 
         // Spawn child process in PTY
         let child = pty_pair

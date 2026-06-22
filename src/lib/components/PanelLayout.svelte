@@ -453,6 +453,7 @@
   <FloatingTerminal
     bind:this={floatingTerminal}
     visible={$layout.terminalVisible}
+    currentPath={currentPath}
     onClose={handleCloseTerminal}
   />
 

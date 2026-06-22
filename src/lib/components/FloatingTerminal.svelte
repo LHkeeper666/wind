@@ -10,9 +10,11 @@
 
   let {
     visible = false,
+    currentPath = '',
     onClose = () => {},
   }: {
     visible: boolean;
+    currentPath?: string;
     onClose?: () => void;
   } = $props();
 
@@ -49,12 +51,27 @@
         if (!terminal && terminalContainer) {
           initTerminal();
         }
-        // Fit and focus when already initialized
-        if (terminal && fitAddon) {
-          fitAddon.fit();
+        // Reinitialize if terminal exists but container is new (after hide/show)
+        else if (terminal && terminalContainer) {
+          // Open terminal in new container
+          terminal.open(terminalContainer);
+          fitAddon?.fit();
           terminal.focus();
+          // Restart shell
+          startShell();
         }
       }, 50);
+    } else {
+      // Cleanup when hiding terminal
+      if (terminal) {
+        terminal.dispose();
+        terminal = undefined;
+        fitAddon = undefined;
+      }
+      if (unlisten) {
+        unlisten();
+        unlisten = undefined;
+      }
     }
   });
 
@@ -158,7 +175,7 @@
         terminal.write('\x1b[2J\x1b[H'); // Clear screen and move cursor to home
       }
       shellIntegration.reset();
-      await invoke('terminal_spawn', { shell: shellType });
+      await invoke('terminal_spawn', { shell: shellType, cwd: currentPath || null });
     } catch (error) {
       console.error('Failed to start shell:', error);
       if (terminal) terminal.writeln('Failed to start shell: ' + error);
@@ -183,12 +200,6 @@
 
   export function toggle() {
     visible = !visible;
-    if (visible && terminal && fitAddon) {
-      setTimeout(() => {
-        if (fitAddon) fitAddon.fit();
-        if (terminal) terminal.focus();
-      }, 100);
-    }
   }
 
   export function clear() {
