@@ -6,6 +6,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import { ShellIntegration, type ShellState } from '$lib/terminal/shell-integration';
+  import { layout } from '$lib/stores/layout';
   import '@xterm/xterm/css/xterm.css';
 
   let {
@@ -209,6 +210,7 @@
 
   export function setMode(newMode: 'normal' | 'insert') {
     mode = newMode;
+    layout.setTerminalMode(newMode);
     if (terminal) {
       if (mode === 'normal') {
         terminal.options.disableStdin = true;
@@ -308,16 +310,11 @@
 
 <style>
   .floating-terminal {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
     background-color: #1e1e1e;
     border-top: 1px solid #333333;
     display: flex;
     flex-direction: column;
-    z-index: 900;
-    animation: slideUp 0.3s ease-out;
+    flex-shrink: 0;
   }
 
   @keyframes slideUp {

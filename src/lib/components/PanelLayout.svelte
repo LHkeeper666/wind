@@ -24,6 +24,10 @@
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
 
+  // Ctrl+W prefix state for vim-style window navigation
+  let waitingForWindowKey: boolean = $state(false);
+  let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
   // Toast notification
   let toastMessage: string = $state('');
   let toastTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -35,7 +39,7 @@
   }
 
   // Track active column before fullscreen for restoration
-  let preFullscreenColumn: 'parent' | 'current' | 'preview' | null = null;
+  let preFullscreenColumn: 'parent' | 'current' | 'preview' | 'terminal' | null = null;
 
   // Fullscreen image viewer state
   let fullscreenImageList: { name: string; path: string }[] = $state([]);
@@ -207,6 +211,49 @@
       return;
     }
 
+    // Ctrl+W prefix for vim-style window navigation
+    // Skip when terminal is in insert mode (Ctrl+W should go to shell)
+    if (event.ctrlKey && event.key === 'w' && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
+      event.preventDefault();
+      waitingForWindowKey = true;
+      if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
+      windowKeyTimeout = setTimeout(() => { waitingForWindowKey = false; }, 1000);
+      return;
+    }
+
+    // Handle direction keys after Ctrl+W
+    if (waitingForWindowKey) {
+      waitingForWindowKey = false;
+      if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
+
+      const code = event.code;
+      if (code === 'KeyH') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleSwitchPanel('left');
+        return;
+      } else if (code === 'KeyL') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleSwitchPanel('right');
+        return;
+      } else if (code === 'KeyJ') {
+        event.preventDefault();
+        event.stopPropagation();
+        if ($layout.terminalVisible && $layout.activeColumn !== 'terminal') {
+          focusPanel('terminal');
+        }
+        return;
+      } else if (code === 'KeyK') {
+        event.preventDefault();
+        event.stopPropagation();
+        if ($layout.activeColumn === 'terminal') {
+          focusPanel('current');
+        }
+        return;
+      }
+    }
+
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
     const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
@@ -262,10 +309,12 @@
     showFileSearch = false;
   }
 
-  function focusPanel(panel: 'parent' | 'current' | 'preview') {
+  function focusPanel(panel: 'parent' | 'current' | 'preview' | 'terminal') {
     layout.setActiveColumn(panel);
     setTimeout(() => {
-      if (panel === 'parent' && parentDirectoryPanel) {
+      if (panel === 'terminal' && floatingTerminal) {
+        floatingTerminal.focus();
+      } else if (panel === 'parent' && parentDirectoryPanel) {
         parentDirectoryPanel.focus();
       } else if (panel === 'current' && currentDirectoryPanel) {
         currentDirectoryPanel.focus();
@@ -372,6 +421,7 @@
         onSelect={handleSelect}
         onSwitchPanel={handleSwitchPanel}
         onFullscreen={handleFullscreenEditor}
+        onNavigateUp={() => handleNavigate($layout.parentPath)}
       />
     </div>
 
@@ -406,16 +456,6 @@
         onToast={showToast}
       />
     </div>
-  </div>
-
-  <!-- Status Bar -->
-  <div class="status-bar">
-    <span class="status-mode">{$layout.activeColumn.toUpperCase()}</span>
-    <span class="status-path">{currentPath || 'No path'}</span>
-    <span class="status-panel">Column: {$layout.activeColumn}</span>
-    <button class="theme-toggle" onclick={() => theme.toggle()}>
-      {$theme === 'dark' ? '☀️' : '🌙'}
-    </button>
   </div>
 
   <!-- Fullscreen Editor Overlay -->
@@ -456,6 +496,16 @@
     currentPath={currentPath}
     onClose={handleCloseTerminal}
   />
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span class="status-mode">{$layout.activeColumn === 'terminal' ? `TERMINAL-${($layout.terminalMode || 'insert').toUpperCase()}` : $layout.activeColumn.toUpperCase()}</span>
+    <span class="status-path">{currentPath || 'No path'}</span>
+    <span class="status-panel">Column: {$layout.activeColumn}</span>
+    <button class="theme-toggle" onclick={() => theme.toggle()}>
+      {$theme === 'dark' ? '☀️' : '🌙'}
+    </button>
+  </div>
 
   <!-- Command Palette -->
   {#if showCommandPalette}

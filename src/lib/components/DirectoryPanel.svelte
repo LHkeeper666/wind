@@ -17,6 +17,7 @@
     onSelect = (path: string) => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
+    onNavigateUp = () => {},
   }: {
     type: 'parent' | 'current';
     path: string;
@@ -25,6 +26,7 @@
     onSelect?: (path: string) => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
+    onNavigateUp?: () => void;
   } = $props();
 
   let files: FileEntry[] = $state([]);
@@ -73,6 +75,7 @@
   export function focus() {
     if (panelElement) {
       panelElement.focus();
+      isFocused = true;
     }
   }
 
@@ -277,12 +280,23 @@
             }
             break;
           case 'KeyH':
-            event.preventDefault();
-            onSwitchPanel('left');
+            if (type === 'current') {
+              event.preventDefault();
+              onNavigateUp();
+            }
             break;
           case 'KeyL':
-            event.preventDefault();
-            onSwitchPanel('right');
+            if (type === 'current') {
+              event.preventDefault();
+              if (selectedIndex >= 0 && selectedIndex < files.length) {
+                const entry = files[selectedIndex];
+                if (entry.is_dir) {
+                  onNavigate(entry.path);
+                } else {
+                  onSelect(entry.path);
+                }
+              }
+            }
             break;
           case 'Slash':
             event.preventDefault();

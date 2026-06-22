@@ -12,7 +12,10 @@ export interface LayoutState {
   selectedFile: string | null;
 
   // Active column for focus
-  activeColumn: 'parent' | 'current' | 'preview';
+  activeColumn: 'parent' | 'current' | 'preview' | 'terminal';
+
+  // Terminal mode (null when terminal is hidden)
+  terminalMode: 'insert' | 'normal' | null;
 
   // Preview/Editor mode
   previewMode: 'global-normal' | 'editor-normal' | 'editor-insert';
@@ -28,6 +31,7 @@ export interface LayoutState {
 
   // Terminal state
   terminalVisible: boolean;
+  terminalHeight: number;
 }
 
 const initialState: LayoutState = {
@@ -36,11 +40,13 @@ const initialState: LayoutState = {
   currentPath: '',
   selectedFile: null,
   activeColumn: 'current',
+  terminalMode: null,
   previewMode: 'global-normal',
   fullscreenEditorOpen: false,
   fullscreenImageViewerOpen: false,
   fullscreenPdfViewerOpen: false,
   terminalVisible: false,
+  terminalHeight: 300,
 };
 
 function createLayoutStore() {
@@ -89,8 +95,18 @@ function createLayoutStore() {
     },
 
     // Set active column
-    setActiveColumn(column: 'parent' | 'current' | 'preview') {
+    setActiveColumn(column: 'parent' | 'current' | 'preview' | 'terminal') {
       update(state => ({ ...state, activeColumn: column }));
+    },
+
+    // Set terminal mode
+    setTerminalMode(mode: 'insert' | 'normal' | null) {
+      update(state => ({ ...state, terminalMode: mode }));
+    },
+
+    // Set terminal height
+    setTerminalHeight(height: number) {
+      update(state => ({ ...state, terminalHeight: height }));
     },
 
     // Set preview mode
@@ -135,17 +151,22 @@ function createLayoutStore() {
 
     // Toggle terminal visibility
     toggleTerminal() {
-      update(state => ({ ...state, terminalVisible: !state.terminalVisible }));
+      update(state => ({
+        ...state,
+        terminalVisible: !state.terminalVisible,
+        terminalMode: !state.terminalVisible ? 'insert' : null,
+        activeColumn: !state.terminalVisible ? 'terminal' : 'current',
+      }));
     },
 
     // Show terminal
     showTerminal() {
-      update(state => ({ ...state, terminalVisible: true }));
+      update(state => ({ ...state, terminalVisible: true, terminalMode: 'insert', activeColumn: 'terminal' }));
     },
 
     // Hide terminal
     hideTerminal() {
-      update(state => ({ ...state, terminalVisible: false }));
+      update(state => ({ ...state, terminalVisible: false, terminalMode: null, activeColumn: 'current' }));
     },
 
     // Reset to initial state

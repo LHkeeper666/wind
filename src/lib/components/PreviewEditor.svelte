@@ -497,9 +497,6 @@
         event.preventDefault();
         loadPdfPage(filePath, pdfCurrentPage - 1);
       }
-    } else if (event.key === 'h') {
-      event.preventDefault();
-      onSwitchPanel('left');
     } else if (event.ctrlKey && event.key === 's') {
       event.preventDefault();
       saveFile();
