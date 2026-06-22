@@ -21,7 +21,7 @@
   let terminalContainer: HTMLDivElement | undefined = $state(undefined);
   let terminal: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
-  let shellType: string = $state('powershell');
+  let shellType: string = $state('git-bash');
   let unlisten: (() => void) | undefined;
   let mode: 'normal' | 'insert' = $state('insert');
   let overlayElement: HTMLDivElement | undefined = $state(undefined);
@@ -125,6 +125,7 @@
 
     terminal.open(terminalContainer);
     fitAddon.fit();
+    terminal.focus();
 
     const resizeObserver = new ResizeObserver(() => {
       if (fitAddon) fitAddon.fit();
@@ -273,10 +274,17 @@
       <div class="shell-selector">
         <button
           class="shell-btn"
+          class:selected={shellType === 'git-bash'}
+          onclick={() => changeShell('git-bash')}
+        >
+          Bash
+        </button>
+        <button
+          class="shell-btn"
           class:selected={shellType === 'powershell'}
           onclick={() => changeShell('powershell')}
         >
-          PowerShell
+          Pwsh
         </button>
         <button
           class="shell-btn"
@@ -284,13 +292,6 @@
           onclick={() => changeShell('cmd')}
         >
           CMD
-        </button>
-        <button
-          class="shell-btn"
-          class:selected={shellType === 'git-bash'}
-          onclick={() => changeShell('git-bash')}
-        >
-          Git Bash
         </button>
         <button class="shell-btn" onclick={() => clear()}>
           Clear
