@@ -83,6 +83,10 @@
     }
   }
 
+  export function refresh() {
+    loadDirectory(path, true);
+  }
+
   function handleFocus() {
     isFocused = true;
   }

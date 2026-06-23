@@ -82,6 +82,9 @@ npm run tauri build        # Build release binary
 
 ### Command Palette
 - `ratio X:Y:Z` - Set column ratios (e.g., `ratio 1:2:2`)
+- `cd path` - Change current directory (supports absolute/relative paths, `..`, no args = home)
+- `e path` - Open file in preview or navigate to directory; no args = refresh current directory
+- `Tab` - Auto-complete paths (cd: directories only, e: files + directories)
 
 ## Shell Integration
 

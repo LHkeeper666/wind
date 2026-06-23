@@ -67,6 +67,11 @@ fn get_home_dir() -> String {
 }
 
 #[tauri::command]
+fn file_exists(path: String) -> bool {
+    Path::new(&path).exists()
+}
+
+#[tauri::command]
 fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
     // 规范化驱动器路径：D: → D:\
     let normalized = if path.len() == 2 && path.ends_with(':') {
@@ -879,6 +884,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_home_dir,
+            file_exists,
             read_directory,
             list_archive_entries,
             list_drives,

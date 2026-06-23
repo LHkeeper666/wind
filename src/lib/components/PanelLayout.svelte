@@ -30,6 +30,12 @@
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // Tab completion state for command palette
+  let completions: string[] = [];
+  let completionIndex: number = -1;
+  let completionPrefix: string = '';
+  let completionDir: string = '';
+
   // Tab command handler (called from DirectoryPanel's t prefix)
   function handleTabCommand(cmd: string) {
     if (cmd === 'new') {
@@ -60,6 +66,114 @@
     toastMessage = message;
     if (toastTimeout) clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => { toastMessage = ''; }, 3000);
+  }
+
+  // Resolve a path argument relative to currentPath
+  function resolvePath(input: string): string {
+    let trimmed = input.trim().replace(/\//g, '\\');
+    if (!trimmed) return '';
+    // Git Bash style: /d/ → D:\, /c/Users → C:\Users, /d → D:\
+    // Only single letter after \ is treated as drive letter
+    if (/^\\[A-Za-z]$/.test(trimmed) || /^\\[A-Za-z]\\/.test(trimmed)) {
+      const rest = trimmed.substring(2); // after \X
+      trimmed = trimmed[1].toUpperCase() + ':' + (rest.startsWith('\\') ? rest : (rest ? '\\' + rest : '\\'));
+    }
+    // Absolute path: X:\, \ (root)
+    if (/^[A-Za-z]:\\/.test(trimmed) || trimmed === '\\') {
+      return trimmed;
+    }
+    // Relative path
+    return currentPath + '\\' + trimmed;
+  }
+
+  // Reset completion state
+  function resetCompletion() {
+    completions = [];
+    completionIndex = -1;
+    completionPrefix = '';
+    completionDir = '';
+  }
+
+  // Trigger tab completion for cd/e commands
+  async function triggerCompletion() {
+    const q = commandQuery.trim();
+    // Parse: "cd path/prefix" or "e path/prefix"
+    const cdMatch = q.match(/^(cd\s+)(.+)$/);
+    const eMatch = q.match(/^(e\s+)(.+)$/);
+
+    let cmdPrefix: string;
+    let pathInput: string;
+    let dirsOnly: boolean;
+
+    if (cdMatch) {
+      cmdPrefix = cdMatch[1];
+      pathInput = cdMatch[2].replace(/\//g, '\\');
+      dirsOnly = true;
+    } else if (eMatch) {
+      cmdPrefix = eMatch[1];
+      pathInput = eMatch[2].replace(/\//g, '\\');
+      dirsOnly = false;
+    } else {
+      return;
+    }
+
+    // Determine parent dir and partial name
+    let parentDir: string;
+    let partial: string;
+
+    if (pathInput.includes('\\')) {
+      const lastSlash = pathInput.lastIndexOf('\\');
+      const dirPart = pathInput.substring(0, lastSlash) || '\\';
+      partial = pathInput.substring(lastSlash + 1);
+      parentDir = resolvePath(dirPart);
+    } else {
+      partial = pathInput;
+      parentDir = currentPath;
+    }
+
+    // Check if we're cycling through existing completions
+    let doFetch = true;
+    if (completionDir === parentDir && completions.length > 0) {
+      const currentMatchIdx = completions.findIndex(c => c.toLowerCase() === partial.toLowerCase());
+      if (currentMatchIdx >= 0) {
+        // Cycle: find next completion that matches the original prefix
+        doFetch = false;
+        const prefix = completionPrefix.toLowerCase();
+        for (let i = 1; i <= completions.length; i++) {
+          const idx = (currentMatchIdx + i) % completions.length;
+          if (completions[idx].toLowerCase().startsWith(prefix)) {
+            completionIndex = idx;
+            break;
+          }
+        }
+      }
+    }
+
+    if (doFetch) {
+      try {
+        const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>('read_directory', { path: parentDir });
+        const filtered = entries
+          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()) && (dirsOnly ? e.is_dir : true))
+          .map(e => e.name);
+        if (filtered.length === 0) { resetCompletion(); return; }
+        completions = filtered;
+        completionDir = parentDir;
+        completionPrefix = partial;
+        completionIndex = 0;
+      } catch { resetCompletion(); return; }
+    }
+
+    // Apply completion
+    const completed = completions[completionIndex];
+    // Rebuild the path: replace the partial with the completed name
+    let newPath: string;
+    if (pathInput.includes('\\')) {
+      const lastSlash = pathInput.lastIndexOf('\\');
+      newPath = pathInput.substring(0, lastSlash + 1) + completed;
+    } else {
+      newPath = completed;
+    }
+    commandQuery = cmdPrefix + newPath;
   }
 
   // Track active column before fullscreen for restoration
@@ -384,14 +498,86 @@
   }
 
   function handleCommandKeydown(event: KeyboardEvent) {
+    // Tab completion
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      triggerCompletion();
+      return;
+    }
+
+    // Reset completion state on any non-Tab key
+    if (event.key !== 'Tab') {
+      resetCompletion();
+    }
+
     if (event.key === 'Escape') {
       showCommandPalette = false;
       focusPanel($layout.activeColumn);
       return;
     }
     if (event.key === 'Enter') {
-      // Check if it's a tab command
       const q = commandQuery.trim();
+
+      // cd command
+      if (q === 'cd' || q.startsWith('cd ')) {
+        const arg = q.substring(2).trim();
+        if (!arg) {
+          invoke<string>('get_home_dir').then(homeDir => {
+            handleNavigate(homeDir);
+          });
+        } else {
+          const resolved = resolvePath(arg);
+          invoke('read_directory', { path: resolved }).then(() => {
+            handleNavigate(resolved);
+          }).catch(() => {
+            showToast(`E344: Can't find directory: ${arg}`);
+          });
+        }
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
+      // e command
+      if (q === 'e' || q.startsWith('e ') && !q.startsWith('e!')) {
+        const arg = q.substring(1).trim();
+        if (!arg) {
+          currentDirectoryPanel?.refresh();
+          showCommandPalette = false;
+          focusPanel('current');
+        } else {
+          const resolved = resolvePath(arg);
+          invoke('read_directory', { path: resolved }).then(() => {
+            if (resolved.replace(/\//g, '\\') === currentPath) {
+              currentDirectoryPanel?.refresh();
+            } else {
+              handleNavigate(resolved);
+            }
+            showCommandPalette = false;
+            focusPanel('current');
+          }).catch(() => {
+            invoke('file_exists', { path: resolved }).then((exists: any) => {
+              if (exists) {
+                handleSelect(resolved);
+                showCommandPalette = false;
+                focusPanel('preview');
+              } else {
+                showToast(`E344: Can't find: ${arg}`);
+                showCommandPalette = false;
+                focusPanel('current');
+              }
+            }).catch(() => {
+              showToast(`E344: Can't find: ${arg}`);
+              showCommandPalette = false;
+              focusPanel('current');
+            });
+          });
+          return;
+        }
+        return;
+      }
+
+      // Tab commands
       if (q === 'tab new' || q === 'tabn') {
         handleTabNew();
         showCommandPalette = false;
@@ -412,7 +598,7 @@
         showCommandPalette = false;
         return;
       }
-      // Check if it's a ratio command
+      // Ratio command
       if (commandQuery.startsWith('ratio ')) {
         const ratioStr = commandQuery.substring(6).trim();
         const parts = ratioStr.split(':').map(Number);
@@ -645,7 +831,7 @@
   <!-- Command Palette -->
   {#if showCommandPalette}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="command-palette-overlay" onclick={() => { showCommandPalette = false; focusPanel($layout.activeColumn); }} onkeydown={(e) => { if (e.key === 'Escape') { showCommandPalette = false; focusPanel($layout.activeColumn); } }}>
+    <div class="command-palette-overlay" onclick={() => { showCommandPalette = false; resetCompletion(); focusPanel($layout.activeColumn); }} onkeydown={(e) => { if (e.key === 'Escape') { showCommandPalette = false; resetCompletion(); focusPanel($layout.activeColumn); } }}>
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div class="command-palette" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
         <input
