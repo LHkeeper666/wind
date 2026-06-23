@@ -20,6 +20,7 @@
   let commandInput: HTMLInputElement | undefined = $state(undefined);
   let showFileSearch: boolean = $state(false);
   let fileSearchHomeDir: string = $state('');
+  let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
@@ -66,6 +67,12 @@
     toastMessage = message;
     if (toastTimeout) clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => { toastMessage = ''; }, 3000);
+  }
+
+  function applyZoom(level: number) {
+    zoomLevel = Math.max(0.5, Math.min(2.0, level));
+    document.documentElement.style.setProperty('--zoom-level', String(zoomLevel));
+    showToast(`Zoom: ${Math.round(zoomLevel * 100)}%`);
   }
 
   // Resolve a path argument relative to currentPath
@@ -225,8 +232,9 @@
   );
 
   onMount(async () => {
-    // Register global keyboard listener in capturing phase
+    // Register global listeners in capturing phase
     window.addEventListener('keydown', handleGlobalKeydown, true);
+    window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });
 
     // Initialize with home directory
     try {
@@ -250,6 +258,7 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleGlobalKeydown, true);
+    window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
   });
 
   // Subscribe to layout changes
@@ -419,6 +428,23 @@
   }
 
   async function handleGlobalKeydown(event: KeyboardEvent) {
+    // Ctrl+= / Ctrl+- / Ctrl+0 for zoom
+    if (event.ctrlKey && (event.key === '=' || event.key === '+')) {
+      event.preventDefault();
+      applyZoom(zoomLevel + 0.1);
+      return;
+    }
+    if (event.ctrlKey && event.key === '-') {
+      event.preventDefault();
+      applyZoom(zoomLevel - 0.1);
+      return;
+    }
+    if (event.ctrlKey && event.key === '0') {
+      event.preventDefault();
+      applyZoom(1);
+      return;
+    }
+
     // Ctrl+` to toggle terminal
     if (event.ctrlKey && event.key === '`') {
       event.preventDefault();
@@ -489,6 +515,12 @@
       fileSearchHomeDir = homeDir;
       showFileSearch = true;
     }
+  }
+
+  function handleGlobalWheel(event: WheelEvent) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    applyZoom(zoomLevel + (event.deltaY < 0 ? 0.1 : -0.1));
   }
 
   function executeCommand(cmd: typeof commands[0]) {
@@ -894,6 +926,7 @@
   .panel {
     background-color: var(--bg-primary);
     overflow: hidden;
+    zoom: var(--zoom-level);
   }
 
   .panel.active {

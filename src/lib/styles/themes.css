@@ -18,6 +18,7 @@
   --file-color: #ebdbb2;
   --dim-color: #a89984;
   --font-mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --zoom-level: 1;
   --scrollbar-thumb: #504945;
   --scrollbar-track: #282828;
 }
