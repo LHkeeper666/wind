@@ -110,12 +110,28 @@
     terminal = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: 'Consolas, "Courier New", monospace',
+      fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
       theme: {
-        background: '#1e1e1e',
-        foreground: '#cccccc',
-        cursor: '#ffffff',
-        selectionBackground: '#264f78',
+        background: '#282828',
+        foreground: '#ebdbb2',
+        cursor: '#ebdbb2',
+        selectionBackground: '#504945',
+        black: '#282828',
+        red: '#fb4934',
+        green: '#b8bb26',
+        yellow: '#fabd2f',
+        blue: '#83a598',
+        magenta: '#d3869b',
+        cyan: '#8ec07c',
+        white: '#ebdbb2',
+        brightBlack: '#928374',
+        brightRed: '#fb4934',
+        brightGreen: '#b8bb26',
+        brightYellow: '#fabd2f',
+        brightBlue: '#83a598',
+        brightMagenta: '#d3869b',
+        brightCyan: '#8ec07c',
+        brightWhite: '#fbf1c7',
       },
       disableStdin: false,
     });
@@ -310,8 +326,8 @@
 
 <style>
   .floating-terminal {
-    background-color: #1e1e1e;
-    border-top: 1px solid #333333;
+    background-color: var(--bg-primary);
+    border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
@@ -327,30 +343,31 @@
   }
 
   .terminal-handle {
-    height: 4px;
-    background-color: #333333;
+    height: 3px;
+    background-color: var(--border);
     cursor: row-resize;
     transition: background-color 0.2s ease;
   }
 
   .terminal-handle:hover {
-    background-color: #007acc;
+    background-color: var(--accent);
   }
 
   .panel-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
-    background-color: #252526;
-    border-bottom: 1px solid #333333;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
   }
 
   .panel-title {
-    font-size: 12px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #888888;
+    color: var(--text-muted);
   }
 
   .shell-status {
@@ -358,7 +375,7 @@
     align-items: center;
     gap: 8px;
     font-size: 11px;
-    color: #888888;
+    color: var(--text-secondary);
   }
 
   .status-directory {
@@ -366,16 +383,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #6ea8fe;
+    color: var(--accent);
   }
 
   .status-running {
-    color: #f0ad4e;
+    color: var(--warning);
     animation: pulse 1.5s ease-in-out infinite;
   }
 
   .status-error {
-    color: #dc3545;
+    color: var(--error);
   }
 
   @keyframes pulse {
@@ -389,23 +406,24 @@
   }
 
   .shell-btn {
-    padding: 4px 8px;
-    background-color: #3c3c3c;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    color: #cccccc;
+    padding: 2px 8px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     font-size: 11px;
+    font-family: var(--font-mono);
     cursor: pointer;
-    transition: all 0.2s ease;
   }
 
   .shell-btn:hover {
-    background-color: #4c4c4c;
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .shell-btn.selected {
-    background-color: #007acc;
-    border-color: #007acc;
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg-primary);
   }
 
   .terminal-container {

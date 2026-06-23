@@ -42,12 +42,12 @@ export class DirectoryPreviewer implements Previewer {
     }
 
     const rows = entries.map(entry => {
-      const icon = entry.is_dir ? '📁' : '📄';
+      const name = entry.is_dir ? this.escapeHtml(entry.name) + '/' : this.escapeHtml(entry.name);
+      const nameClass = entry.is_dir ? 'entry-name is-dir' : 'entry-name';
       const size = entry.is_dir || entry.size == null ? '' : formatSize(entry.size);
       const sizeClass = entry.is_dir ? 'dir' : 'file';
       return `<div class="dir-entry">
-        <span class="entry-icon">${icon}</span>
-        <span class="entry-name">${this.escapeHtml(entry.name)}</span>
+        <span class="${nameClass}">${name}</span>
         <span class="entry-size ${sizeClass}">${size}</span>
       </div>`;
     });

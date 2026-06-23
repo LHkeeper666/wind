@@ -238,37 +238,38 @@
   }
 
   .image-viewer-status {
-    color: #999;
-    font-size: 16px;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-family: var(--font-mono);
   }
 
   .image-viewer-status.error {
-    color: #e74c3c;
+    color: var(--error);
   }
 
   .image-footer {
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 8px 16px;
-    background-color: rgba(0, 0, 0, 0.8);
-    color: #ccc;
-    font-size: 13px;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    padding: 4px 16px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-family: var(--font-mono);
   }
 
   .image-footer-name {
-    color: #fff;
-    font-weight: 500;
+    color: var(--text-primary);
   }
 
   .image-footer-meta {
-    color: #999;
+    color: var(--text-muted);
   }
 
   .image-footer-hints {
     margin-left: auto;
-    color: #666;
-    font-size: 12px;
+    color: var(--text-muted);
+    font-size: 11px;
   }
 </style>

@@ -344,14 +344,9 @@
   tabindex="0"
 >
   <div class="panel-header">
-    <span class="panel-title">{type === 'parent' ? 'Parent Directory' : 'Current Directory'}</span>
     {#if path}
-      <span class="panel-path" title={path}>{path.split('\\').pop() || path}</span>
+      <span class="panel-path" title={path}>{path === '/' ? '/' : path.split('\\').pop() || path.split('/').pop() || path}</span>
     {/if}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="search-trigger" onclick={openSearchModal} onkeydown={(e) => { if (e.key === '/') { e.preventDefault(); openSearchModal(); } }}>
-      <span class="search-icon">🔍</span>
-    </div>
   </div>
 
   <div class="panel-content">
@@ -375,8 +370,7 @@
             data-path={file.path}
             data-index={index}
           >
-            <span class="file-icon">{file.is_dir ? '📁' : '📄'}</span>
-            <span class="file-name">{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
+            <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
           </div>
         {/each}
       </div>
@@ -397,60 +391,32 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background-color: #252526;
+    background-color: var(--bg-primary);
     outline: none;
+    font-family: var(--font-mono);
   }
 
   .panel-header {
-    padding: 8px 12px;
-    background-color: #252526;
-    border-bottom: 1px solid #333333;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  .panel-title {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #888888;
-    flex-shrink: 0;
-  }
-
   .panel-path {
     font-size: 11px;
-    color: #666666;
+    color: var(--accent);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .search-trigger {
-    margin-left: auto;
-    padding: 4px 6px;
-    background-color: #3c3c3c;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-  }
-
-  .search-trigger:hover {
-    border-color: #007acc;
-    background-color: #4c4c4c;
-  }
-
-  .search-icon {
-    font-size: 12px;
-  }
-
   .panel-content {
     flex: 1;
     overflow-y: auto;
-    padding: 4px 0;
+    padding: 2px 0;
     overflow-anchor: none;
   }
 
@@ -461,41 +427,41 @@
   .file-item {
     display: flex;
     align-items: center;
-    padding: 4px 12px;
+    padding: 2px 12px;
     cursor: pointer;
     transition: background-color 0.1s ease;
-    gap: 8px;
   }
 
   .file-item:hover {
-    background-color: #2a2d2e;
+    background-color: var(--bg-hover);
   }
 
   .file-item.selected {
-    background-color: #094771;
-  }
-
-  .file-icon {
-    font-size: 14px;
-    flex-shrink: 0;
+    background-color: var(--bg-active);
   }
 
   .file-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--file-color);
+  }
+
+  .file-name.is-dir {
+    color: var(--dir-color);
+    font-weight: 500;
   }
 
   .placeholder {
-    color: #666666;
-    font-size: 14px;
+    color: var(--text-muted);
+    font-size: 13px;
     text-align: center;
     margin-top: 40px;
   }
 
   .error {
-    color: #f44747;
-    font-size: 14px;
+    color: var(--error);
+    font-size: 13px;
     text-align: center;
     margin-top: 40px;
   }

@@ -110,7 +110,7 @@
           <span class="modified-indicator">●</span>
         {/if}
       {/if}
-      <button class="close-btn" onclick={onClose} title="Close (:q)">✕</button>
+      <button class="close-btn" onclick={onClose} title="Close (:q)">x</button>
     </div>
 
     <div class="editor-content" bind:this={editorContainer}></div>
@@ -138,42 +138,41 @@
   .fullscreen-editor {
     width: 90%;
     height: 90%;
-    background-color: #1e1e1e;
-    border: 1px solid #333333;
-    border-radius: 8px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   }
 
   .editor-header {
     display: flex;
     align-items: center;
-    padding: 8px 12px;
-    background-color: #252526;
-    border-bottom: 1px solid #333333;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
     gap: 8px;
+    font-family: var(--font-mono);
   }
 
   .editor-title {
-    font-size: 12px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #888888;
+    color: var(--text-muted);
     flex-shrink: 0;
   }
 
   .file-name {
     font-size: 12px;
-    color: #cccccc;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .modified-indicator {
-    color: #e8a838;
+    color: var(--warning);
     font-size: 12px;
   }
 
@@ -181,16 +180,16 @@
     margin-left: auto;
     background: none;
     border: none;
-    color: #cccccc;
-    font-size: 16px;
+    color: var(--text-secondary);
+    font-size: 14px;
     cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 4px;
-    transition: background-color 0.2s ease;
+    padding: 2px 6px;
+    font-family: var(--font-mono);
   }
 
   .close-btn:hover {
-    background-color: #3c3c3c;
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .editor-content {
@@ -199,14 +198,15 @@
   }
 
   .editor-footer {
-    padding: 8px 12px;
-    background-color: #252526;
-    border-top: 1px solid #333333;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
   }
 
   .hint {
-    font-size: 11px;
-    color: #666666;
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
   }
 
   :global(.cm-editor) {

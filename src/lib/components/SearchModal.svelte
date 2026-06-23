@@ -297,7 +297,6 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="modal-content" bind:this={modalContent} tabindex="-1" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
-        <span class="search-icon">🔍</span>
         <input
           type="text"
           class="search-input"
@@ -319,7 +318,7 @@
 
       {#if showRgHint}
         <div class="rg-hint">
-          💡 Install fd for faster search: <code>winget install sharkdp.fd</code>
+          Install fd for faster search: <code>winget install sharkdp.fd</code>
         </div>
       {/if}
 
@@ -338,8 +337,7 @@
               ondblclick={() => handleResultDblClick(result.path, result.is_dir)}
               onkeydown={() => {}}
             >
-              <span class="result-icon">{result.is_dir ? '📁' : '📄'}</span>
-              <span class="result-name">{result.name}</span>
+              <span class="result-name" class:is-dir={result.is_dir}>{result.name}{result.is_dir ? '/' : ''}</span>
               <span class="result-path">{result.relative_path}</span>
             </div>
           {/each}
@@ -384,84 +382,67 @@
     width: 90%;
     max-width: 600px;
     max-height: 70vh;
-    background-color: #252526;
-    border: 1px solid #3c3c3c;
-    border-radius: 8px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-    animation: slideUp 0.2s ease-out;
-  }
-
-  @keyframes slideUp {
-    from { transform: translateY(20px); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
+    font-family: var(--font-mono);
   }
 
   .search-header {
     display: flex;
     align-items: center;
-    padding: 12px 16px;
-    border-bottom: 1px solid #3c3c3c;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
     gap: 8px;
-  }
-
-  .search-icon {
-    font-size: 16px;
-    flex-shrink: 0;
   }
 
   .search-input {
     flex: 1;
-    padding: 8px 12px;
-    background-color: #3c3c3c;
-    border: 2px solid #555555;
-    border-radius: 6px;
-    color: #cccccc;
-    font-size: 14px;
+    padding: 6px 10px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 13px;
     outline: none;
-    font-family: 'Consolas', 'Courier New', monospace;
+    font-family: var(--font-mono);
   }
 
   .search-input:focus {
-    border-color: #007acc;
+    border-color: var(--border-focus);
   }
 
   .search-input.invalid {
-    border-color: #f44747;
+    border-color: var(--error);
   }
 
   .search-mode-badge {
-    font-size: 11px;
-    color: #569cd6;
+    font-size: 10px;
+    color: var(--accent);
     white-space: nowrap;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background-color: #1e3a5f;
-    border: 1px solid #264f78;
+    padding: 1px 6px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
   }
 
   .search-mode-badge.recursive {
-    color: #c586c0;
-    background-color: #3a1f45;
-    border-color: #5a2d6e;
+    color: var(--warning);
   }
 
   .search-cancel {
-    font-size: 11px;
-    color: #cccccc;
+    font-size: 10px;
+    color: var(--text-primary);
     white-space: nowrap;
-    padding: 4px 10px;
-    border-radius: 4px;
-    background-color: #4a4a4a;
-    border: 1px solid #5a5a5a;
+    padding: 2px 8px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
     cursor: pointer;
+    font-family: var(--font-mono);
     animation: pulse 1.5s ease-in-out infinite;
   }
 
   .search-cancel:hover {
-    background-color: #5a5a5a;
-    border-color: #6a6a6a;
+    background-color: var(--bg-hover);
   }
 
   @keyframes pulse {
@@ -470,24 +451,23 @@
   }
 
   .rg-hint {
-    padding: 8px 16px;
-    background-color: #2d2d2d;
-    font-size: 12px;
-    color: #cccccc;
-    border-bottom: 1px solid #3c3c3c;
+    padding: 6px 16px;
+    background-color: var(--bg-primary);
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
   }
 
   .rg-hint code {
-    background-color: #3c3c3c;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-family: 'Consolas', 'Courier New', monospace;
+    background-color: var(--bg-tertiary);
+    padding: 1px 4px;
+    font-family: var(--font-mono);
   }
 
   .results-container {
     flex: 1;
     overflow-y: auto;
-    padding: 4px 0;
+    padding: 2px 0;
     min-height: 200px;
     max-height: 400px;
   }
@@ -495,36 +475,35 @@
   .no-results {
     padding: 24px;
     text-align: center;
-    color: #666666;
-    font-size: 14px;
+    color: var(--text-muted);
+    font-size: 13px;
   }
 
   .result-item {
     display: flex;
     align-items: center;
-    padding: 8px 16px;
+    padding: 4px 16px;
     cursor: pointer;
     transition: background-color 0.1s ease;
-    gap: 8px;
   }
 
   .result-item:hover {
-    background-color: #2a2d2e;
+    background-color: var(--bg-hover);
   }
 
   .result-item.selected {
-    background-color: #094771;
-  }
-
-  .result-icon {
-    font-size: 14px;
-    flex-shrink: 0;
+    background-color: var(--bg-active);
   }
 
   .result-name {
     font-size: 13px;
-    font-family: 'Consolas', 'Courier New', monospace;
+    font-family: var(--font-mono);
     flex-shrink: 0;
+    color: var(--file-color);
+  }
+
+  .result-name.is-dir {
+    color: var(--dir-color);
   }
 
   .result-path {
@@ -532,36 +511,35 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 11px;
-    color: #888888;
+    color: var(--text-muted);
     margin-left: auto;
   }
 
   .limit-hint {
-    padding: 8px 16px;
+    padding: 6px 16px;
     text-align: center;
-    font-size: 12px;
-    color: #888888;
-    border-top: 1px solid #3c3c3c;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
   }
 
   .modal-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 16px;
-    border-top: 1px solid #3c3c3c;
-    background-color: #1e1e1e;
-    border-radius: 0 0 8px 8px;
+    padding: 4px 16px;
+    border-top: 1px solid var(--border);
+    background-color: var(--bg-primary);
   }
 
   .hint {
-    font-size: 11px;
-    color: #666666;
+    font-size: 10px;
+    color: var(--text-muted);
   }
 
   .mode-indicator {
-    font-size: 11px;
-    color: #f0ad4e;
+    font-size: 10px;
+    color: var(--warning);
     font-weight: bold;
     animation: pulse 1.5s ease-in-out infinite;
   }

@@ -510,7 +510,7 @@
     <span class="status-path">{currentPath || 'No path'}</span>
     <span class="status-panel">Column: {$layout.activeColumn}</span>
     <button class="theme-toggle" onclick={() => theme.toggle()}>
-      {$theme === 'dark' ? '☀️' : '🌙'}
+      {$theme === 'dark' ? 'LGT' : 'DRK'}
     </button>
   </div>
 
@@ -565,7 +565,7 @@
     height: 100vh;
     background-color: var(--bg-primary);
     color: var(--text-primary);
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: var(--font-mono);
     overflow: hidden;
   }
 
@@ -579,12 +579,11 @@
 
   .panel {
     background-color: var(--bg-primary);
-    transition: border-color 0.2s ease;
     overflow: hidden;
   }
 
   .panel.active {
-    border: 2px solid var(--border-focus);
+    border: 1px solid var(--border-focus);
   }
 
   .resize-handle {
@@ -606,19 +605,22 @@
   .status-bar {
     display: flex;
     align-items: center;
-    padding: 4px 12px;
-    background-color: var(--accent);
+    padding: 2px 12px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
     font-size: 12px;
-    color: #ffffff;
-    gap: 16px;
+    color: var(--text-secondary);
+    gap: 0;
     flex-shrink: 0;
+    font-family: var(--font-mono);
   }
 
   .status-mode {
     font-weight: bold;
-    padding: 2px 8px;
-    background-color: rgba(0, 0, 0, 0.2);
-    border-radius: 3px;
+    padding: 1px 10px;
+    background-color: var(--accent);
+    color: var(--bg-primary);
+    margin-right: 12px;
   }
 
   .status-path {
@@ -626,19 +628,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--text-primary);
   }
 
   .status-panel {
-    opacity: 0.8;
+    color: var(--text-muted);
+    margin-left: 12px;
   }
 
   .theme-toggle {
     background: none;
     border: none;
     cursor: pointer;
-    font-size: 16px;
+    font-size: 14px;
     padding: 0 4px;
     line-height: 1;
+    color: var(--text-muted);
   }
 
   .command-palette-overlay {
@@ -659,19 +664,19 @@
     width: 400px;
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     overflow: hidden;
+    font-family: var(--font-mono);
   }
 
   .command-input {
     width: 100%;
-    padding: 12px 16px;
+    padding: 10px 16px;
     background-color: var(--bg-primary);
     border: none;
     border-bottom: 1px solid var(--border);
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 13px;
+    font-family: var(--font-mono);
     outline: none;
     box-sizing: border-box;
   }
@@ -682,10 +687,10 @@
   }
 
   .command-item {
-    padding: 10px 16px;
+    padding: 6px 16px;
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 13px;
     transition: background-color 0.1s ease;
   }
 
@@ -698,13 +703,14 @@
     bottom: 40px;
     left: 50%;
     transform: translateX(-50%);
-    background-color: #333333;
-    color: #cccccc;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-size: 13px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    padding: 6px 16px;
+    font-size: 12px;
+    font-family: var(--font-mono);
     z-index: 2000;
     animation: toast-fade 3s ease-in-out;
+    border: 1px solid var(--border);
   }
 
   @keyframes toast-fade {
