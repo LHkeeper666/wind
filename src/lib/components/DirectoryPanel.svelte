@@ -7,6 +7,7 @@
     name: string;
     path: string;
     is_dir: boolean;
+    size?: number | null;
   }
 
   let {
@@ -53,6 +54,13 @@
     return files.filter(f => !f.is_dir && IMAGE_EXTENSIONS.has(
       f.name.split('.').pop()?.toLowerCase() || ''
     ));
+  }
+
+  export function getSelectedFileSize(): number {
+    if (selectedIndex >= 0 && selectedIndex < files.length) {
+      return files[selectedIndex].size ?? 0;
+    }
+    return 0;
   }
 
   // Directory content cache

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
-  import { PreviewRouter } from '$lib/previewers';
+  import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
+  import type { VideoMeta } from '$lib/previewers';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
@@ -35,6 +36,7 @@
   let savedContent: string = $state('');
   let binaryContent: ArrayBuffer | null = $state(null);
   let thumbnailMeta: { width: number; height: number; originalSize: number; isThumbnail: boolean } | null = $state(null);
+  let videoMeta: VideoMeta | null = $state(null);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
   let previewContainer: HTMLElement | undefined = $state(undefined);
@@ -132,7 +134,7 @@
       // Media - audio
       'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'mid', 'midi',
       // Media - video
-      'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg',
+      'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', 'ts',
       // Media - image (binary ones, SVG is text)
       'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'psd', 'raw', 'cr2', 'nef',
       // Documents
@@ -157,6 +159,10 @@
   function isPdfFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
     return ext === 'pdf';
+  }
+
+  function isVideoFile(path: string): boolean {
+    return isVideoFileExt(path);
   }
 
   const ARCHIVE_EXTENSIONS = new Set(['zip']);
@@ -305,6 +311,28 @@
       }
       mode = 'global-normal';
       renderArchivePreview(path);
+      return;
+    }
+
+    // Video files: get thumbnail via ffmpeg
+    if (isVideoFile(path)) {
+      const fileName = path.split(/[/\\]/).pop() || path;
+      try {
+        const t0 = performance.now();
+        const result = await invoke<VideoMeta>('get_video_thumbnail', { path });
+        console.log(`[video] ${fileName} thumbnail loaded in ${(performance.now() - t0).toFixed(0)}ms, ${result.width}x${result.height}, duration=${result.duration_seconds}s`);
+        if (gen !== loadGeneration) return;
+        videoMeta = result;
+        binaryContent = null;
+        content = JSON.stringify(result);
+      } catch (error) {
+        if (gen !== loadGeneration) return;
+        console.error('Failed to load video thumbnail:', error);
+        videoMeta = null;
+        binaryContent = null;
+        content = String(error);
+      }
+      mode = 'global-normal';
       return;
     }
 
@@ -528,7 +556,7 @@
       mode = 'editor-normal';
     } else if (event.key === 'E' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath) && !isPdfFile(filePath))) {
+      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath) && !isPdfFile(filePath) && !isVideoFile(filePath))) {
         onToast('此文件类型不支持全屏查看');
         return;
       }

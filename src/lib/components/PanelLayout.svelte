@@ -8,7 +8,9 @@
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
+  import FullscreenVideoPlayer from './FullscreenVideoPlayer.svelte';
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
+  import { isVideoFileExt } from '$lib/previewers';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import SearchModal from './SearchModal.svelte';
   import TabBar from './TabBar.svelte';
@@ -205,6 +207,10 @@
   let fullscreenPdfPageCount: number = $state(0);
   let fullscreenPdfFileSize: number = $state(0);
 
+  // Fullscreen video player state
+  let fullscreenVideoPlayerPath: string = $state('');
+  let fullscreenVideoPlayerFileSize: number = $state(0);
+
   function isImageFile(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
     return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext);
@@ -213,6 +219,10 @@
   function isPdfFile(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
     return ext === 'pdf';
+  }
+
+  function isVideoFile(path: string): boolean {
+    return isVideoFileExt(path);
   }
 
   // Drag state for column resizing
@@ -389,9 +399,14 @@
       fullscreenPdfPath = selectedFile;
       fullscreenPdfPage = pdfInfo?.currentPage ?? 0;
       fullscreenPdfPageCount = pdfInfo?.pageCount ?? 0;
-      fullscreenPdfFileSize = 0; // Will be shown from FullscreenPdfViewer's own info
+      fullscreenPdfFileSize = 0;
       preFullscreenColumn = $layout.activeColumn;
       layout.openFullscreenPdfViewer();
+    } else if (selectedFile && isVideoFile(selectedFile)) {
+      fullscreenVideoPlayerPath = selectedFile;
+      fullscreenVideoPlayerFileSize = currentDirectoryPanel?.getSelectedFileSize() ?? 0;
+      preFullscreenColumn = $layout.activeColumn;
+      layout.openFullscreenVideoPlayer();
     } else {
       preFullscreenColumn = $layout.activeColumn;
       layout.openFullscreenEditor();
@@ -427,6 +442,14 @@
 
   function handleClosePdfViewer() {
     layout.closeFullscreenPdfViewer();
+    const restoreTo = preFullscreenColumn || 'current';
+    preFullscreenColumn = null;
+    focusPanel(restoreTo);
+  }
+
+  function handleCloseVideoPlayer() {
+    layout.closeFullscreenVideoPlayer();
+    fullscreenVideoPlayerPath = '';
     const restoreTo = preFullscreenColumn || 'current';
     preFullscreenColumn = null;
     focusPanel(restoreTo);
@@ -511,7 +534,7 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
@@ -847,6 +870,15 @@
       pageCount={fullscreenPdfPageCount}
       fileSize={fullscreenPdfFileSize}
       onClose={handleClosePdfViewer}
+    />
+  {/if}
+
+  <!-- Fullscreen Video Player Overlay -->
+  {#if $layout.fullscreenVideoPlayerOpen && fullscreenVideoPlayerPath}
+    <FullscreenVideoPlayer
+      filePath={fullscreenVideoPlayerPath}
+      fileSize={fullscreenVideoPlayerFileSize}
+      onClose={handleCloseVideoPlayer}
     />
   {/if}
 

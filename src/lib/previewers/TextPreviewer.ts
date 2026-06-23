@@ -10,6 +10,15 @@ const SUPPORTED_EXTENSIONS = new Set([
   'dockerfile', 'makefile', 'cmake', 'gradle', 'sbt', 'vue', 'svelte',
 ]);
 
+// Skip syntax highlighting for files larger than 200KB to avoid blocking the main thread
+const MAX_HIGHLIGHT_SIZE = 200 * 1024;
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export class TextPreviewer implements Previewer {
   private container: HTMLElement | null = null;
 
@@ -25,6 +34,15 @@ export class TextPreviewer implements Previewer {
     this.container = container;
     const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
 
+    if (text.length > MAX_HIGHLIGHT_SIZE) {
+      container.innerHTML = `
+        <div class="preview-code">
+          <div class="large-file-notice" style="padding:8px 12px;background:#3c3836;color:#d79921;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;">文件过大 (${formatSize(text.length)})，已跳过语法高亮</div>
+          <pre class="preview-plain"><code>${this.escapeHtml(text)}</code></pre>
+        </div>`;
+      return;
+    }
+
     try {
       const html = await codeToHtml(text, {
         lang: this.getLanguage(container.dataset.filePath || ''),
@@ -32,7 +50,6 @@ export class TextPreviewer implements Previewer {
       });
       container.innerHTML = `<div class="preview-code">${html}</div>`;
     } catch {
-      // Fallback to plain text
       container.innerHTML = `<pre class="preview-plain"><code>${this.escapeHtml(text)}</code></pre>`;
     }
   }

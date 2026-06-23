@@ -1,6 +1,7 @@
 mod terminal;
 mod neovim;
 mod pdf;
+mod video;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -907,7 +908,10 @@ pub fn run() {
             check_search_tools,
             pdf::get_pdf_info,
             pdf::render_pdf_page,
-            pdf::search_pdf_text
+            pdf::search_pdf_text,
+            video::get_video_thumbnail,
+            video::start_video_server,
+            video::stop_video_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

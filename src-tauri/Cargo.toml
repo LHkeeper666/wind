@@ -35,4 +35,5 @@ turbojpeg = "1.4"
 fast_image_resize = "5"
 pdfium-render = { version = "0.8", features = ["pdfium_latest", "sync", "thread_safe"] }
 portable-pty = "0.8"
+tiny_http = "0.12"
 
