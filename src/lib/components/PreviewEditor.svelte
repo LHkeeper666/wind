@@ -22,11 +22,13 @@
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
+    onTabCommand = (cmd: string) => {},
   }: {
     filePath: string | null;
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
+    onTabCommand?: (cmd: string) => void;
   } = $props();
 
   let content: string = $state('');
@@ -43,6 +45,8 @@
   let editorView: EditorView | undefined;
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
+  // t prefix state for tab operations
+  let waitingForTabKey: boolean = false;
 
   // Load file when filePath changes
   $effect(() => {
@@ -481,6 +485,39 @@
     // Only handle keys in global-normal mode
     // editor-normal and editor-insert are handled by CodeMirror vim
     if (mode !== 'global-normal') return;
+
+    // t prefix for tab operations
+    if (waitingForTabKey) {
+      waitingForTabKey = false;
+      const code = event.code;
+      const key = event.key;
+      event.preventDefault();
+      if (code === 'KeyT') {
+        onTabCommand('new');
+      } else if (code === 'KeyC') {
+        onTabCommand('close');
+      } else if (code === 'KeyR') {
+        onTabCommand('rename-hint');
+      } else if (code === 'KeyN' || code === 'BracketRight') {
+        onTabCommand('next');
+      } else if (code === 'KeyP' || code === 'BracketLeft') {
+        onTabCommand('prev');
+      } else if (code === 'Comma') {
+        onTabCommand('swap-prev');
+      } else if (code === 'Period') {
+        onTabCommand('swap-next');
+      } else if (key >= '1' && key <= '9') {
+        onTabCommand('switch-' + key);
+      }
+      return;
+    }
+
+    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      waitingForTabKey = true;
+      setTimeout(() => { waitingForTabKey = false; }, 1000);
+      return;
+    }
 
     if (event.key === 'e' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();

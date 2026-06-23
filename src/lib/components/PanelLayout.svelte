@@ -30,9 +30,27 @@
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // t prefix state for tab operations
-  let waitingForTabKey: boolean = $state(false);
-  let tabKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Tab command handler (called from DirectoryPanel's t prefix)
+  function handleTabCommand(cmd: string) {
+    if (cmd === 'new') {
+      handleTabNew();
+    } else if (cmd === 'close') {
+      handleTabClose();
+    } else if (cmd === 'rename-hint') {
+      showToast('Double-click tab name to rename');
+    } else if (cmd === 'next') {
+      handleTabSwitchRelative(1);
+    } else if (cmd === 'prev') {
+      handleTabSwitchRelative(-1);
+    } else if (cmd === 'swap-prev') {
+      tabs.swapTab(-1);
+    } else if (cmd === 'swap-next') {
+      tabs.swapTab(1);
+    } else if (cmd.startsWith('switch-')) {
+      const idx = parseInt(cmd.substring(7)) - 1;
+      handleTabSwitchByIndex(idx);
+    }
+  }
 
   // Toast notification
   let toastMessage: string = $state('');
@@ -138,7 +156,7 @@
   function handleTabNew() {
     tabs.saveActiveTabState();
     tabs.createTab(currentPath);
-    tabs.restoreActiveTabState();
+    restoreTabAndFocus();
     showToast('Tab created');
   }
 
@@ -149,26 +167,52 @@
       return;
     }
     tabs.closeTab(tabsState.activeTabId);
-    tabs.restoreActiveTabState();
+    restoreTabAndFocus();
     showToast('Tab closed');
   }
 
   function handleTabSwitch(tabId: number) {
     tabs.saveActiveTabState();
     tabs.switchTab(tabId);
-    tabs.restoreActiveTabState();
+    restoreTabAndFocus();
   }
 
   function handleTabSwitchRelative(delta: number) {
     tabs.saveActiveTabState();
     tabs.switchTabRelative(delta);
-    tabs.restoreActiveTabState();
+    restoreTabAndFocus();
   }
 
   function handleTabSwitchByIndex(index: number) {
     tabs.saveActiveTabState();
     tabs.switchTabByIndex(index);
-    tabs.restoreActiveTabState();
+    restoreTabAndFocus();
+  }
+
+  function restoreTabAndFocus() {
+    const active = getActiveTab();
+    if (!active) return;
+    // Update layout store
+    if (active.currentPath) {
+      layout.setCurrentPath(active.currentPath);
+    }
+    // Sync PanelLayout local state
+    currentPath = active.currentPath;
+    selectedFile = active.selectedFile;
+    // Restore terminal state
+    layout.setTerminalHeight(active.terminalHeight);
+    if (active.terminalVisible) {
+      layout.showTerminal();
+    } else {
+      layout.hideTerminal();
+    }
+    // Restore focus
+    focusPanel('current');
+  }
+
+  function getActiveTab() {
+    const state = getTabsState();
+    return state.tabs.find((t: any) => t.id === state.activeTabId);
   }
 
   function getTabsState() {
@@ -313,62 +357,6 @@
         if ($layout.activeColumn === 'terminal') {
           focusPanel('current');
         }
-        return;
-      }
-    }
-
-    // t prefix for tab operations (only in non-terminal columns or terminal normal mode)
-    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey
-      && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')
-      && !showCommandPalette && !showFileSearch) {
-      event.preventDefault();
-      waitingForTabKey = true;
-      if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
-      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; }, 1000);
-      return;
-    }
-
-    // Handle keys after t prefix
-    if (waitingForTabKey) {
-      waitingForTabKey = false;
-      if (tabKeyTimeout) { clearTimeout(tabKeyTimeout); tabKeyTimeout = null; }
-
-      const code = event.code;
-      const key = event.key;
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (code === 'KeyT') {
-        // t t — new tab
-        handleTabNew();
-        return;
-      } else if (code === 'KeyC') {
-        // t c — close tab
-        handleTabClose();
-        return;
-      } else if (code === 'KeyR') {
-        // t r — rename tab (handled by TabBar double-click, show hint)
-        showToast('Double-click tab name to rename');
-        return;
-      } else if (code === 'KeyN' || code === 'BracketRight') {
-        // t n or t ] — next tab
-        handleTabSwitchRelative(1);
-        return;
-      } else if (code === 'KeyP' || code === 'BracketLeft') {
-        // t p or t [ — previous tab
-        handleTabSwitchRelative(-1);
-        return;
-      } else if (code === 'Comma' || code === 'KeyS') {
-        // t < or t s — swap with previous
-        tabs.swapTab(-1);
-        return;
-      } else if (code === 'Period' || code === 'KeyD') {
-        // t > or t d — swap with next
-        tabs.swapTab(1);
-        return;
-      } else if (key >= '1' && key <= '9') {
-        // t 1-9 — switch to tab N
-        handleTabSwitchByIndex(parseInt(key) - 1);
         return;
       }
     }
@@ -530,6 +518,7 @@
         onNavigate={handleNavigate}
         onSelect={() => {}}  // Parent column doesn't need to select files
         onSwitchPanel={handleSwitchPanel}
+        onTabCommand={handleTabCommand}
       />
     </div>
 
@@ -565,6 +554,7 @@
         onSwitchPanel={handleSwitchPanel}
         onFullscreen={handleFullscreenEditor}
         onNavigateUp={() => handleNavigate($layout.parentPath)}
+        onTabCommand={handleTabCommand}
       />
     </div>
 
@@ -597,6 +587,7 @@
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
+        onTabCommand={handleTabCommand}
       />
     </div>
   </div>

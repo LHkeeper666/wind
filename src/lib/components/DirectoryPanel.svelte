@@ -18,6 +18,7 @@
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
     onNavigateUp = () => {},
+    onTabCommand = (cmd: string) => {},
   }: {
     type: 'parent' | 'current';
     path: string;
@@ -27,6 +28,7 @@
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
     onNavigateUp?: () => void;
+    onTabCommand?: (cmd: string) => void;
   } = $props();
 
   let files: FileEntry[] = $state([]);
@@ -37,6 +39,8 @@
   let lastKeyTime: number = 0;
   let lastKey: string = '';
   let panelElement: HTMLDivElement | undefined = $state(undefined);
+  // t prefix state for tab operations
+  let waitingForTabKey: boolean = false;
   let isFocused: boolean = $state(false);
   let selectTimeout: ReturnType<typeof setTimeout> | null = null;
   let scrollRafId: number = 0;
@@ -261,8 +265,38 @@
         onFullscreen();
         break;
       default:
+        // t prefix for tab operations
+        if (waitingForTabKey) {
+          waitingForTabKey = false;
+          const code = event.code;
+          const key = event.key;
+          event.preventDefault();
+          if (code === 'KeyT') {
+            onTabCommand('new');
+          } else if (code === 'KeyC') {
+            onTabCommand('close');
+          } else if (code === 'KeyR') {
+            onTabCommand('rename-hint');
+          } else if (code === 'KeyN' || code === 'BracketRight') {
+            onTabCommand('next');
+          } else if (code === 'KeyP' || code === 'BracketLeft') {
+            onTabCommand('prev');
+          } else if (code === 'Comma') {
+            onTabCommand('swap-prev');
+          } else if (code === 'Period') {
+            onTabCommand('swap-next');
+          } else if (key >= '1' && key <= '9') {
+            onTabCommand('switch-' + key);
+          }
+          return;
+        }
         // Use event.code for letter keys to support Chinese IME
         switch (event.code) {
+          case 'KeyT':
+            event.preventDefault();
+            waitingForTabKey = true;
+            setTimeout(() => { waitingForTabKey = false; }, 1000);
+            break;
           case 'KeyJ':
             event.preventDefault();
             selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
