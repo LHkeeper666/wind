@@ -12,17 +12,24 @@
   let {
     visible = false,
     currentPath = '',
+    shellType: shellTypeProp = 'git-bash',
     onClose = () => {},
   }: {
     visible: boolean;
     currentPath?: string;
+    shellType?: string;
     onClose?: () => void;
   } = $props();
 
   let terminalContainer: HTMLDivElement | undefined = $state(undefined);
   let terminal: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
-  let shellType: string = $state('git-bash');
+  let shellType: string = $state(shellTypeProp);
+
+  // Sync shellType from prop
+  $effect(() => {
+    shellType = shellTypeProp;
+  });
   let unlisten: (() => void) | undefined;
   let mode: 'normal' | 'insert' = $state('insert');
   let overlayElement: HTMLDivElement | undefined = $state(undefined);

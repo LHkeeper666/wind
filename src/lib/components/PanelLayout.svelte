@@ -3,6 +3,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
+  import { tabs, activeTab } from '$lib/stores/tabs';
   import DirectoryPanel from './DirectoryPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
@@ -10,6 +11,7 @@
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import SearchModal from './SearchModal.svelte';
+  import TabBar from './TabBar.svelte';
 
   let currentPath: string = $state('');
   let selectedFile: string | null = $state(null);
@@ -27,6 +29,10 @@
   // Ctrl+W prefix state for vim-style window navigation
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // t prefix state for tab operations
+  let waitingForTabKey: boolean = $state(false);
+  let tabKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Toast notification
   let toastMessage: string = $state('');
@@ -74,6 +80,10 @@
     { name: 'Set Ratio 1:2:2', action: () => layout.setRatios([1, 2, 2]) },
     { name: 'Set Ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
     { name: 'Close Panel', action: () => { showCommandPalette = false; } },
+    { name: 'Tab: New', action: () => handleTabNew() },
+    { name: 'Tab: Close', action: () => handleTabClose() },
+    { name: 'Tab: Swap Next', action: () => tabs.swapTab(1) },
+    { name: 'Tab: Swap Prev', action: () => tabs.swapTab(-1) },
   ];
 
   let filteredCommands = $derived(
@@ -89,6 +99,8 @@
     // Initialize with home directory
     try {
       const homeDir = await invoke<string>('get_home_dir');
+      // Initialize the first tab with home directory
+      tabs.renameTab(1, homeDir.split('\\').pop() || homeDir.split('/').pop() || 'home');
       layout.setCurrentPath(homeDir);
       currentPath = homeDir;
 
@@ -120,6 +132,50 @@
   function handleNavigate(path: string) {
     layout.setCurrentPath(path);
     currentPath = path;
+  }
+
+  // Tab operations
+  function handleTabNew() {
+    tabs.saveActiveTabState();
+    tabs.createTab(currentPath);
+    tabs.restoreActiveTabState();
+    showToast('Tab created');
+  }
+
+  function handleTabClose() {
+    const tabsState = getTabsState();
+    if (tabsState.tabs.length <= 1) {
+      showToast('Cannot close last tab');
+      return;
+    }
+    tabs.closeTab(tabsState.activeTabId);
+    tabs.restoreActiveTabState();
+    showToast('Tab closed');
+  }
+
+  function handleTabSwitch(tabId: number) {
+    tabs.saveActiveTabState();
+    tabs.switchTab(tabId);
+    tabs.restoreActiveTabState();
+  }
+
+  function handleTabSwitchRelative(delta: number) {
+    tabs.saveActiveTabState();
+    tabs.switchTabRelative(delta);
+    tabs.restoreActiveTabState();
+  }
+
+  function handleTabSwitchByIndex(index: number) {
+    tabs.saveActiveTabState();
+    tabs.switchTabByIndex(index);
+    tabs.restoreActiveTabState();
+  }
+
+  function getTabsState() {
+    let result: any;
+    const unsub = tabs.subscribe(v => result = v);
+    unsub();
+    return result;
   }
 
   function handleSelect(filePath: string) {
@@ -261,6 +317,62 @@
       }
     }
 
+    // t prefix for tab operations (only in non-terminal columns or terminal normal mode)
+    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey
+      && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')
+      && !showCommandPalette && !showFileSearch) {
+      event.preventDefault();
+      waitingForTabKey = true;
+      if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
+      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; }, 1000);
+      return;
+    }
+
+    // Handle keys after t prefix
+    if (waitingForTabKey) {
+      waitingForTabKey = false;
+      if (tabKeyTimeout) { clearTimeout(tabKeyTimeout); tabKeyTimeout = null; }
+
+      const code = event.code;
+      const key = event.key;
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (code === 'KeyT') {
+        // t t — new tab
+        handleTabNew();
+        return;
+      } else if (code === 'KeyC') {
+        // t c — close tab
+        handleTabClose();
+        return;
+      } else if (code === 'KeyR') {
+        // t r — rename tab (handled by TabBar double-click, show hint)
+        showToast('Double-click tab name to rename');
+        return;
+      } else if (code === 'KeyN' || code === 'BracketRight') {
+        // t n or t ] — next tab
+        handleTabSwitchRelative(1);
+        return;
+      } else if (code === 'KeyP' || code === 'BracketLeft') {
+        // t p or t [ — previous tab
+        handleTabSwitchRelative(-1);
+        return;
+      } else if (code === 'Comma' || code === 'KeyS') {
+        // t < or t s — swap with previous
+        tabs.swapTab(-1);
+        return;
+      } else if (code === 'Period' || code === 'KeyD') {
+        // t > or t d — swap with next
+        tabs.swapTab(1);
+        return;
+      } else if (key >= '1' && key <= '9') {
+        // t 1-9 — switch to tab N
+        handleTabSwitchByIndex(parseInt(key) - 1);
+        return;
+      }
+    }
+
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
     const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
@@ -290,6 +402,28 @@
       return;
     }
     if (event.key === 'Enter') {
+      // Check if it's a tab command
+      const q = commandQuery.trim();
+      if (q === 'tab new' || q === 'tabn') {
+        handleTabNew();
+        showCommandPalette = false;
+        return;
+      } else if (q === 'tab close' || q === 'tabc') {
+        handleTabClose();
+        showCommandPalette = false;
+        return;
+      } else if (q.startsWith('tab rename ') || q.startsWith('tabr ')) {
+        const name = q.startsWith('tab rename ') ? q.substring(11).trim() : q.substring(5).trim();
+        if (name) {
+          tabs.renameTab(getTabsState().activeTabId, name);
+        }
+        showCommandPalette = false;
+        return;
+      } else if (q === 'tab swap' || q === 'tabs') {
+        tabs.swapTab(1);
+        showCommandPalette = false;
+        return;
+      }
       // Check if it's a ratio command
       if (commandQuery.startsWith('ratio ')) {
         const ratioStr = commandQuery.substring(6).trim();
@@ -371,6 +505,8 @@
 
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
 <div class="app-layout" role="application" aria-label="Wind Panel Layout">
+
+  <TabBar />
 
   <div class="panel-layout" style="
     grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
@@ -501,6 +637,7 @@
     bind:this={floatingTerminal}
     visible={$layout.terminalVisible}
     currentPath={currentPath}
+    shellType={$activeTab.shellType}
     onClose={handleCloseTerminal}
   />
 
