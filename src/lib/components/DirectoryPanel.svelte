@@ -88,8 +88,12 @@
   }
 
   // Load directory content when path changes
+  let prevPath: string = '';
   $effect(() => {
-    if (path) {
+    if (path && path !== prevPath) {
+      prevPath = path;
+      selectedIndex = -1;
+      selectedPathInternal = null;
       untrack(() => loadDirectory(path));
     }
   });

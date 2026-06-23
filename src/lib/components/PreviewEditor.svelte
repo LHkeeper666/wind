@@ -119,17 +119,28 @@
 
   function isTextFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
-    const textExtensions = new Set([
-      'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
-      'css', 'scss', 'less', 'html', 'xml', 'json', 'yaml', 'yml', 'toml', 'ini',
-      'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'sql',
-      'rb', 'php', 'swift', 'kt', 'kts', 'scala', 'r', 'lua', 'pl', 'pm',
-      'hs', 'ml', 'ex', 'exs', 'erl', 'clj', 'lisp', 'el', 'vim',
-      'dockerfile', 'makefile', 'cmake', 'gradle', 'sbt', 'vue', 'svelte',
-      'env', 'gitignore', 'editorconfig', 'prettierrc', 'eslintrc',
-      'svg',
+    // Known binary formats that should NOT be treated as text
+    const binaryExtensions = new Set([
+      // Executables & libraries
+      'exe', 'dll', 'so', 'dylib', 'bin', 'obj', 'o', 'a', 'lib', 'sys', 'drv',
+      // Archives (zip handled separately)
+      'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst', 'lz4', 'cab',
+      // Media - audio
+      'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'mid', 'midi',
+      // Media - video
+      'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg',
+      // Media - image (binary ones, SVG is text)
+      'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'psd', 'raw', 'cr2', 'nef',
+      // Documents
+      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+      // Fonts
+      'ttf', 'otf', 'woff', 'woff2', 'eot',
+      // Databases & compiled
+      'db', 'sqlite', 'sqlite3', 'mdb', 'accdb', 'class', 'pyc', 'pyo',
+      // Other binary
+      'iso', 'img', 'vhd', 'vhdx', 'qcow2',
     ]);
-    return textExtensions.has(ext) || !ext;
+    return !binaryExtensions.has(ext);
   }
 
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg']);

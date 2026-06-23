@@ -183,6 +183,7 @@
 
   function handleCloseTerminal() {
     layout.hideTerminal();
+    focusPanel('current');
   }
 
   function handleCloseImageViewer() {
@@ -207,7 +208,13 @@
     // Ctrl+` to toggle terminal
     if (event.ctrlKey && event.key === '`') {
       event.preventDefault();
-      layout.toggleTerminal();
+      if ($layout.terminalVisible) {
+        layout.hideTerminal();
+        focusPanel('current');
+      } else {
+        layout.showTerminal();
+        focusPanel('terminal');
+      }
       return;
     }
 
