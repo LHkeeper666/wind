@@ -26,7 +26,7 @@
 
   // Initialize editor when container is ready
   $effect(() => {
-    if (editorContainer && filePath) {
+    if (editorContainer && filePath && !editorView) {
       initEditor();
     }
   });
