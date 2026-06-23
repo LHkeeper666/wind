@@ -32,7 +32,7 @@
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Tab completion state for command palette
-  let completions: string[] = [];
+  let completions: { name: string; is_dir: boolean }[] = [];
   let completionIndex: number = -1;
   let completionPrefix: string = '';
   let completionDir: string = '';
@@ -124,6 +124,12 @@
       return;
     }
 
+    // Strip trailing backslash so parsing treats the last component as
+    // the partial name (enables cycling through directory completions).
+    if (pathInput.endsWith('\\') && pathInput !== '\\') {
+      pathInput = pathInput.slice(0, -1);
+    }
+
     // Determine parent dir and partial name
     let parentDir: string;
     let partial: string;
@@ -141,14 +147,14 @@
     // Check if we're cycling through existing completions
     let doFetch = true;
     if (completionDir === parentDir && completions.length > 0) {
-      const currentMatchIdx = completions.findIndex(c => c.toLowerCase() === partial.toLowerCase());
+      const currentMatchIdx = completions.findIndex(c => c.name.toLowerCase() === partial.toLowerCase());
       if (currentMatchIdx >= 0) {
         // Cycle: find next completion that matches the original prefix
         doFetch = false;
         const prefix = completionPrefix.toLowerCase();
         for (let i = 1; i <= completions.length; i++) {
           const idx = (currentMatchIdx + i) % completions.length;
-          if (completions[idx].toLowerCase().startsWith(prefix)) {
+          if (completions[idx].name.toLowerCase().startsWith(prefix)) {
             completionIndex = idx;
             break;
           }
@@ -160,8 +166,7 @@
       try {
         const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>('read_directory', { path: parentDir });
         const filtered = entries
-          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()) && (dirsOnly ? e.is_dir : true))
-          .map(e => e.name);
+          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()) && (dirsOnly ? e.is_dir : true));
         if (filtered.length === 0) { resetCompletion(); return; }
         completions = filtered;
         completionDir = parentDir;
@@ -176,11 +181,15 @@
     let newPath: string;
     if (pathInput.includes('\\')) {
       const lastSlash = pathInput.lastIndexOf('\\');
-      newPath = pathInput.substring(0, lastSlash + 1) + completed;
+      newPath = pathInput.substring(0, lastSlash + 1) + completed.name;
     } else {
-      newPath = completed;
+      newPath = completed.name;
     }
     commandQuery = cmdPrefix + newPath;
+    // Append backslash for directory completions
+    if (completed.is_dir && !commandQuery.endsWith('\\')) {
+      commandQuery += '\\';
+    }
   }
 
   // Track active column before fullscreen for restoration
