@@ -741,6 +741,7 @@
     padding: 12px;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
   }
 
   .editor-area {
@@ -811,6 +812,7 @@
   :global(.dir-list) {
     font-family: 'Cascadia Code', 'Consolas', monospace;
     font-size: 13px;
+    min-width: 0;
   }
 
   :global(.dir-entry) {
@@ -818,6 +820,7 @@
     align-items: center;
     padding: 2px 0;
     gap: 6px;
+    min-width: 0;
   }
 
   :global(.entry-name) {
