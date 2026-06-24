@@ -383,6 +383,8 @@
       binaryContent = null;
     }
     mode = 'global-normal';
+    // Empty files: content is '' (falsy), effect won't trigger, render directly
+    if (!content) renderPreview();
   }
 
   async function renderPreview() {
