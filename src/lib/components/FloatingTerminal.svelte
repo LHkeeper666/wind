@@ -11,11 +11,13 @@
 
   let {
     visible = false,
+    fullscreen = false,
     currentPath = '',
     shellType: shellTypeProp = 'git-bash',
     onClose = () => {},
   }: {
     visible: boolean;
+    fullscreen?: boolean;
     currentPath?: string;
     shellType?: string;
     onClose?: () => void;
@@ -274,14 +276,16 @@
 
 {#if visible}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="floating-terminal" style="height: {terminalHeight}px" onkeydown={(e) => {
+  <div class="floating-terminal" class:fullscreen style={fullscreen ? '' : `height: ${terminalHeight}px`} onkeydown={(e) => {
     if (e.key === 'Escape' && mode === 'insert') {
       e.preventDefault();
       setMode('normal');
     }
   }}>
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="terminal-handle" onmousedown={startDrag} role="separator" aria-orientation="horizontal"></div>
+    {#if !fullscreen}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div class="terminal-handle" onmousedown={startDrag} role="separator" aria-orientation="horizontal"></div>
+    {/if}
     <div class="panel-header">
       <span class="panel-title">Terminal</span>
       <div class="shell-status">
@@ -338,6 +342,13 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+  }
+
+  .floating-terminal.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    border-top: none;
   }
 
   @keyframes slideUp {

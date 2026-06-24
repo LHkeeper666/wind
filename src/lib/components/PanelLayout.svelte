@@ -477,10 +477,34 @@
       return;
     }
 
-    // Ctrl+` to toggle terminal
-    if (event.ctrlKey && event.key === '`') {
+    // Ctrl+Shift+` to toggle fullscreen terminal
+    // When Shift is pressed, backtick becomes tilde
+    if (event.ctrlKey && event.shiftKey && (event.key === '`' || event.key === '~')) {
       event.preventDefault();
-      if ($layout.terminalVisible) {
+      if ($layout.fullscreenTerminalOpen) {
+        // Exit fullscreen but keep terminal visible
+        layout.closeFullscreenTerminal();
+      } else if ($layout.terminalVisible) {
+        // Terminal visible, enter fullscreen
+        layout.openFullscreenTerminal();
+      } else {
+        // Terminal hidden, show it and enter fullscreen
+        layout.showTerminal();
+        layout.openFullscreenTerminal();
+        focusPanel('terminal');
+      }
+      return;
+    }
+
+    // Ctrl+` to toggle terminal
+    if (event.ctrlKey && event.key === '`' && !event.shiftKey) {
+      event.preventDefault();
+      if ($layout.fullscreenTerminalOpen) {
+        // In fullscreen mode, Ctrl+` closes terminal completely
+        layout.closeFullscreenTerminal();
+        layout.hideTerminal();
+        focusPanel('current');
+      } else if ($layout.terminalVisible) {
         layout.hideTerminal();
         focusPanel('current');
       } else {
@@ -492,7 +516,8 @@
 
     // Ctrl+W prefix for vim-style window navigation
     // Skip when terminal is in insert mode (Ctrl+W should go to shell)
-    if (event.ctrlKey && event.key === 'w' && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
+    // Skip when fullscreen terminal is open (no panel switching in fullscreen)
+    if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
       event.preventDefault();
       waitingForWindowKey = true;
       if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
@@ -534,7 +559,7 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
@@ -886,6 +911,7 @@
   <FloatingTerminal
     bind:this={floatingTerminal}
     visible={$layout.terminalVisible}
+    fullscreen={$layout.fullscreenTerminalOpen}
     currentPath={currentPath}
     shellType={$activeTab.shellType}
     onClose={handleCloseTerminal}

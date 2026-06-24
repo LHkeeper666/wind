@@ -32,6 +32,9 @@ export interface LayoutState {
   // Fullscreen video player state
   fullscreenVideoPlayerOpen: boolean;
 
+  // Fullscreen terminal state
+  fullscreenTerminalOpen: boolean;
+
   // Terminal state
   terminalVisible: boolean;
   terminalHeight: number;
@@ -49,6 +52,7 @@ const initialState: LayoutState = {
   fullscreenImageViewerOpen: false,
   fullscreenPdfViewerOpen: false,
   fullscreenVideoPlayerOpen: false,
+  fullscreenTerminalOpen: false,
   terminalVisible: false,
   terminalHeight: 300,
 };
@@ -161,6 +165,21 @@ function createLayoutStore() {
     // Close fullscreen video player
     closeFullscreenVideoPlayer() {
       update(state => ({ ...state, fullscreenVideoPlayerOpen: false }));
+    },
+
+    // Open fullscreen terminal
+    openFullscreenTerminal() {
+      update(state => ({ ...state, fullscreenTerminalOpen: true }));
+    },
+
+    // Close fullscreen terminal
+    closeFullscreenTerminal() {
+      update(state => ({ ...state, fullscreenTerminalOpen: false }));
+    },
+
+    // Toggle fullscreen terminal
+    toggleFullscreenTerminal() {
+      update(state => ({ ...state, fullscreenTerminalOpen: !state.fullscreenTerminalOpen }));
     },
 
     // Toggle terminal visibility
