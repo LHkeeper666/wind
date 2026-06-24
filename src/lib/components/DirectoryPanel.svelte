@@ -45,6 +45,7 @@
   let isFocused: boolean = $state(false);
   let selectTimeout: ReturnType<typeof setTimeout> | null = null;
   let scrollRafId: number = 0;
+  let pendingSelectName: string | null = null;
   let isSearchModalOpen: boolean = $state(false);
   let searchMode: 'current' | 'recursive' = $state('current');
 
@@ -151,6 +152,26 @@
     }
   });
 
+  function selectInitialEntry() {
+    if (selectedIndex >= 0 || files.length === 0) return;
+    // If navigating back, try to highlight the directory we came from
+    if (pendingSelectName) {
+      const target = pendingSelectName;
+      pendingSelectName = null;
+      const idx = files.findIndex(f => f.name === target);
+      if (idx >= 0) {
+        selectedIndex = idx;
+        selectedPathInternal = files[idx].path;
+        onSelect(files[idx].path);
+        return;
+      }
+    }
+    const firstReal = files.findIndex(f => f.name !== '..');
+    selectedIndex = firstReal >= 0 ? firstReal : 0;
+    selectedPathInternal = files[selectedIndex].path;
+    onSelect(files[selectedIndex].path);
+  }
+
   async function loadDirectory(dirPath: string, forceRefresh: boolean = false) {
     isLoading = true;
     errorMessage = '';
@@ -165,12 +186,7 @@
         const parentPath = getParentPath(dirPath);
         files = [{ name: '..', path: parentPath, is_dir: true }, ...files];
       }
-      if (selectedIndex < 0 && files.length > 0) {
-        const firstReal = files.findIndex(f => f.name !== '..');
-        selectedIndex = firstReal >= 0 ? firstReal : 0;
-        selectedPathInternal = files[selectedIndex].path;
-        onSelect(files[selectedIndex].path);
-      }
+      selectInitialEntry();
       isLoading = false;
       return;
     }
@@ -192,12 +208,7 @@
       }
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
-      if (selectedIndex < 0 && files.length > 0) {
-        const firstReal = files.findIndex(f => f.name !== '..');
-        selectedIndex = firstReal >= 0 ? firstReal : 0;
-        selectedPathInternal = files[selectedIndex].path;
-        onSelect(files[selectedIndex].path);
-      }
+      selectInitialEntry();
     } catch (error) {
       console.error('Failed to load directory:', error);
       errorMessage = `Failed to load: ${error}`;
@@ -334,6 +345,9 @@
           case 'KeyH':
             if (type === 'current') {
               event.preventDefault();
+              // Remember current directory name so parent highlights it
+              const dirName = path.split(/[/\\]/).filter(Boolean).pop();
+              if (dirName) pendingSelectName = dirName;
               onNavigateUp();
             }
             break;
