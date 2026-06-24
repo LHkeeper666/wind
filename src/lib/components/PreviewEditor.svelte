@@ -387,6 +387,12 @@
     }
   }
 
+  function scrollPreview(delta: number) {
+    if (previewContainer) {
+      previewContainer.scrollBy({ top: delta, behavior: 'auto' });
+    }
+  }
+
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -561,6 +567,12 @@
         return;
       }
       onFullscreen();
+    } else if (event.key === 'j' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      scrollPreview(40);
+    } else if (event.key === 'k' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      scrollPreview(-40);
     } else if (event.key === 'J' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       // PDF: next page
       if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) {
@@ -573,6 +585,12 @@
         event.preventDefault();
         loadPdfPage(filePath, pdfCurrentPage - 1);
       }
+    } else if (event.key === 'g' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (previewContainer) previewContainer.scrollTop = 0;
+    } else if (event.key === 'G' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (previewContainer) previewContainer.scrollTop = previewContainer.scrollHeight;
     } else if (event.ctrlKey && event.key === 's') {
       event.preventDefault();
       saveFile();
