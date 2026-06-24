@@ -169,6 +169,7 @@
         const firstReal = files.findIndex(f => f.name !== '..');
         selectedIndex = firstReal >= 0 ? firstReal : 0;
         selectedPathInternal = files[selectedIndex].path;
+        onSelect(files[selectedIndex].path);
       }
       isLoading = false;
       return;
@@ -195,6 +196,7 @@
         const firstReal = files.findIndex(f => f.name !== '..');
         selectedIndex = firstReal >= 0 ? firstReal : 0;
         selectedPathInternal = files[selectedIndex].path;
+        onSelect(files[selectedIndex].path);
       }
     } catch (error) {
       console.error('Failed to load directory:', error);
