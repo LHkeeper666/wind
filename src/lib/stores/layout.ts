@@ -38,6 +38,9 @@ export interface LayoutState {
   // Terminal state
   terminalVisible: boolean;
   terminalHeight: number;
+
+  // Key prefix display (e.g. 't', '^W')
+  keyPrefix: string | null;
 }
 
 const initialState: LayoutState = {
@@ -55,6 +58,7 @@ const initialState: LayoutState = {
   fullscreenTerminalOpen: false,
   terminalVisible: false,
   terminalHeight: 300,
+  keyPrefix: null,
 };
 
 function createLayoutStore() {
@@ -180,6 +184,16 @@ function createLayoutStore() {
     // Toggle fullscreen terminal
     toggleFullscreenTerminal() {
       update(state => ({ ...state, fullscreenTerminalOpen: !state.fullscreenTerminalOpen }));
+    },
+
+    // Set key prefix for status bar display
+    setKeyPrefix(prefix: string) {
+      update(state => ({ ...state, keyPrefix: prefix }));
+    },
+
+    // Clear key prefix
+    clearKeyPrefix() {
+      update(state => ({ ...state, keyPrefix: null }));
     },
 
     // Toggle terminal visibility

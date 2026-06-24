@@ -520,14 +520,16 @@
     if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
       event.preventDefault();
       waitingForWindowKey = true;
+      layout.setKeyPrefix('^W');
       if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
-      windowKeyTimeout = setTimeout(() => { waitingForWindowKey = false; }, 1000);
+      windowKeyTimeout = setTimeout(() => { waitingForWindowKey = false; layout.clearKeyPrefix(); }, 1000);
       return;
     }
 
     // Handle direction keys after Ctrl+W
     if (waitingForWindowKey) {
       waitingForWindowKey = false;
+      layout.clearKeyPrefix();
       if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
 
       const code = event.code;
@@ -921,7 +923,7 @@
   <div class="status-bar">
     <span class="status-mode">{$layout.activeColumn === 'terminal' ? `TERMINAL-${($layout.terminalMode || 'insert').toUpperCase()}` : $layout.activeColumn.toUpperCase()}</span>
     <span class="status-path">{currentPath || 'No path'}</span>
-    <span class="status-panel">Column: {$layout.activeColumn}</span>
+    <span class="status-prefix">{$layout.keyPrefix || ''}</span>
     <button class="theme-toggle" onclick={() => theme.toggle()}>
       {$theme === 'dark' ? 'LGT' : 'DRK'}
     </button>
@@ -1045,9 +1047,12 @@
     color: var(--text-primary);
   }
 
-  .status-panel {
-    color: var(--text-muted);
+  .status-prefix {
+    color: var(--accent);
+    font-weight: bold;
     margin-left: 12px;
+    min-width: 24px;
+    text-align: right;
   }
 
   .theme-toggle {

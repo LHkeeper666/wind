@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
+  import { layout } from '$lib/stores/layout';
   import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
   import type { VideoMeta } from '$lib/previewers';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
@@ -548,6 +549,7 @@
     // t prefix for tab operations
     if (waitingForTabKey) {
       waitingForTabKey = false;
+      layout.clearKeyPrefix();
       const code = event.code;
       const key = event.key;
       event.preventDefault();
@@ -574,7 +576,8 @@
     if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       waitingForTabKey = true;
-      setTimeout(() => { waitingForTabKey = false; }, 1000);
+      layout.setKeyPrefix('t');
+      setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
       return;
     }
 

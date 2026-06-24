@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, untrack } from 'svelte';
+  import { layout } from '$lib/stores/layout';
   import SearchModal from './SearchModal.svelte';
 
   interface FileEntry {
@@ -293,6 +294,7 @@
         // t prefix for tab operations
         if (waitingForTabKey) {
           waitingForTabKey = false;
+          layout.clearKeyPrefix();
           const code = event.code;
           const key = event.key;
           event.preventDefault();
@@ -320,7 +322,8 @@
           case 'KeyT':
             event.preventDefault();
             waitingForTabKey = true;
-            setTimeout(() => { waitingForTabKey = false; }, 1000);
+            layout.setKeyPrefix('t');
+            setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
             break;
           case 'KeyJ':
             event.preventDefault();
