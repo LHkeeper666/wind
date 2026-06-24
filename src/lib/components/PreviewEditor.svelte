@@ -410,9 +410,9 @@
     }
   }
 
-  function scrollPreview(delta: number) {
+  function scrollPreview(deltaY: number, deltaX: number = 0) {
     if (previewContainer) {
-      previewContainer.scrollBy({ top: delta, behavior: 'auto' });
+      previewContainer.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
     }
   }
 
@@ -596,6 +596,12 @@
     } else if (event.key === 'k' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       scrollPreview(-40);
+    } else if (event.key === 'h' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      scrollPreview(0, -40);
+    } else if (event.key === 'l' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      scrollPreview(0, 40);
     } else if (event.key === 'J' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       // PDF: next page
       if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) {
