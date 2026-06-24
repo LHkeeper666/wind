@@ -343,6 +343,29 @@
       return;
     }
 
+    // Check file size before reading to prevent loading huge files
+    const MAX_PREVIEW_SIZE = 50 * 1024 * 1024; // 50MB
+    try {
+      const fileSize = await invoke<number>('get_file_size', { path });
+      if (gen !== loadGeneration) return;
+      if (fileSize > MAX_PREVIEW_SIZE) {
+        content = '';
+        binaryContent = null;
+        if (editorView) {
+          editorView.destroy();
+          editorView = undefined;
+        }
+        mode = 'global-normal';
+        if (previewContainer) {
+          const sizeStr = formatSize(fileSize);
+          previewContainer.innerHTML = `<div class="preview-unsupported">文件过大 (${sizeStr})，无法预览</div>`;
+        }
+        return;
+      }
+    } catch {
+      // Can't get size, try loading anyway
+    }
+
     try {
       const newContent = await invoke<string>('read_file', { path });
       if (gen !== loadGeneration) return;

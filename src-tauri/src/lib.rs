@@ -357,6 +357,18 @@ fn neovim_command(cmd: String, state: State<'_, AppState>) -> Result<(), String>
 }
 
 #[tauri::command]
+fn get_file_size(path: String) -> Result<u64, String> {
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+    file_path
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| format!("Failed to get file size: {}", e))
+}
+
+#[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
     let file_path = Path::new(&path);
 
@@ -893,6 +905,7 @@ pub fn run() {
             rename_file,
             create_file,
             copy_file,
+            get_file_size,
             read_file,
             read_binary_file,
             read_image_thumbnail,
