@@ -44,6 +44,8 @@
   let isDragging: boolean = $state(false);
   let dragStartY: number = 0;
   let dragStartHeight: number = 0;
+  let zoomDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let isZooming = false;
 
   // Shell integration
   const shellIntegration = new ShellIntegration();
@@ -105,6 +107,10 @@
   onDestroy(() => {
     if (escapeHandler && terminalContainer) {
       terminalContainer.removeEventListener('keydown', escapeHandler, true);
+    }
+    if (zoomDebounceTimer) {
+      clearTimeout(zoomDebounceTimer);
+      zoomDebounceTimer = null;
     }
     if (unlisten) unlisten();
     if (terminal) {
@@ -177,7 +183,7 @@
     terminal.focus();
 
     const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) fitAddon.fit();
+      if (fitAddon && !isZooming) fitAddon.fit();
     });
     resizeObserver.observe(terminalContainer);
 
@@ -245,8 +251,13 @@
 
   export function setZoom(level: number) {
     if (!terminal) return;
+    isZooming = true;
     terminal.options.fontSize = Math.round(baseFontSize * level);
-    if (fitAddon) fitAddon.fit();
+    if (zoomDebounceTimer) clearTimeout(zoomDebounceTimer);
+    zoomDebounceTimer = setTimeout(() => {
+      isZooming = false;
+      if (fitAddon) fitAddon.fit();
+    }, 200);
   }
 
   export function clear() {
