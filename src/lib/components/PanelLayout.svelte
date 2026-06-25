@@ -74,6 +74,7 @@
   function applyZoom(level: number) {
     zoomLevel = Math.max(0.5, Math.min(2.0, level));
     document.documentElement.style.setProperty('--zoom-level', String(zoomLevel));
+    floatingTerminal?.setZoom(zoomLevel);
     showToast(`Zoom: ${Math.round(zoomLevel * 100)}%`);
   }
 
@@ -916,6 +917,7 @@
     fullscreen={$layout.fullscreenTerminalOpen}
     currentPath={currentPath}
     shellType={$activeTab.shellType}
+    zoomLevel={zoomLevel}
     onClose={handleCloseTerminal}
   />
 

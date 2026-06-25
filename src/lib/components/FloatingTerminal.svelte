@@ -15,12 +15,14 @@
     fullscreen = false,
     currentPath = '',
     shellType: shellTypeProp = 'git-bash',
+    zoomLevel = 1,
     onClose = () => {},
   }: {
     visible: boolean;
     fullscreen?: boolean;
     currentPath?: string;
     shellType?: string;
+    zoomLevel?: number;
     onClose?: () => void;
   } = $props();
 
@@ -120,7 +122,7 @@
 
     terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
+      fontSize: Math.round(baseFontSize * zoomLevel),
       fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
       theme: {
         background: '#282828',
@@ -237,6 +239,14 @@
 
   export function toggle() {
     visible = !visible;
+  }
+
+  const baseFontSize = 14;
+
+  export function setZoom(level: number) {
+    if (!terminal) return;
+    terminal.options.fontSize = Math.round(baseFontSize * level);
+    if (fitAddon) fitAddon.fit();
   }
 
   export function clear() {
@@ -458,6 +468,7 @@
     flex: 1;
     padding: 4px;
     overflow: hidden;
+    background-color: #282828;
   }
 
   .terminal-overlay {
@@ -471,7 +482,7 @@
     cursor: default;
   }
 
-  :global(.xterm) {
-    height: 100%;
+  :global(.xterm-viewport) {
+    background-color: #282828;
   }
 </style>
