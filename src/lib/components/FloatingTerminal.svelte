@@ -6,6 +6,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import { ShellIntegration, type ShellState } from '$lib/terminal/shell-integration';
+  import { UnicodeV6WideMath } from '$lib/terminal/unicode-provider';
   import { layout } from '$lib/stores/layout';
   import '@xterm/xterm/css/xterm.css';
 
@@ -143,22 +144,21 @@
         brightWhite: '#fbf1c7',
       },
       disableStdin: false,
+      allowProposedApi: true,
     });
 
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
 
+    // Register wide-math Unicode provider (before terminal.open!)
+    const wideMath = new UnicodeV6WideMath();
+    terminal.unicode.register(wideMath);
+    terminal.unicode.activeVersion = wideMath.version;
+
     terminal.open(terminalContainer);
-    fitAddon.fit();
-    terminal.focus();
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) fitAddon.fit();
-    });
-    resizeObserver.observe(terminalContainer);
-
-    // Send all input directly to PTY - no special handling needed
+    // Register handlers BEFORE fit so the first resize is captured
     terminal.onData((data) => {
       if (mode === 'insert') {
         invoke('terminal_input', { data }).catch(console.error);
@@ -168,6 +168,14 @@
     terminal.onResize(({ cols, rows }) => {
       invoke('terminal_resize', { cols, rows }).catch(console.error);
     });
+
+    fitAddon.fit();
+    terminal.focus();
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (fitAddon) fitAddon.fit();
+    });
+    resizeObserver.observe(terminalContainer);
 
     // Listen for terminal output from Rust
     listen<string>('terminal-output', (event) => {
