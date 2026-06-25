@@ -27,6 +27,7 @@
   let terminalContainer: HTMLDivElement | undefined = $state(undefined);
   let terminal: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
+  let terminalSize = { cols: 80, rows: 24 };
   let shellType: string = $state(shellTypeProp);
 
   // Sync shellType from prop
@@ -166,6 +167,7 @@
     });
 
     terminal.onResize(({ cols, rows }) => {
+      terminalSize = { cols, rows };
       invoke('terminal_resize', { cols, rows }).catch(console.error);
     });
 
@@ -210,7 +212,7 @@
         terminal.write('\x1b[2J\x1b[H'); // Clear screen and move cursor to home
       }
       shellIntegration.reset();
-      await invoke('terminal_spawn', { shell: shellType, cwd: currentPath || null });
+      await invoke('terminal_spawn', { shell: shellType, cwd: currentPath || null, cols: terminalSize.cols, rows: terminalSize.rows });
     } catch (error) {
       console.error('Failed to start shell:', error);
       if (terminal) terminal.writeln('Failed to start shell: ' + error);

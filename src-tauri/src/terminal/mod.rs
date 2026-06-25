@@ -25,17 +25,16 @@ impl Terminal {
         self.app_handle = Some(handle);
     }
 
-    pub fn spawn(&mut self, shell: &str, cwd: Option<&str>) -> Result<(), String> {
+    pub fn spawn(&mut self, shell: &str, cwd: Option<&str>, cols: u16, rows: u16) -> Result<(), String> {
         // Kill existing process if any
         self.kill();
 
         let pty_system = native_pty_system();
 
-        // Create PTY with default size
         let pty_pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })

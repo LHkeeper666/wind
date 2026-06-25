@@ -321,9 +321,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 }
 
 #[tauri::command]
-fn terminal_spawn(shell: String, cwd: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+fn terminal_spawn(shell: String, cwd: Option<String>, cols: u16, rows: u16, state: State<'_, AppState>) -> Result<(), String> {
     let mut terminal = state.terminal.lock().unwrap();
-    terminal.spawn(&shell, cwd.as_deref())
+    terminal.spawn(&shell, cwd.as_deref(), cols, rows)
 }
 
 #[tauri::command]
