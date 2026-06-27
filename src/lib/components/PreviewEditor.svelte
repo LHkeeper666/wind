@@ -592,7 +592,7 @@
     return key;
   }
 
-  let overlayCmdBuf = '';
+  let overlayCmdBuf = $state('');
   let overlayCmdActive = $state(false);
 
   function processOverlayCommand(cmd: string) {
@@ -642,12 +642,10 @@
         } else {
           overlayCmdActive = false;
         }
-        onToast(overlayCmdBuf ? ':' + overlayCmdBuf : '');
         return;
       }
       if (event.key.length === 1) {
         overlayCmdBuf += event.key;
-        onToast(':' + overlayCmdBuf);
       }
       return;
     }
@@ -655,7 +653,6 @@
     if (event.key === ':') {
       overlayCmdActive = true;
       overlayCmdBuf = '';
-      onToast(':');
       return;
     }
 
@@ -868,6 +865,10 @@
       </div>
     {/if}
   </div>
+
+  {#if mode === 'editor-normal' && overlayCmdActive}
+    <div class="panel-cmdline">:{overlayCmdBuf}</div>
+  {/if}
 </div>
 
 <style>
@@ -958,6 +959,15 @@
     z-index: 10;
     background: transparent;
     outline: none;
+  }
+
+  .panel-cmdline {
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
   }
 
   .welcome {
