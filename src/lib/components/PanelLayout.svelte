@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
@@ -32,6 +33,10 @@
   // Ctrl+W prefix state for vim-style window navigation
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Focus restore state
+  let windowReady: boolean = $state(false);
+  let focusUnlisten: (() => void) | null = null;
 
   // Tab completion state for command palette
   let completions: { name: string; is_dir: boolean }[] = [];
@@ -256,6 +261,14 @@
     window.addEventListener('keydown', handleGlobalKeydown, true);
     window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });
 
+    // Register Tauri window focus listener for auto-restore
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      handleWindowFocusChanged(focused);
+    }).then(unlisten => { focusUnlisten = unlisten; });
+
+    // Delay windowReady to skip initial focus event
+    setTimeout(() => { windowReady = true; }, 500);
+
     // Initialize with home directory
     try {
       const homeDir = await invoke<string>('get_home_dir');
@@ -279,6 +292,7 @@
   onDestroy(() => {
     window.removeEventListener('keydown', handleGlobalKeydown, true);
     window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
+    if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
   });
 
   // Subscribe to layout changes
@@ -475,6 +489,20 @@
     if (event.ctrlKey && event.key === '0') {
       event.preventDefault();
       applyZoom(1);
+      return;
+    }
+
+    // Ctrl+L to manually restore focus (skip if Ctrl+W prefix is active)
+    if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
+      const canRestore = !showCommandPalette && !showFileSearch
+        && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
+        && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
+        && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+      if (canRestore) {
+        event.preventDefault();
+        focusPanel($layout.activeColumn);
+        showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
+      }
       return;
     }
 
@@ -730,6 +758,20 @@
         if (element) element.focus();
       }
     }, 0);
+  }
+
+  function isPanelFocused(): boolean {
+    const active = document.activeElement;
+    if (!active || active === document.body) return false;
+    const panelLayout = document.querySelector('.panel-layout');
+    return panelLayout ? panelLayout.contains(active) : false;
+  }
+
+  function handleWindowFocusChanged(focused: boolean) {
+    if (!focused || !windowReady) return;
+    if (isPanelFocused()) return;
+    focusPanel($layout.activeColumn);
+    showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
   }
 
   // Column resize drag handlers
