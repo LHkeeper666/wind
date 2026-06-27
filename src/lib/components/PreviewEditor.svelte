@@ -8,7 +8,7 @@
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
   import { oneDark } from '@codemirror/theme-one-dark';
-  import { vim } from '@replit/codemirror-vim';
+  import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
 
@@ -46,6 +46,7 @@
   let previewRouter: PreviewRouter | undefined;
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
+  let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
   // t prefix state for tab operations
@@ -79,8 +80,11 @@
       if (!editorView && editorContainer && filePath) {
         initEditor();
       }
-      // Focus the CodeMirror editor so it receives keyboard input
-      if (editorView) {
+      // Focus overlay in normal mode (IME won't activate on it),
+      // or CodeMirror editor in insert mode.
+      if (m === 'editor-normal') {
+        if (overlayElement) overlayElement.focus();
+      } else if (editorView) {
         editorView.focus();
       }
     } else {
@@ -521,6 +525,17 @@
           content = update.state.doc.toString();
           isModified = content !== savedContent;
         }
+        // Sync PreviewEditor mode with vim state.
+        // When vim switches between insert/normal, update the overlay.
+        const cm = (update.view as any).cm;
+        const vimState = cm?.state?.vim;
+        if (vimState) {
+          if (vimState.insertMode && mode === 'editor-normal') {
+            mode = 'editor-insert';
+          } else if (!vimState.insertMode && !vimState.visualMode && mode === 'editor-insert') {
+            mode = 'editor-normal';
+          }
+        }
       }),
     ];
 
@@ -539,6 +554,125 @@
     });
 
     editorView.focus();
+  }
+
+  // Overlay keydown handler for editor normal mode.
+  // The overlay is a plain <div tabindex=0> (NOT contentEditable),
+  // so the Chinese IME won't activate on it. We capture physical keys
+  // and forward them to the vim engine via the Vim API directly.
+  function codeToVimKey(event: KeyboardEvent): string | null {
+    const code = event.code;
+    let key = '';
+    if (event.ctrlKey) key += 'C-';
+    if (event.altKey) key += 'A-';
+    if (event.metaKey) key += 'M-';
+    if (code.startsWith('Key') && code.length === 4) {
+      key += event.shiftKey ? code[3] : code[3].toLowerCase();
+    } else if (code === 'Enter') { key += 'Enter'; }
+    else if (code === 'Space') { key += 'Space'; }
+    else if (code === 'Escape') { key = 'Esc'; }
+    else if (code === 'Backspace') { key += 'BS'; }
+    else if (code === 'Tab') { key += 'Tab'; }
+    else if (code === 'Delete') { key += 'Del'; }
+    else if (code.startsWith('Digit')) { key += code[5]; }
+    else if (code.startsWith('Arrow')) { key += code.slice(5); }
+    else if (code === 'BracketLeft') { key += event.shiftKey ? '{' : '['; }
+    else if (code === 'BracketRight') { key += event.shiftKey ? '}' : ']'; }
+    else if (code === 'Semicolon') { key += event.shiftKey ? ':' : ';'; }
+    else if (code === 'Quote') { key += event.shiftKey ? '"' : "'"; }
+    else if (code === 'Comma') { key += event.shiftKey ? '<' : ','; }
+    else if (code === 'Period') { key += event.shiftKey ? '>' : '.'; }
+    else if (code === 'Slash') { key += event.shiftKey ? '?' : '/'; }
+    else if (code === 'Backslash') { key += '\\'; }
+    else if (code === 'Minus') { key += event.shiftKey ? '_' : '-'; }
+    else if (code === 'Equal') { key += event.shiftKey ? '+' : '='; }
+    else if (code === 'Backquote') { key += event.shiftKey ? '~' : '`'; }
+    else { return null; }
+    if (key.length > 1) key = '<' + key + '>';
+    return key;
+  }
+
+  let overlayCmdBuf = '';
+  let overlayCmdActive = $state(false);
+
+  function processOverlayCommand(cmd: string) {
+    const trimmed = cmd.trim();
+    if (trimmed === 'w' || trimmed === 'write') {
+      saveFile();
+    } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
+      content = savedContent;
+      isModified = false;
+      mode = 'global-normal';
+    } else if (trimmed === 'q' || trimmed === 'quit') {
+      if (isModified) {
+        onToast('E37: No write since last change (add ! to override)');
+      } else {
+        mode = 'global-normal';
+      }
+    } else if (trimmed === 'wq' || trimmed === 'x') {
+      saveFile().then(() => { mode = 'global-normal'; });
+    } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
+      saveFile().then(() => { mode = 'global-normal'; });
+    } else {
+      onToast(`E492: Not an editor command: ${trimmed}`);
+    }
+  }
+
+  function handleOverlayKeydown(event: KeyboardEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    // Custom command mode (triggered by ':')
+    if (overlayCmdActive) {
+      if (event.key === 'Enter') {
+        overlayCmdActive = false;
+        processOverlayCommand(overlayCmdBuf);
+        overlayCmdBuf = '';
+        return;
+      }
+      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') {
+        overlayCmdActive = false;
+        overlayCmdBuf = '';
+        onToast('');
+        return;
+      }
+      if (event.key === 'Backspace') {
+        if (overlayCmdBuf.length > 0) {
+          overlayCmdBuf = overlayCmdBuf.slice(0, -1);
+        } else {
+          overlayCmdActive = false;
+        }
+        onToast(overlayCmdBuf ? ':' + overlayCmdBuf : '');
+        return;
+      }
+      if (event.key.length === 1) {
+        overlayCmdBuf += event.key;
+        onToast(':' + overlayCmdBuf);
+      }
+      return;
+    }
+
+    if (event.key === ':') {
+      overlayCmdActive = true;
+      overlayCmdBuf = '';
+      onToast(':');
+      return;
+    }
+
+    // Normal vim key handling
+    const vimKey = codeToVimKey(event);
+    if (!vimKey) return;
+    if (!editorView) return;
+    const cm = getCM(editorView);
+    if (!cm) return;
+    (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
+
+    // If vim entered insert mode (e.g. user pressed i/a/o),
+    // switch to editor-insert so the overlay hides.
+    const vimState = cm.state?.vim;
+    if (vimState?.insertMode) {
+      mode = 'editor-insert';
+    }
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -581,51 +715,51 @@
       return;
     }
 
-    if (event.key === 'e' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!filePath || !isTextFile(filePath)) {
         onToast('此文件类型不支持编辑');
         return;
       }
       mode = 'editor-normal';
-    } else if (event.key === 'E' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath) && !isPdfFile(filePath) && !isVideoFile(filePath))) {
         onToast('此文件类型不支持全屏查看');
         return;
       }
       onFullscreen();
-    } else if (event.key === 'j' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       scrollPreview(40);
-    } else if (event.key === 'k' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       scrollPreview(-40);
-    } else if (event.key === 'h' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyH' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       scrollPreview(0, -40);
-    } else if (event.key === 'l' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyL' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       scrollPreview(0, 40);
-    } else if (event.key === 'J' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyJ' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       // PDF: next page
       if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) {
         event.preventDefault();
         loadPdfPage(filePath, pdfCurrentPage + 1);
       }
-    } else if (event.key === 'K' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyK' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       // PDF: previous page
       if (filePath && isPdfFile(filePath) && pdfCurrentPage > 0) {
         event.preventDefault();
         loadPdfPage(filePath, pdfCurrentPage - 1);
       }
-    } else if (event.key === 'g' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (previewContainer) previewContainer.scrollTop = 0;
-    } else if (event.key === 'G' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    } else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (previewContainer) previewContainer.scrollTop = previewContainer.scrollHeight;
-    } else if (event.ctrlKey && event.key === 's') {
+    } else if (event.ctrlKey && event.code === 'KeyS') {
       event.preventDefault();
       saveFile();
     }
@@ -701,7 +835,19 @@
   <div class="panel-content">
     {#if filePath}
       <div class="preview-area" bind:this={previewContainer}></div>
-      <div class="editor-area" bind:this={editorContainer}></div>
+      <div class="editor-area" bind:this={editorContainer}>
+        {#if mode === 'editor-normal'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="editor-overlay"
+            bind:this={overlayElement}
+            onkeydown={handleOverlayKeydown}
+            tabindex="0"
+            role="region"
+            aria-label="Editor navigation"
+          ></div>
+        {/if}
+      </div>
     {:else}
       <div class="welcome">
         <h2>Welcome to Wind</h2>
@@ -800,6 +946,18 @@
     width: 100%;
     height: 100%;
     display: none;
+    position: relative;
+  }
+
+  .editor-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: transparent;
+    outline: none;
   }
 
   .welcome {

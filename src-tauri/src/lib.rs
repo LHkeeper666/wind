@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::fs::File;
 use tauri::{Manager, State};
+use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus};
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -880,6 +882,25 @@ fn check_search_tools() -> serde_json::Value {
     })
 }
 
+#[tauri::command]
+fn set_ime_enabled(enabled: bool) {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        let himc = ImmGetContext(hwnd);
+        if himc.is_invalid() {
+            eprintln!("[IME] ImmGetContext returned invalid handle");
+            return;
+        }
+        let current = ImmGetOpenStatus(himc).as_bool();
+        eprintln!("[IME] current={current}, requested={enabled}");
+        if current != enabled {
+            let _ = ImmSetOpenStatus(himc, enabled.into());
+            eprintln!("[IME] toggled to {enabled}");
+        }
+        let _ = ImmReleaseContext(hwnd, himc);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -919,6 +940,7 @@ pub fn run() {
             search_files,
             cancel_search,
             check_search_tools,
+            set_ime_enabled,
             pdf::get_pdf_info,
             pdf::render_pdf_page,
             pdf::search_pdf_text,

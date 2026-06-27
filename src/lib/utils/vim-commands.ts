@@ -1,5 +1,6 @@
 import { ViewPlugin, type ViewUpdate } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface VimCommandCallbacks {
   save: () => Promise<void>;
@@ -8,12 +9,6 @@ export interface VimCommandCallbacks {
   isModified: () => boolean;
 }
 
-/**
- * Create an extension that:
- * 1. Shows vim mode (NORMAL/INSERT/VISUAL) in a status bar
- * 2. Intercepts ':' in normal mode for custom command input
- * Uses capture-phase native event listener to fire before vim.
- */
 export function createVimCommandHandler(
   getCallbacks: () => VimCommandCallbacks,
   onStatus?: (msg: string) => void
@@ -66,6 +61,7 @@ export function createVimCommandHandler(
 
       if (newMode !== modeText) {
         modeText = newMode;
+        invoke('set_ime_enabled', { enabled: newMode === 'INSERT' }).catch(() => {});
         if (!isCommandActive()) {
           renderStatus(modeText, 'normal');
         }
@@ -75,125 +71,40 @@ export function createVimCommandHandler(
     function processCommand(cmd: string) {
       const callbacks = getCallbacks();
       const trimmed = cmd.trim();
-
-      if (trimmed === 'w' || trimmed === 'write') {
-        callbacks.save();
-        return;
-      }
-
-      if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
-        callbacks.forceQuit();
-        return;
-      }
-
+      if (trimmed === 'w' || trimmed === 'write') { callbacks.save(); return; }
+      if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') { callbacks.forceQuit(); return; }
       if (trimmed === 'q' || trimmed === 'quit') {
-        if (callbacks.isModified()) {
-          onStatus?.('E37: No write since last change (add ! to override)');
-          return;
-        }
-        callbacks.quit();
-        return;
+        if (callbacks.isModified()) { onStatus?.('E37: No write since last change (add ! to override)'); return; }
+        callbacks.quit(); return;
       }
-
-      if (trimmed === 'wq' || trimmed === 'wq!' || trimmed === 'x' || trimmed === 'x!') {
-        callbacks.save().then(() => callbacks.quit());
-        return;
-      }
-
-      if (trimmed === 'wqall' || trimmed === 'wqall!') {
-        callbacks.save().then(() => callbacks.forceQuit());
-        return;
-      }
-
+      if (trimmed === 'wq' || trimmed === 'wq!' || trimmed === 'x' || trimmed === 'x!') { callbacks.save().then(() => callbacks.quit()); return; }
+      if (trimmed === 'wqall' || trimmed === 'wqall!') { callbacks.save().then(() => callbacks.forceQuit()); return; }
       onStatus?.(`E492: Not an editor command: ${trimmed}`);
     }
 
-    function isVimNormalMode(): boolean {
-      const cm = (view as any).cm;
-      if (!cm) return false;
-      const vimState = cm.state?.vim;
-      if (!vimState) return false;
-      return !vimState.insertMode && !vimState.visualMode;
-    }
-
     function handleKeydown(event: KeyboardEvent) {
-      // Command mode is active - handle all keys
       if (isCommandActive()) {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          processCommand(commandBuffer);
-          hideCommand();
-          return;
-        }
-
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          hideCommand();
-          return;
-        }
-
-        if (event.key === 'Backspace') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          if (commandBuffer.length > 0) {
-            commandBuffer = commandBuffer.slice(0, -1);
-            renderStatus(':' + commandBuffer, 'command');
-          } else {
-            hideCommand();
-          }
-          return;
-        }
-
-        // Ignore modifier/special keys
+        if (event.key === 'Enter') { event.preventDefault(); event.stopImmediatePropagation(); processCommand(commandBuffer); hideCommand(); return; }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); hideCommand(); return; }
+        if (event.key === 'Backspace') { event.preventDefault(); event.stopImmediatePropagation(); if (commandBuffer.length > 0) { commandBuffer = commandBuffer.slice(0, -1); renderStatus(':' + commandBuffer, 'command'); } else { hideCommand(); } return; }
         if (event.key.length > 1) return;
-
-        // Append character to command buffer
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        commandBuffer += event.key;
-        renderStatus(':' + commandBuffer, 'command');
-        return;
-      }
-
-      // In vim normal mode, block keys that shouldn't work outside insert mode
-      if (isVimNormalMode()) {
-        if (event.key === ':') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          showCommand();
-          return;
-        }
-        if (event.key === 'Backspace') {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          return;
-        }
+        event.preventDefault(); event.stopImmediatePropagation();
+        commandBuffer += event.key; renderStatus(':' + commandBuffer, 'command'); return;
       }
     }
 
-    // Capture phase: fires before vim's bubble-phase handlers
     view.dom.addEventListener('keydown', handleKeydown, true);
+    view.dom.addEventListener('focus', () => { if (isCommandActive()) hideCommand(); });
 
-    // Reset command mode when editor regains focus
-    view.dom.addEventListener('focus', () => {
-      if (isCommandActive()) {
-        hideCommand();
-      }
-    });
-
-    // Show initial mode
+    invoke('set_ime_enabled', { enabled: false }).catch(() => {});
     requestAnimationFrame(() => updateModeDisplay());
 
     return {
-      // Update mode display after each editor transaction (vim state changes)
-      update(_update: ViewUpdate) {
-        updateModeDisplay();
-      },
+      update(_update: ViewUpdate) { updateModeDisplay(); },
       destroy() {
         view.dom.removeEventListener('keydown', handleKeydown, true);
         statusElement?.remove();
+        invoke('set_ime_enabled', { enabled: true }).catch(() => {});
       },
     };
   });
