@@ -14,3 +14,5 @@ src-tauri/target/
 src-tauri/WixTools/
 src-tauri/*.exe
 bash.exe.stackdump
+
+docs/
