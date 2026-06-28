@@ -680,6 +680,7 @@ fn search_with_fd(fd_path: &str, root: &str, pattern: &str, max: usize, max_dept
     let mut child = std::process::Command::new(fd_path)
         .args([
             "-H",  // 包含隐藏文件/目录
+            "--no-ignore",  // 不遵守 .gitignore
             "--max-results", &max.to_string(),
             "--max-depth", &depth_str,
             "-i",  // 大小写不敏感
