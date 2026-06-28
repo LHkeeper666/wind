@@ -236,14 +236,14 @@
   // Drag state for column resizing
   let isDragging: 'first' | 'second' | null = $state(null);
   let dragStartX: number = 0;
-  let dragStartRatios: [number, number, number] = [1, 2, 2];
+  let dragStartRatios: [number, number, number] = [1, 1, 3];
 
   const commands = [
     { name: 'Open File', action: () => layout.setActiveColumn('current') },
     { name: 'Open Terminal', action: () => layout.toggleTerminal() },
     { name: 'Open Editor', action: () => layout.setActiveColumn('preview') },
     { name: 'Toggle Terminal', action: () => layout.toggleTerminal() },
-    { name: 'ratio 1:2:2', action: () => layout.setRatios([1, 2, 2]) },
+    { name: 'ratio 1:1:3', action: () => layout.setRatios([1, 1, 3]) },
     { name: 'ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
     { name: 'Close Panel', action: () => { showCommandPalette = false; } },
     { name: 'Help', action: () => { showCommandPalette = false; showHelp = true; } },

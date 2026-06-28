@@ -44,7 +44,7 @@ export interface LayoutState {
 }
 
 const initialState: LayoutState = {
-  columnRatios: [1, 2, 2],
+  columnRatios: [1, 1, 3],
   parentPath: '',
   currentPath: '',
   selectedFile: null,

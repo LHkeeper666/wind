@@ -41,7 +41,7 @@ npm run tauri build        # Build release binary
 ## Key Design Decisions
 
 - **Svelte 5 Runes**: All components use `$state()` for reactive state, `$derived()` for computed values, `$props()` for component props. Never use `export let` (Svelte 4 syntax).
-- **Three-Column Layout**: Default layout shows parent directory (1fr), current directory (2fr), and preview/editor (2fr). Inspired by Yazi file manager.
+- **Three-Column Layout**: Default layout shows parent directory (1fr), current directory (1fr), and preview/editor (3fr). Inspired by Yazi file manager.
 - **Terminal Mode System**: Terminal has Insert mode (keys go to shell) and Normal mode (keys for navigation). Escape switches to Normal, 'i' switches to Insert. Implemented via overlay div that blocks xterm.js input.
 - **Panel Navigation**: `h/l` to switch between panels when in directory panels. `j/k` to navigate within panel.
 - **Theme System**: CSS variables in `src/lib/styles/themes.css` with dark/light theme support.
