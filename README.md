@@ -2,7 +2,7 @@
 
 A vim-driven file workstation for Windows, built with Tauri 2.0 (Rust backend + Svelte 5 frontend).
 
-Inspired by [Yazi](https://github.com/sachinsenal0x64/yazi), Wind combines a three-column file browser, embedded terminal, code editor, and multi-format preview into a keyboard-first workflow.
+Inspired by [Yazi](https://github.com/sxyazi/yazi), Wind combines a three-column file browser, embedded terminal, code editor, and multi-format preview into a keyboard-first workflow.
 
 ## Features
 
