@@ -14,6 +14,7 @@
   import { isVideoFileExt } from '$lib/previewers';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import SearchModal from './SearchModal.svelte';
+  import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
 
   let currentPath: string = $state('');
@@ -22,6 +23,7 @@
   let commandQuery: string = $state('');
   let commandInput: HTMLInputElement | undefined = $state(undefined);
   let showFileSearch: boolean = $state(false);
+  let showHelp: boolean = $state(false);
   let fileSearchHomeDir: string = $state('');
   let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
@@ -241,9 +243,10 @@
     { name: 'Open Terminal', action: () => layout.toggleTerminal() },
     { name: 'Open Editor', action: () => layout.setActiveColumn('preview') },
     { name: 'Toggle Terminal', action: () => layout.toggleTerminal() },
-    { name: 'Set Ratio 1:2:2', action: () => layout.setRatios([1, 2, 2]) },
-    { name: 'Set Ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
+    { name: 'ratio 1:2:2', action: () => layout.setRatios([1, 2, 2]) },
+    { name: 'ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
     { name: 'Close Panel', action: () => { showCommandPalette = false; } },
+    { name: 'Help', action: () => { showCommandPalette = false; showHelp = true; } },
     { name: 'Tab: New', action: () => handleTabNew() },
     { name: 'Tab: Close', action: () => handleTabClose() },
     { name: 'Tab: Swap Next', action: () => tabs.swapTab(1) },
@@ -492,6 +495,13 @@
       return;
     }
 
+    // F1 to show help overlay
+    if (event.key === 'F1') {
+      event.preventDefault();
+      showHelp = true;
+      return;
+    }
+
     // Ctrl+L to manually restore focus (skip if Ctrl+W prefix is active)
     if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
       const canRestore = !showCommandPalette && !showFileSearch
@@ -716,6 +726,12 @@
       } else if (q === 'tab swap' || q === 'tabs') {
         tabs.swapTab(1);
         showCommandPalette = false;
+        return;
+      }
+      // Help command
+      if (commandQuery === 'help') {
+        showCommandPalette = false;
+        showHelp = true;
         return;
       }
       // Ratio command
@@ -1007,6 +1023,9 @@
     onClose={() => showFileSearch = false}
     onSelect={handleFileSearchSelect}
   />
+
+  <!-- Help Overlay -->
+  <HelpOverlay bind:visible={showHelp} />
 
   <!-- Toast Notification -->
   {#if toastMessage}
