@@ -600,7 +600,7 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal') && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
