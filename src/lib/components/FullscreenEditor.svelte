@@ -168,10 +168,11 @@
         key: 'Tab',
         run: (view) => {
           const { state } = view;
-          if (state.selection.main.empty) {
-            view.dispatch(state.replaceSelection('    '));
-          } else {
-            const { from, to } = state.selection.main;
+          const { from, to } = state.selection.main;
+          const line = state.doc.lineAt(from);
+          const col = from - line.from;
+          const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
+          if (markerMatch && col <= markerMatch[1].length || !state.selection.main.empty) {
             const lineFrom = state.doc.lineAt(from);
             const lineTo = state.doc.lineAt(to);
             const changes = [];
@@ -179,6 +180,24 @@
               changes.push({ from: state.doc.line(i).from, insert: '    ' });
             }
             view.dispatch({ changes });
+          } else {
+            view.dispatch(state.replaceSelection('    '));
+          }
+          return true;
+        },
+      }, {
+        key: 'Shift-Tab',
+        run: (view) => {
+          const { state } = view;
+          const line = state.doc.lineAt(state.selection.main.from);
+          const indentMatch = line.text.match(/^(\s{1,4})/);
+          if (indentMatch) {
+            view.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length } });
+          } else {
+            const markerMatch = line.text.match(/^((?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
+            if (markerMatch) {
+              view.dispatch({ changes: { from: line.from, to: line.from + markerMatch[1].length } });
+            }
           }
           return true;
         },

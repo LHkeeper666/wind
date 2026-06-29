@@ -115,14 +115,18 @@
     return mode;
   }
 
-  // Insert 4 spaces at cursor / indent selected lines (called from global Tab handler)
+  // Tab: indent line when after list marker, insert spaces otherwise (called from global Tab handler)
   export function pressTab() {
     if (!editorView || mode !== 'editor-insert') return;
     const { state } = editorView;
-    if (state.selection.main.empty) {
-      editorView.dispatch(state.replaceSelection('    '));
-    } else {
-      const { from, to } = state.selection.main;
+    const { from, to } = state.selection.main;
+    const line = state.doc.lineAt(from);
+    const col = from - line.from;
+    // Match list markers: "- ", "* ", "+ ", "1. ", "- [ ] ", etc.
+    const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
+
+    if (markerMatch && col <= markerMatch[1].length || !state.selection.main.empty) {
+      // After list marker or has selection: indent line(s)
       const lineFrom = state.doc.lineAt(from);
       const lineTo = state.doc.lineAt(to);
       const changes = [];
@@ -130,6 +134,29 @@
         changes.push({ from: state.doc.line(i).from, insert: '    ' });
       }
       editorView.dispatch({ changes });
+    } else {
+      // In content: insert 4 spaces at cursor
+      editorView.dispatch(state.replaceSelection('    '));
+    }
+  }
+
+
+  // Shift+Tab: un-indent line or remove list marker (called from global Tab handler)
+  export function pressShiftTab() {
+
+    if (!editorView || mode !== 'editor-insert') return;
+    const { state } = editorView;
+    const line = state.doc.lineAt(state.selection.main.from);
+    const indentMatch = line.text.match(/^(\s{1,4})/);
+    if (indentMatch) {
+      // Remove up to 4 leading spaces
+      editorView.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length } });
+    } else {
+      // Remove list marker: "- ", "* ", "1. ", "- [ ] ", etc.
+      const markerMatch = line.text.match(/^((?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
+      if (markerMatch) {
+        editorView.dispatch({ changes: { from: line.from, to: line.from + markerMatch[1].length } });
+      }
     }
   }
 
@@ -591,6 +618,44 @@
       state,
       parent: editorContainer,
     });
+
+    // Intercept Enter on list lines before CodeMirror/markdown extension handles it
+    editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || !editorView) return;
+      const { state } = editorView;
+      const line = state.doc.lineAt(state.selection.main.head);
+      const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
+      if (!markerMatch) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const marker = markerMatch[1];
+      const contentAfter = line.text.slice(marker.length).trim();
+      const pos = state.selection.main.head;
+
+      if (!contentAfter) {
+        const indentMatch = line.text.match(/^(\s{1,4})/);
+        if (indentMatch) {
+          // Has leading whitespace: remove one level, cursor after marker
+          editorView.dispatch({
+            changes: { from: line.from, to: line.from + indentMatch[1].length },
+            selection: { anchor: line.from + marker.length - indentMatch[1].length },
+          });
+        } else {
+          // No indentation: remove marker, cursor at line start
+          editorView.dispatch({
+            changes: { from: line.from, to: line.from + marker.length },
+            selection: { anchor: line.from },
+          });
+        }
+      } else {
+        editorView.dispatch({
+          changes: { from: pos, insert: '\n' + marker },
+          selection: { anchor: pos + 1 + marker.length },
+        });
+      }
+    }, true); // capture phase
 
     editorView.focus();
   }
