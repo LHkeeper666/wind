@@ -7,6 +7,7 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
+  import { keymap } from '@codemirror/view';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
@@ -112,6 +113,24 @@
   // Sync mode to layout store
   export function getMode(): string {
     return mode;
+  }
+
+  // Insert 4 spaces at cursor / indent selected lines (called from global Tab handler)
+  export function pressTab() {
+    if (!editorView || mode !== 'editor-insert') return;
+    const { state } = editorView;
+    if (state.selection.main.empty) {
+      editorView.dispatch(state.replaceSelection('    '));
+    } else {
+      const { from, to } = state.selection.main;
+      const lineFrom = state.doc.lineAt(from);
+      const lineTo = state.doc.lineAt(to);
+      const changes = [];
+      for (let i = lineFrom.number; i <= lineTo.number; i++) {
+        changes.push({ from: state.doc.line(i).from, insert: '    ' });
+      }
+      editorView.dispatch({ changes });
+    }
   }
 
   function getPreviewRouter(): PreviewRouter {
@@ -505,6 +524,26 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup,
+      keymap.of([{
+        key: 'Tab',
+        run: (view) => {
+          const { state } = view;
+          if (state.selection.main.empty) {
+            view.dispatch(state.replaceSelection('    '));
+          } else {
+            // Indent selected lines
+            const { from, to } = state.selection.main;
+            const lineFrom = state.doc.lineAt(from);
+            const lineTo = state.doc.lineAt(to);
+            const changes = [];
+            for (let i = lineFrom.number; i <= lineTo.number; i++) {
+              changes.push({ from: state.doc.line(i).from, insert: '    ' });
+            }
+            view.dispatch({ changes });
+          }
+          return true;
+        },
+      }]),
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
@@ -1158,5 +1197,274 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     Markdown Preview — Terminal style (Obsidian-inspired)
+     ═══════════════════════════════════════════════════════ */
+
+  :global(.preview-markdown) {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary);
+  }
+
+  /* ── Headings ── */
+
+  :global(.preview-markdown h1),
+  :global(.preview-markdown h2),
+  :global(.preview-markdown h3),
+  :global(.preview-markdown h4),
+  :global(.preview-markdown h5),
+  :global(.preview-markdown h6) {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    line-height: 1.3;
+    margin-top: 1.6em;
+    margin-bottom: 0.6em;
+    color: var(--accent);
+  }
+
+  :global(.preview-markdown h1) {
+    font-size: 1.8em;
+    padding-bottom: 0.3em;
+    border-bottom: 2px solid var(--border);
+  }
+
+  :global(.preview-markdown h2) {
+    font-size: 1.5em;
+    padding-bottom: 0.25em;
+    border-bottom: 1px solid var(--border);
+  }
+
+  :global(.preview-markdown h3) {
+    font-size: 1.25em;
+  }
+
+  :global(.preview-markdown h4) {
+    font-size: 1.1em;
+    color: var(--text-secondary);
+  }
+
+  :global(.preview-markdown h5) {
+    font-size: 1em;
+    color: var(--text-secondary);
+  }
+
+  :global(.preview-markdown h6) {
+    font-size: 0.9em;
+    color: var(--text-muted);
+  }
+
+  :global(.preview-markdown h1:first-child),
+  :global(.preview-markdown h2:first-child),
+  :global(.preview-markdown h3:first-child) {
+    margin-top: 0;
+  }
+
+  /* ── Paragraphs & Text ── */
+
+  :global(.preview-markdown p) {
+    margin-top: 0;
+    margin-bottom: 1em;
+  }
+
+  :global(.preview-markdown strong) {
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  :global(.preview-markdown em) {
+    font-style: italic;
+    color: var(--text-primary);
+  }
+
+  :global(.preview-markdown del) {
+    text-decoration: line-through;
+    color: var(--text-muted);
+  }
+
+  /* ── Links ── */
+
+  :global(.preview-markdown a) {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dashed var(--accent);
+    transition: border-bottom-style 0.15s;
+  }
+
+  :global(.preview-markdown a:hover) {
+    border-bottom-style: solid;
+  }
+
+  /* ── Horizontal Rule ── */
+
+  :global(.preview-markdown hr) {
+    border: none;
+    border-top: 1px dashed var(--border);
+    margin: 2em 0;
+  }
+
+  /* ── Lists ── */
+
+  :global(.preview-markdown ul),
+  :global(.preview-markdown ol) {
+    padding-left: 2em;
+    margin-bottom: 1em;
+  }
+
+  :global(.preview-markdown li) {
+    margin-bottom: 0.3em;
+  }
+
+  :global(.preview-markdown li > p) {
+    margin-bottom: 0.3em;
+  }
+
+  :global(.preview-markdown ul.contains-task-list) {
+    list-style: none;
+    padding-left: 0.5em;
+  }
+
+  :global(.preview-markdown .task-list-item) {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5em;
+  }
+
+  :global(.preview-markdown .task-list-item input[type="checkbox"]) {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    cursor: default;
+    flex-shrink: 0;
+    position: relative;
+    top: 2px;
+  }
+
+  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked) {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked::after) {
+    content: '✓';
+    position: absolute;
+    top: -2px;
+    left: 1px;
+    font-size: 11px;
+    color: var(--bg-primary);
+    font-weight: bold;
+  }
+
+  /* ── Blockquotes ── */
+
+  :global(.preview-markdown blockquote) {
+    margin: 1em 0;
+    padding: 0.5em 1em;
+    border-left: 3px solid var(--accent);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  :global(.preview-markdown blockquote p:last-child) {
+    margin-bottom: 0;
+  }
+
+  /* ── Inline Code ── */
+
+  :global(.preview-markdown code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.15em 0.4em;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    color: var(--warning);
+  }
+
+  /* ── Fenced Code Blocks (Shiki) ── */
+
+  :global(.preview-markdown pre) {
+    margin: 1em 0;
+    border-radius: 4px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+  }
+
+  :global(.preview-markdown pre code) {
+    display: block;
+    padding: 1em;
+    font-size: 0.85em;
+    line-height: 1.6;
+    background: none;
+    color: inherit;
+    border-radius: 0;
+  }
+
+  /* Reset Shiki's inline styles so our theme takes over */
+  :global(.preview-markdown pre code) {
+    background-color: transparent !important;
+  }
+
+  :global(.preview-markdown pre code span) {
+    /* Preserve Shiki token colors */
+  }
+
+  /* ── Tables ── */
+
+  :global(.preview-markdown table) {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+    font-size: 0.9em;
+  }
+
+  :global(.preview-markdown thead th) {
+    background: var(--bg-secondary);
+    font-weight: 600;
+    text-align: left;
+    padding: 0.6em 0.8em;
+    border: 1px solid var(--border);
+  }
+
+  :global(.preview-markdown tbody td) {
+    padding: 0.5em 0.8em;
+    border: 1px solid var(--border);
+  }
+
+  :global(.preview-markdown tbody tr:nth-child(even)) {
+    background: var(--bg-secondary);
+  }
+
+  :global(.preview-markdown tbody tr:hover) {
+    background: var(--bg-hover);
+  }
+
+  /* ── Images ── */
+
+  :global(.preview-markdown img) {
+    max-width: 100%;
+    border-radius: 4px;
+    margin: 0.5em 0;
+  }
+
+  /* ── Definition Lists ── */
+
+  :global(.preview-markdown dl) {
+    margin: 1em 0;
+  }
+
+  :global(.preview-markdown dt) {
+    font-weight: 700;
+    margin-top: 0.5em;
+  }
+
+  :global(.preview-markdown dd) {
+    margin-left: 2em;
+    color: var(--text-secondary);
   }
 </style>

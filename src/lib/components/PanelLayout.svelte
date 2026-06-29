@@ -478,6 +478,15 @@
   }
 
   async function handleGlobalKeydown(event: KeyboardEvent) {
+    // Tab: prevent native focus switching (vim-driven navigation instead)
+    // Skip when command palette is open (Tab = path completion)
+    if (event.key === 'Tab' && !showCommandPalette) {
+      event.preventDefault();
+      if ($layout.activeColumn === 'preview' && !$layout.fullscreenEditorOpen) {
+        previewEditor?.pressTab();
+      }
+    }
+
     // Ctrl+= / Ctrl+- / Ctrl+0 for zoom
     if (event.ctrlKey && (event.key === '=' || event.key === '+')) {
       event.preventDefault();

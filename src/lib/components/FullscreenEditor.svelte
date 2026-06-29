@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
+  import { keymap } from '@codemirror/view';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
@@ -163,6 +164,25 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup,
+      keymap.of([{
+        key: 'Tab',
+        run: (view) => {
+          const { state } = view;
+          if (state.selection.main.empty) {
+            view.dispatch(state.replaceSelection('    '));
+          } else {
+            const { from, to } = state.selection.main;
+            const lineFrom = state.doc.lineAt(from);
+            const lineTo = state.doc.lineAt(to);
+            const changes = [];
+            for (let i = lineFrom.number; i <= lineTo.number; i++) {
+              changes.push({ from: state.doc.line(i).from, insert: '    ' });
+            }
+            view.dispatch({ changes });
+          }
+          return true;
+        },
+      }]),
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
