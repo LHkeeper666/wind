@@ -1,12 +1,8 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from '@xterm/xterm';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { WebLinksAddon } from '@xterm/addon-web-links';
-  import { ShellIntegration, type ShellState } from '$lib/terminal/shell-integration';
-  import { UnicodeV6WideMath } from '$lib/terminal/unicode-provider';
+  import { get } from 'svelte/store';
+  import { terminalManager } from '$lib/terminal/terminal-manager';
+  import type { TerminalInstance } from '$lib/terminal/terminal-manager';
   import { layout } from '$lib/stores/layout';
   import '@xterm/xterm/css/xterm.css';
 
@@ -15,6 +11,7 @@
     fullscreen = false,
     currentPath = '',
     shellType: shellTypeProp = 'git-bash',
+    currentTabId = 1,
     zoomLevel = 1,
     onClose = () => {},
   }: {
@@ -22,222 +19,139 @@
     fullscreen?: boolean;
     currentPath?: string;
     shellType?: string;
+    currentTabId?: number;
     zoomLevel?: number;
     onClose?: () => void;
   } = $props();
 
-  let terminalContainer: HTMLDivElement | undefined = $state(undefined);
-  let terminal: Terminal | undefined;
-  let fitAddon: FitAddon | undefined;
-  let terminalSize = { cols: 80, rows: 24 };
-  let shellType: string = $state(shellTypeProp);
-
-  // Sync shellType from prop
-  $effect(() => {
-    shellType = shellTypeProp;
-  });
-  let unlisten: (() => void) | undefined;
-  let mode: 'normal' | 'insert' = $state('insert');
+  let terminalWrapper: HTMLDivElement | undefined = $state(undefined);
   let overlayElement: HTMLDivElement | undefined = $state(undefined);
-  // When true, initTerminal will not auto-focus (used during tab restore)
-  let suppressAutoFocus: boolean = false;
-  let escapeHandler: ((e: KeyboardEvent) => void) | undefined;
+  let terminalRoot: HTMLDivElement | undefined = $state(undefined);
   let terminalHeight: number = $state(300);
   let isDragging: boolean = $state(false);
   let dragStartY: number = 0;
   let dragStartHeight: number = 0;
   let zoomDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let isZooming = false;
+  let activeTabId: number = currentTabId;
+  let mode: 'normal' | 'insert' = $state('insert');
 
-  // Shell integration
-  const shellIntegration = new ShellIntegration();
-  let shellState: ShellState = $state(shellIntegration.getState());
-
-  // Focus overlay when switching to normal mode
   $effect(() => {
-    if (mode === 'normal' && overlayElement) {
-      overlayElement.focus();
-    }
+    terminalManager.setZoom(zoomLevel);
   });
 
-  // Initialize terminal once when container is available
-  let terminalInitialized = false;
   $effect(() => {
-    if (!terminalInitialized && terminalContainer) {
-      terminalInitialized = true;
-      // Small delay to ensure DOM is ready
-      setTimeout(() => {
-        if (!terminal && terminalContainer) {
-          initTerminal();
-        }
-      }, 50);
-    }
-  });
-
-  // Fit terminal when visibility changes (needed because container size may change while hidden)
-  $effect(() => {
-    if (visible && terminal && fitAddon) {
-      setTimeout(() => fitAddon?.fit(), 50);
-    }
-  });
-
-  onMount(() => {
-    // Set up Escape key handler in capturing phase
-    escapeHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && mode === 'insert') {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        setMode('normal');
-      }
-    };
-    // Escape handler will be attached when terminal container is created
-  });
-
-  onDestroy(() => {
-    if (escapeHandler && terminalContainer) {
-      terminalContainer.removeEventListener('keydown', escapeHandler, true);
-    }
-    if (zoomDebounceTimer) {
-      clearTimeout(zoomDebounceTimer);
-      zoomDebounceTimer = null;
-    }
-    if (unlisten) unlisten();
-    if (terminal) {
-      terminal.dispose();
-    }
-  });
-
-  function initTerminal() {
-    if (!terminalContainer) return;
-
-    // Attach Escape key handler
-    if (escapeHandler) {
-      terminalContainer.addEventListener('keydown', escapeHandler, true);
-    }
-
-    terminal = new Terminal({
-      cursorBlink: true,
-      fontSize: Math.round(baseFontSize * zoomLevel),
-      fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
-      theme: {
-        background: '#282828',
-        foreground: '#ebdbb2',
-        cursor: '#ebdbb2',
-        selectionBackground: '#504945',
-        black: '#282828',
-        red: '#fb4934',
-        green: '#b8bb26',
-        yellow: '#fabd2f',
-        blue: '#83a598',
-        magenta: '#d3869b',
-        cyan: '#8ec07c',
-        white: '#ebdbb2',
-        brightBlack: '#928374',
-        brightRed: '#fb4934',
-        brightGreen: '#b8bb26',
-        brightYellow: '#fabd2f',
-        brightBlue: '#83a598',
-        brightMagenta: '#d3869b',
-        brightCyan: '#8ec07c',
-        brightWhite: '#fbf1c7',
-      },
-      disableStdin: false,
-      allowProposedApi: true,
-    });
-
-    fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon());
-
-    // Register wide-math Unicode provider (before terminal.open!)
-    const wideMath = new UnicodeV6WideMath();
-    terminal.unicode.register(wideMath);
-    terminal.unicode.activeVersion = wideMath.version;
-
-    terminal.open(terminalContainer);
-
-    // Register handlers BEFORE fit so the first resize is captured
-    terminal.onData((data) => {
-      if (mode === 'insert') {
-        invoke('terminal_input', { data }).catch(console.error);
-      }
-    });
-
-    terminal.onResize(({ cols, rows }) => {
-      terminalSize = { cols, rows };
-      invoke('terminal_resize', { cols, rows }).catch(console.error);
-    });
-
-    // Only fit if container has valid dimensions (not hidden with display:none)
-    if (terminalContainer.offsetWidth > 0 && terminalContainer.offsetHeight > 0) {
-      fitAddon.fit();
-    }
-    if (!suppressAutoFocus) {
-      terminal.focus();
-    }
-    suppressAutoFocus = false;
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && !isZooming && terminalContainer && terminalContainer.offsetWidth > 0) {
-        fitAddon.fit();
-      }
-    });
-    resizeObserver.observe(terminalContainer);
-
-    // Listen for terminal output from Rust
-    listen<string>('terminal-output', (event) => {
-      if (terminal) {
-        // Process output through shell integration to extract OSC sequences
-        const cleanData = shellIntegration.processData(event.payload);
-        terminal.write(cleanData);
-      }
-    }).then((unlistenFn) => {
-      unlisten = unlistenFn;
-    });
-
-    // Subscribe to shell state changes
-    shellIntegration.subscribe((state) => {
-      shellState = state;
-    });
-
-    // Emit directory change events
-    shellIntegration.onDirectoryChange((directory) => {
+    terminalManager.setDirectoryChangeHandler((directory) => {
       window.dispatchEvent(new CustomEvent('terminal:directory-change', {
         detail: { directory }
       }));
     });
+  });
 
-    startShell();
-  }
-
-  async function startShell() {
-    try {
-      if (terminal) {
-        terminal.clear();
-        terminal.write('\x1b[2J\x1b[H'); // Clear screen and move cursor to home
+  $effect(() => {
+    terminalManager.setShellStateChangeHandler((_tabId, _state) => {
+      // Trigger Svelte reactivity by reassigning
+      const inst = terminalManager.get(activeTabId);
+      if (inst) {
+        layout.setTerminalMode(inst.mode);
       }
-      shellIntegration.reset();
-      await invoke('terminal_spawn', { shell: shellType, cwd: currentPath || null, cols: terminalSize.cols, rows: terminalSize.rows });
-    } catch (error) {
-      console.error('Failed to start shell:', error);
-      if (terminal) terminal.writeln('Failed to start shell: ' + error);
-    }
-  }
+    });
+  });
 
-  async function changeShell(newShell: string) {
-    shellType = newShell;
-    if (terminal) {
-      terminal.clear();
-      await startShell();
+  // Ensure terminal container exists for current tab and switch visibility
+  $effect(() => {
+    if (!terminalWrapper) return;
+
+    const prevTabId = activeTabId;
+    activeTabId = currentTabId;
+
+    // Hide previous tab's container
+    if (prevTabId !== activeTabId) {
+      terminalManager.setContainerVisible(prevTabId, false);
     }
-  }
+
+    // Create container and terminal if needed
+    if (!terminalManager.has(activeTabId)) {
+      terminalManager.createContainer(activeTabId, terminalWrapper);
+      terminalManager.create(activeTabId, shellTypeProp);
+      // Sync mode from layout store (restoreTabAndFocus may have set it)
+      const storeMode = get(layout).terminalMode;
+      if (storeMode) {
+        mode = storeMode;
+        terminalManager.setMode(activeTabId, storeMode);
+      }
+      terminalManager.startShell(activeTabId, shellTypeProp, currentPath);
+    } else {
+      // Sync mode from the existing terminal instance
+      const instance = terminalManager.get(activeTabId);
+      if (instance) {
+        mode = instance.mode;
+      }
+      terminalManager.setContainerVisible(activeTabId, true);
+      // Fit after becoming visible
+      setTimeout(() => terminalManager.fit(activeTabId), 50);
+    }
+
+    // Restore focus based on terminal mode (deferred to ensure DOM is ready)
+    // Only if terminal is visible (hidden terminals shouldn't steal focus)
+    if (prevTabId !== activeTabId && visible) {
+      requestAnimationFrame(() => {
+        if (mode === 'normal' && overlayElement) {
+          overlayElement.focus();
+        } else {
+          terminalManager.focus(activeTabId);
+        }
+      });
+    }
+  });
+
+  // Sync shell type changes
+  $effect(() => {
+    const instance = terminalManager.get(activeTabId);
+    if (instance && instance.shellType !== shellTypeProp) {
+      terminalManager.changeShell(activeTabId, shellTypeProp, currentPath);
+    }
+  });
+
+  // Fit terminal when visibility changes
+  $effect(() => {
+    if (visible) {
+      setTimeout(() => terminalManager.fit(activeTabId), 50);
+    }
+  });
+
+  // Focus overlay when switching to normal mode (backup for tab restore)
+  $effect(() => {
+    if (mode === 'normal' && overlayElement) {
+      requestAnimationFrame(() => overlayElement?.focus());
+    }
+  });
+
+  onMount(() => {
+    // Add capture-phase Escape handler on terminal wrapper to intercept before xterm
+    if (terminalWrapper) {
+      terminalWrapper.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Escape' && mode === 'insert') {
+          e.preventDefault();
+          e.stopPropagation();
+          setMode('normal');
+        }
+      }, true); // capture phase
+    }
+  });
+
+  onDestroy(() => {
+    if (zoomDebounceTimer) {
+      clearTimeout(zoomDebounceTimer);
+    }
+    terminalManager.destroyAll();
+  });
 
   export function focus() {
     if (mode === 'normal' && overlayElement) {
       overlayElement.focus();
-    } else if (terminal) {
-      terminal.focus();
+    } else {
+      terminalManager.focus(activeTabId);
     }
   }
 
@@ -245,43 +159,56 @@
     visible = !visible;
   }
 
-  const baseFontSize = 14;
-
   export function setZoom(level: number) {
-    if (!terminal) return;
     isZooming = true;
-    terminal.options.fontSize = Math.round(baseFontSize * level);
+    terminalManager.setZoom(level);
     if (zoomDebounceTimer) clearTimeout(zoomDebounceTimer);
     zoomDebounceTimer = setTimeout(() => {
       isZooming = false;
-      if (fitAddon) fitAddon.fit();
+      terminalManager.fit(activeTabId);
     }, 200);
   }
 
   export function clear() {
-    if (terminal) terminal.clear();
+    terminalManager.clear(activeTabId);
   }
 
   export function setMode(newMode: 'normal' | 'insert') {
     mode = newMode;
+    terminalManager.setMode(activeTabId, newMode);
     layout.setTerminalMode(newMode);
-    if (terminal) {
-      if (mode === 'normal') {
-        terminal.options.disableStdin = true;
-        terminal.blur();
-      } else {
-        terminal.options.disableStdin = false;
-        terminal.focus();
+    if (newMode === 'normal') {
+      const instance = terminalManager.get(activeTabId);
+      if (instance) {
+        instance.terminal.blur();
       }
+      // Focus overlay after Svelte renders it into the DOM
+      requestAnimationFrame(() => {
+        overlayElement?.focus();
+      });
+    } else {
+      terminalManager.focus(activeTabId);
     }
   }
 
   export function getMode() {
-    return mode;
+    const instance = terminalManager.get(activeTabId);
+    return instance?.mode || 'insert';
   }
 
-  export function setSuppressAutoFocus(value: boolean) {
-    suppressAutoFocus = value;
+  export function setSuppressAutoFocus(_value: boolean) {
+    // No longer needed — each terminal has its own lifecycle
+  }
+
+  // Get shell state for current tab (reactive)
+  function getShellState() {
+    const instance = terminalManager.get(activeTabId);
+    return instance?.shellState || { currentDirectory: '', isCommandRunning: false, lastExitCode: null };
+  }
+
+  function getShellType() {
+    const instance = terminalManager.get(activeTabId);
+    return instance?.shellType || 'git-bash';
   }
 
   function startDrag(event: MouseEvent) {
@@ -305,15 +232,43 @@
     window.removeEventListener('mousemove', handleDrag);
     window.removeEventListener('mouseup', stopDrag);
   }
+
+  // Make getShellState reactive by calling it in the template
+  let shellState = $state({ currentDirectory: '', isCommandRunning: false, lastExitCode: null as number | null });
+  let currentShellType = $state('git-bash');
+
+  $effect(() => {
+    const instance = terminalManager.get(activeTabId);
+    if (instance) {
+      shellState = instance.shellState;
+      currentShellType = instance.shellType;
+    }
+  });
+
+  // Periodic shell state sync (lightweight)
+  let syncInterval: ReturnType<typeof setInterval> | null = null;
+  $effect(() => {
+    if (visible && activeTabId) {
+      syncInterval = setInterval(() => {
+        const instance = terminalManager.get(activeTabId);
+        if (instance) {
+          shellState = { ...instance.shellState };
+          currentShellType = instance.shellType;
+        }
+      }, 500);
+    } else if (syncInterval) {
+      clearInterval(syncInterval);
+      syncInterval = null;
+    }
+  });
+
+  onDestroy(() => {
+    if (syncInterval) clearInterval(syncInterval);
+  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="floating-terminal" class:fullscreen class:hidden={!visible} style={fullscreen ? '' : `height: ${terminalHeight}px`} onkeydown={(e) => {
-  if (e.key === 'Escape' && mode === 'insert') {
-    e.preventDefault();
-    setMode('normal');
-  }
-}}>
+<div class="floating-terminal" bind:this={terminalRoot} class:fullscreen class:hidden={!visible} style={fullscreen ? '' : `height: ${terminalHeight}px`}>
   {#if !fullscreen}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="terminal-handle" onmousedown={startDrag} role="separator" aria-orientation="horizontal"></div>
@@ -335,35 +290,49 @@
     <div class="shell-selector">
       <button
         class="shell-btn"
-        class:selected={shellType === 'git-bash'}
-        onclick={() => changeShell('git-bash')}
+        class:selected={currentShellType === 'git-bash'}
+        onclick={() => terminalManager.changeShell(activeTabId, 'git-bash', currentPath)}
       >
         Bash
       </button>
       <button
         class="shell-btn"
-        class:selected={shellType === 'powershell'}
-        onclick={() => changeShell('powershell')}
+        class:selected={currentShellType === 'powershell'}
+        onclick={() => terminalManager.changeShell(activeTabId, 'powershell', currentPath)}
       >
         Pwsh
       </button>
       <button
         class="shell-btn"
-        class:selected={shellType === 'cmd'}
-        onclick={() => changeShell('cmd')}
+        class:selected={currentShellType === 'cmd'}
+        onclick={() => terminalManager.changeShell(activeTabId, 'cmd', currentPath)}
       >
         CMD
       </button>
-      <button class="shell-btn" onclick={() => clear()}>
+      <button class="shell-btn" onclick={() => terminalManager.clear(activeTabId)}>
         Clear
       </button>
     </div>
   </div>
-  <div class="terminal-container" bind:this={terminalContainer}></div>
-  {#if mode === 'normal'}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="terminal-overlay" bind:this={overlayElement} onkeydown={(e) => { if (e.key === 'i' && !e.ctrlKey && !e.altKey) { e.preventDefault(); setMode('insert'); } }} tabindex="0"></div>
-  {/if}
+  <div class="terminal-containers" bind:this={terminalWrapper}>
+    {#if mode === 'normal'}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div class="terminal-overlay" bind:this={overlayElement} onkeydown={(e) => {
+        if (e.key === 'i' && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          setMode('insert');
+          return;
+        }
+        // All other keys (t, n, etc.) bubble to PanelLayout's global handler
+        // Refocus overlay after event processing to prevent xterm from stealing focus
+        requestAnimationFrame(() => {
+          if (mode === 'normal') {
+            overlayElement?.focus();
+          }
+        });
+      }} tabindex="0"></div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -384,15 +353,6 @@
     inset: 0;
     z-index: 1000;
     border-top: none;
-  }
-
-  @keyframes slideUp {
-    from {
-      transform: translateY(100%);
-    }
-    to {
-      transform: translateY(0);
-    }
   }
 
   .terminal-handle {
@@ -479,19 +439,23 @@
     color: var(--bg-primary);
   }
 
-  .terminal-container {
+  .terminal-containers {
     flex: 1;
-    padding: 4px;
+    position: relative;
     overflow: hidden;
     background-color: #282828;
   }
 
-  .terminal-overlay {
+  .terminal-containers :global(.terminal-container) {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
+    padding: 4px;
+    overflow: hidden;
+  }
+
+  .terminal-containers :global(.terminal-overlay) {
+    position: absolute;
+    inset: 0;
     background: transparent;
     z-index: 10;
     cursor: default;

@@ -13,6 +13,7 @@
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
   import { isVideoFileExt } from '$lib/previewers';
   import FloatingTerminal from './FloatingTerminal.svelte';
+  import { terminalManager } from '$lib/terminal/terminal-manager';
   import SearchModal from './SearchModal.svelte';
   import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
@@ -337,7 +338,9 @@
       showToast('Cannot close last tab');
       return;
     }
-    tabs.closeTab(tabsState.activeTabId);
+    const closingTabId = tabsState.activeTabId;
+    tabs.closeTab(closingTabId);
+    terminalManager.destroy(closingTabId);
     restoreTabAndFocus();
     showToast('Tab closed');
   }
@@ -388,21 +391,19 @@
     // Restore terminal state
     layout.setTerminalHeight(active.terminalHeight);
     if (active.terminalVisible) {
-      // If terminal should not get focus, suppress initTerminal's auto-focus
-      if (active.terminalMode !== 'insert') {
-        floatingTerminal?.setSuppressAutoFocus(true);
-      }
       layout.showTerminal();
-      // Focus based on saved terminal mode
-      if (active.terminalMode === 'insert') {
-        focusPanel('terminal');
+      // Restore fullscreen state
+      if (active.fullscreenTerminalOpen) {
+        layout.openFullscreenTerminal();
       } else {
-        // Terminal visible but in normal mode — sync mode and focus current panel
-        layout.setTerminalMode(active.terminalMode || 'normal');
-        floatingTerminal?.setMode(active.terminalMode || 'normal');
-        focusPanel('current');
+        layout.closeFullscreenTerminal();
       }
+      // Sync terminal mode to store (FloatingTerminal will read it on tab switch)
+      layout.setTerminalMode(active.terminalMode || 'insert');
+      // Focus will be restored by FloatingTerminal's tab-switch effect
+      // after activeTabId updates (deferred to next microtask)
     } else {
+      layout.closeFullscreenTerminal();
       layout.hideTerminal();
       focusPanel('current');
     }
@@ -659,7 +660,6 @@
     const canUseTabPrefix = !showCommandPalette && !showFileSearch
       && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
       && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
-      && !$layout.fullscreenTerminalOpen
       && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')
       && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
 
@@ -1077,6 +1077,7 @@
     fullscreen={$layout.fullscreenTerminalOpen}
     currentPath={currentPath}
     shellType={$activeTab.shellType}
+    currentTabId={$activeTab.id}
     zoomLevel={zoomLevel}
     onClose={handleCloseTerminal}
   />

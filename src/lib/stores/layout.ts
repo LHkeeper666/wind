@@ -173,7 +173,7 @@ function createLayoutStore() {
 
     // Open fullscreen terminal
     openFullscreenTerminal() {
-      update(state => ({ ...state, fullscreenTerminalOpen: true }));
+      update(state => ({ ...state, fullscreenTerminalOpen: true, activeColumn: 'terminal' }));
     },
 
     // Close fullscreen terminal

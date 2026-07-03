@@ -53,7 +53,7 @@ pub struct ArchiveEntry {
 }
 
 struct AppState {
-    terminal: Mutex<terminal::Terminal>,
+    terminal: terminal::TerminalManager,
     neovim: Mutex<neovim::Neovim>,
 }
 
@@ -323,21 +323,23 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 }
 
 #[tauri::command]
-fn terminal_spawn(shell: String, cwd: Option<String>, cols: u16, rows: u16, state: State<'_, AppState>) -> Result<(), String> {
-    let mut terminal = state.terminal.lock().unwrap();
-    terminal.spawn(&shell, cwd.as_deref(), cols, rows)
+fn terminal_spawn(tab_id: u32, shell: String, cwd: Option<String>, cols: u16, rows: u16, state: State<'_, AppState>) -> Result<(), String> {
+    state.terminal.spawn(tab_id, &shell, cwd.as_deref(), cols, rows)
 }
 
 #[tauri::command]
-fn terminal_input(data: String, state: State<'_, AppState>) -> Result<(), String> {
-    let terminal = state.terminal.lock().unwrap();
-    terminal.write_input(&data)
+fn terminal_input(tab_id: u32, data: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.terminal.write_input(tab_id, &data)
 }
 
 #[tauri::command]
-fn terminal_resize(cols: u32, rows: u32, state: State<'_, AppState>) -> Result<(), String> {
-    let terminal = state.terminal.lock().unwrap();
-    terminal.resize(cols, rows)
+fn terminal_resize(tab_id: u32, cols: u32, rows: u32, state: State<'_, AppState>) -> Result<(), String> {
+    state.terminal.resize(tab_id, cols, rows)
+}
+
+#[tauri::command]
+fn terminal_kill(tab_id: u32, state: State<'_, AppState>) {
+    state.terminal.kill(tab_id);
 }
 
 #[tauri::command]
@@ -908,10 +910,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            let mut terminal = terminal::Terminal::new();
+            let mut terminal = terminal::TerminalManager::new();
             terminal.set_app_handle(handle);
             app.manage(AppState {
-                terminal: Mutex::new(terminal),
+                terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),
             });
             Ok(())
@@ -935,6 +937,7 @@ pub fn run() {
             terminal_spawn,
             terminal_input,
             terminal_resize,
+            terminal_kill,
             neovim_spawn,
             neovim_input,
             neovim_command,

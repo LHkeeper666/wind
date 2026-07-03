@@ -12,6 +12,7 @@ export interface TabState {
   terminalVisible: boolean;
   terminalMode: 'insert' | 'normal' | null;
   terminalHeight: number;
+  fullscreenTerminalOpen: boolean;
   shellType: string;
 }
 
@@ -33,6 +34,7 @@ function getDefaultTab(id: number): TabState {
     terminalVisible: false,
     terminalMode: null,
     terminalHeight: 300,
+    fullscreenTerminalOpen: false,
     shellType: 'git-bash',
   };
 }
@@ -162,6 +164,7 @@ function createTabsStore() {
           terminalVisible: layoutState.terminalVisible,
           terminalMode: layoutState.terminalMode,
           terminalHeight: layoutState.terminalHeight,
+          fullscreenTerminalOpen: layoutState.fullscreenTerminalOpen,
         };
         // Update tab name from current path
         if (layoutState.currentPath) {
