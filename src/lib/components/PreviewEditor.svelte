@@ -3,8 +3,9 @@
   import { onMount, onDestroy } from 'svelte';
   import { layout } from '$lib/stores/layout';
   import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
-  import type { VideoMeta } from '$lib/previewers';
+  import type { VideoMeta, TocHeading } from '$lib/previewers';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
+  import TocSidebar from './TocSidebar.svelte';
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
   import { keymap } from '@codemirror/view';
@@ -26,12 +27,14 @@
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
     onTabCommand = (cmd: string) => {},
+    onToggleLayout = () => {},
   }: {
     filePath: string | null;
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
     onTabCommand?: (cmd: string) => void;
+    onToggleLayout?: () => void;
   } = $props();
 
   let content: string = $state('');
@@ -53,6 +56,14 @@
   // t prefix state for tab operations
   let waitingForTabKey: boolean = false;
 
+  // TOC state
+  let tocHeadings: TocHeading[] = $state([]);
+  let tocActiveLine: number = $state(-1);
+  let tocSidebar: TocSidebar | undefined = $state(undefined);
+  let tocFocused: boolean = $state(false);
+  let scrollObserver: IntersectionObserver | undefined;
+  let isMarkdown: boolean = $state(false);
+
   // Load file when filePath changes
   $effect(() => {
     if (filePath) {
@@ -65,6 +76,7 @@
     if (editorView) {
       editorView.destroy();
     }
+    scrollObserver?.disconnect();
   });
 
   // Handle mode transitions (display toggling + focus)
@@ -163,6 +175,10 @@
   function getPreviewRouter(): PreviewRouter {
     if (!previewRouter) {
       previewRouter = new PreviewRouter();
+      previewRouter.onHeadings = (headings: TocHeading[]) => {
+        tocHeadings = headings;
+        tocActiveLine = -1;
+      };
     }
     return previewRouter;
   }
@@ -172,6 +188,84 @@
       directoryPreviewer = new DirectoryPreviewer();
     }
     return directoryPreviewer;
+  }
+
+  // TOC: set up IntersectionObserver for scroll sync
+  function setupScrollObserver() {
+    scrollObserver?.disconnect();
+    if (!previewContainer || !isMarkdown) return;
+
+    const headings = previewContainer.querySelectorAll('h1, h2, h3, h4, h5, h6');
+    if (headings.length === 0) return;
+
+    // Add ids to headings for reference
+    headings.forEach((el, i) => {
+      if (!el.id) el.id = `heading-${i}`;
+    });
+
+    scrollObserver = new IntersectionObserver(
+      (entries) => {
+        // Find the topmost visible heading
+        let topEntry: IntersectionObserverEntry | null = null;
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            if (!topEntry || entry.boundingClientRect.top < topEntry.boundingClientRect.top) {
+              topEntry = entry;
+            }
+          }
+        }
+        if (topEntry) {
+          const line = parseInt((topEntry.target as HTMLElement).dataset.line || '-1');
+          if (line >= 0) {
+            tocActiveLine = line;
+          }
+        }
+      },
+      { root: previewContainer, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
+    );
+
+    headings.forEach((el) => {
+      scrollObserver!.observe(el);
+    });
+  }
+
+  // TOC: jump to heading by scrolling preview
+  function handleTocJump(line: number) {
+    if (!previewContainer) return;
+    const heading = previewContainer.querySelector(`[data-line="${line}"]`);
+    if (heading) {
+      heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      tocActiveLine = line;
+    }
+    // Keep focus in TOC
+  }
+
+  // TOC: check if TOC should be visible
+  export function isTocVisible(): boolean {
+    return isMarkdown && tocHeadings.length > 0 && mode === 'global-normal';
+  }
+
+  // TOC: focus management
+  export function focusToc() {
+    tocFocused = true;
+    tocSidebar?.focus();
+  }
+
+  export function focusContent() {
+    tocFocused = false;
+    if (panelElement) panelElement.focus();
+  }
+
+  export function isTocFocused(): boolean {
+    return tocFocused;
+  }
+
+  function handleTocFocusChange(focused: boolean) {
+    tocFocused = focused;
+    if (!focused && panelElement) {
+      // Ctrl+W h from TOC: return focus to preview content
+      panelElement.focus();
+    }
   }
 
   function isTextFile(path: string): boolean {
@@ -233,6 +327,14 @@
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
     isModified = false;
+
+    // Track markdown state for TOC
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    isMarkdown = ext === 'md' || ext === 'markdown';
+    if (!isMarkdown) {
+      tocHeadings = [];
+      tocActiveLine = -1;
+    }
 
     // Directory: list contents
     try {
@@ -460,6 +562,11 @@
     // Add PDF info bar
     if (isPdfFile(filePath) && pdfPageCount > 0) {
       addPdfInfoBar(previewContainer);
+    }
+
+    // Set up scroll observer for markdown TOC sync
+    if (isMarkdown) {
+      setupScrollObserver();
     }
   }
 
@@ -781,6 +888,14 @@
     // editor-normal and editor-insert are handled by CodeMirror vim
     if (mode !== 'global-normal') return;
 
+    // Ctrl+W l: switch focus from preview to TOC (when TOC is visible)
+    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      focusToc();
+      return;
+    }
+
     // t prefix for tab operations
     if (waitingForTabKey) {
       waitingForTabKey = false;
@@ -928,14 +1043,45 @@
         <span class="modified-indicator">●</span>
       {/if}
     {/if}
-    <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'}>
-      {#if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
+    <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'} class:toc={mode === 'global-normal' && tocFocused}>
+      {#if mode === 'global-normal' && tocFocused}TOC{:else if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
     </span>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <button
+      class="layout-toggle"
+      class:expanded={$layout.previewExpanded}
+      onclick={onToggleLayout}
+      title={$layout.previewExpanded ? 'Collapse to 3-column (Ctrl+W M)' : 'Expand to 2-column (Ctrl+W M)'}
+    >
+      {#if $layout.previewExpanded}
+        <svg width="14" height="12" viewBox="0 0 14 12" fill="none">
+          <rect x="0" y="0" width="4" height="12" rx="1" fill="currentColor" opacity="0.3"/>
+          <rect x="5" y="0" width="4" height="12" rx="1" fill="currentColor" opacity="0.6"/>
+          <rect x="10" y="0" width="4" height="12" rx="1" fill="currentColor"/>
+        </svg>
+      {:else}
+        <svg width="14" height="12" viewBox="0 0 14 12" fill="none">
+          <rect x="0" y="0" width="7" height="12" rx="1" fill="currentColor" opacity="0.3"/>
+          <rect x="8" y="0" width="6" height="12" rx="1" fill="currentColor"/>
+        </svg>
+      {/if}
+    </button>
   </div>
 
   <div class="panel-content">
     {#if filePath}
-      <div class="preview-area" bind:this={previewContainer}></div>
+      <div class="preview-with-toc">
+        <div class="preview-area" bind:this={previewContainer}></div>
+        {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal'}
+          <TocSidebar
+            bind:this={tocSidebar}
+            headings={tocHeadings}
+            activeLine={tocActiveLine}
+            onJump={handleTocJump}
+            onFocusChange={handleTocFocusChange}
+          />
+        {/if}
+      </div>
       <div class="editor-area" bind:this={editorContainer}>
         {#if mode === 'editor-normal'}
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1031,14 +1177,48 @@
     color: var(--bg-primary);
   }
 
+  .mode-indicator.toc {
+    background-color: var(--success);
+  }
+
+  .layout-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    padding: 2px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    margin-left: auto;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .layout-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+  }
+
+  .layout-toggle.expanded {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
   .panel-content {
     flex: 1;
     overflow: hidden;
     position: relative;
   }
 
-  .preview-area {
+  .preview-with-toc {
+    display: flex;
     width: 100%;
+    height: 100%;
+  }
+
+  .preview-area {
+    flex: 1;
+    min-width: 0;
     height: 100%;
     overflow: auto;
     padding: 12px;

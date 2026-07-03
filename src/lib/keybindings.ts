@@ -21,6 +21,7 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'Ctrl+=/-/0', context: 'global', description: 'Zoom in/out/reset' },
       { key: 'Ctrl+W h/l', context: 'global', description: 'Switch panel left/right' },
       { key: 'Ctrl+W j/k', context: 'global', description: 'Focus terminal/preview' },
+      { key: 'Ctrl+W m', context: 'global', description: 'Toggle 2-column/3-column layout' },
       { key: 'F1', context: 'global', description: 'Show this help' },
     ],
   },
@@ -29,12 +30,31 @@ export const keybindingGroups: KeybindingGroup[] = [
     items: [
       { key: 'j/k', context: 'directory', description: 'Navigate up/down' },
       { key: 'gg / G', context: 'directory', description: 'Jump to top/bottom' },
-      { key: 'Enter', context: 'directory', description: 'Open file or directory' },
+      { key: 'Enter / l', context: 'directory', description: 'Open file (expanded preview)' },
       { key: 'R', context: 'directory', description: 'Refresh' },
       { key: 'h', context: 'directory', description: 'Go to parent directory' },
-      { key: 'l', context: 'directory', description: 'Open selected item' },
       { key: '/', context: 'directory', description: 'Search in current dir' },
       { key: 'g/', context: 'directory', description: 'Search recursively' },
+    ],
+  },
+  {
+    title: 'Expanded Preview',
+    items: [
+      { key: 'Ctrl+W m', context: 'preview', description: 'Toggle 2-column/3-column layout' },
+      { key: 'Ctrl+W l', context: 'preview', description: 'Focus TOC sidebar (markdown)' },
+      { key: 'Ctrl+W h', context: 'toc', description: 'Back to preview content' },
+    ],
+  },
+  {
+    title: 'TOC Sidebar',
+    items: [
+      { key: 'j / k', context: 'toc', description: 'Navigate up/down' },
+      { key: 'gg / G', context: 'toc', description: 'Jump to first/last' },
+      { key: 'Enter', context: 'toc', description: 'Jump to heading' },
+      { key: 'h / l', context: 'toc', description: 'Collapse/expand current' },
+      { key: 'H / L', context: 'toc', description: 'Collapse/expand all' },
+      { key: '/', context: 'toc', description: 'Search headings' },
+      { key: 'Ctrl+W h', context: 'toc', description: 'Back to preview content' },
     ],
   },
   {

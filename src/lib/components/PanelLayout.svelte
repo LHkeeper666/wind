@@ -426,6 +426,24 @@
     selectedFile = filePath;
   }
 
+  function handleActivate(filePath: string) {
+    layout.setSelectedFile(filePath);
+    selectedFile = filePath;
+    // Enter expanded preview mode for any file (l/Enter)
+    if (!$layout.previewExpanded) {
+      layout.expandPreview();
+      focusPanel('preview');
+    }
+  }
+
+  function togglePreviewLayout() {
+    if ($layout.previewExpanded) {
+      layout.collapsePreview();
+    } else {
+      layout.expandPreview();
+    }
+  }
+
   function handleSwitchPanel(direction: 'left' | 'right') {
     const current = $layout.activeColumn;
     if (direction === 'left') {
@@ -439,6 +457,11 @@
         focusPanel('current');
       } else if (current === 'current') {
         focusPanel('preview');
+      } else if (current === 'preview') {
+        // Ctrl+W l from preview content: switch to TOC if visible and TOC not already focused
+        if ($layout.previewExpanded && previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
+          previewEditor.focusToc();
+        }
       }
     }
   }
@@ -609,6 +632,7 @@
     // Ctrl+W prefix for vim-style window navigation
     // Skip when terminal is in insert mode (Ctrl+W should go to shell)
     // Skip when fullscreen terminal is open (no panel switching in fullscreen)
+    // Skip when TOC is focused (let PreviewEditor handle Ctrl+W h)
     if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
       event.preventDefault();
       waitingForWindowKey = true;
@@ -625,6 +649,13 @@
       if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
 
       const code = event.code;
+      // TOC focused: Ctrl+W h → focus preview content
+      if (previewEditor?.isTocFocused?.() && code === 'KeyH') {
+        event.preventDefault();
+        event.stopPropagation();
+        previewEditor.focusContent();
+        return;
+      }
       if (code === 'KeyH') {
         event.preventDefault();
         event.stopPropagation();
@@ -648,6 +679,12 @@
         if ($layout.activeColumn === 'terminal') {
           focusPanel('current');
         }
+        return;
+      } else if (code === 'KeyM') {
+        // Ctrl+W m: toggle expanded/collapsed preview layout
+        event.preventDefault();
+        event.stopPropagation();
+        togglePreviewLayout();
         return;
       }
     }
@@ -989,6 +1026,7 @@
         selectedPath={selectedFile}
         onNavigate={handleNavigate}
         onSelect={handleSelect}
+        onActivate={handleActivate}
         onSwitchPanel={handleSwitchPanel}
         onFullscreen={handleFullscreenEditor}
         onNavigateUp={() => handleNavigate($layout.parentPath)}
@@ -1026,6 +1064,7 @@
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
         onTabCommand={handleTabCommand}
+        onToggleLayout={togglePreviewLayout}
       />
     </div>
   </div>
@@ -1156,6 +1195,7 @@
     overflow: hidden;
     gap: 1px;
     background-color: var(--border);
+    transition: grid-template-columns 0.2s ease;
   }
 
   .panel {

@@ -17,6 +17,7 @@
     selectedPath = null,
     onNavigate = (path: string) => {},
     onSelect = (path: string) => {},
+    onActivate = (path: string) => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
     onNavigateUp = () => {},
@@ -27,6 +28,7 @@
     selectedPath: string | null;
     onNavigate?: (path: string) => void;
     onSelect?: (path: string) => void;
+    onActivate?: (path: string) => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
     onNavigateUp?: () => void;
@@ -309,7 +311,7 @@
           if (entry.is_dir) {
             onNavigate(entry.path);
           } else {
-            onSelect(entry.path);
+            onActivate(entry.path);
           }
         }
         break;
@@ -361,7 +363,7 @@
                 if (entry.is_dir) {
                   onNavigate(entry.path);
                 } else {
-                  onSelect(entry.path);
+                  onActivate(entry.path);
                 }
               }
             }

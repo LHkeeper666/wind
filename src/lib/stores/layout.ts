@@ -41,6 +41,10 @@ export interface LayoutState {
 
   // Key prefix display (e.g. 't', '^W')
   keyPrefix: string | null;
+
+  // Expanded preview mode (0:1:4 layout, hides parent)
+  previewExpanded: boolean;
+  originalRatios: [number, number, number];
 }
 
 const initialState: LayoutState = {
@@ -59,6 +63,8 @@ const initialState: LayoutState = {
   terminalVisible: false,
   terminalHeight: 300,
   keyPrefix: null,
+  previewExpanded: false,
+  originalRatios: [1, 1, 3],
 };
 
 function createLayoutStore() {
@@ -184,6 +190,27 @@ function createLayoutStore() {
     // Toggle fullscreen terminal
     toggleFullscreenTerminal() {
       update(state => ({ ...state, fullscreenTerminalOpen: !state.fullscreenTerminalOpen }));
+    },
+
+    // Enter expanded preview mode
+    expandPreview() {
+      update(state => ({
+        ...state,
+        originalRatios: [...state.columnRatios] as [number, number, number],
+        columnRatios: [0, 1, 4],
+        previewExpanded: true,
+        activeColumn: 'preview',
+      }));
+    },
+
+    // Exit expanded preview mode
+    collapsePreview() {
+      update(state => ({
+        ...state,
+        columnRatios: [...state.originalRatios] as [number, number, number],
+        previewExpanded: false,
+        activeColumn: 'current',
+      }));
     },
 
     // Set key prefix for status bar display

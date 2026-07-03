@@ -1,4 +1,4 @@
-import type { Previewer } from './types';
+import type { Previewer, TocHeading } from './types';
 import { TextPreviewer } from './TextPreviewer';
 import { MarkdownPreviewer } from './MarkdownPreviewer';
 import { ImagePreviewer } from './ImagePreviewer';
@@ -10,6 +10,7 @@ import { VideoPreviewer } from './VideoPreviewer';
 export class PreviewRouter {
   private previewers: Previewer[] = [];
   private currentPreviewer: Previewer | null = null;
+  onHeadings?: (headings: TocHeading[]) => void;
 
   constructor() {
     this.previewers = [
@@ -33,6 +34,8 @@ export class PreviewRouter {
     // Find matching previewer
     const previewer = this.match(filePath);
     if (!previewer) {
+      this.onHeadings?.([]);
+
       oldPreviewer?.dispose();
       container.innerHTML = '<p class="preview-unsupported">Unsupported file type</p>';
       this.currentPreviewer = null;
@@ -51,6 +54,8 @@ export class PreviewRouter {
         staging.dataset[key] = container.dataset[key];
       }
     }
+    // Pass onHeadings callback to previewer
+    previewer.onHeadings = this.onHeadings;
     await previewer.render(content, staging);
 
     // Swap: replace old content with new, then clean up old previewer
