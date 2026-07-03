@@ -146,7 +146,7 @@ function createTabsStore() {
       });
     },
 
-    saveActiveTabState() {
+    saveActiveTabState(extra?: { cursorIndex?: number; scrollOffset?: number }) {
       update(state => {
         const idx = state.tabs.findIndex(t => t.id === state.activeTabId);
         if (idx === -1) return state;
@@ -157,6 +157,8 @@ function createTabsStore() {
           parentPath: layoutState.parentPath,
           currentPath: layoutState.currentPath,
           selectedFile: layoutState.selectedFile,
+          cursorIndex: extra?.cursorIndex ?? newTabs[idx].cursorIndex,
+          scrollOffset: extra?.scrollOffset ?? newTabs[idx].scrollOffset,
           terminalVisible: layoutState.terminalVisible,
           terminalMode: layoutState.terminalMode,
           terminalHeight: layoutState.terminalHeight,

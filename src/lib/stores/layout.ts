@@ -73,7 +73,7 @@ function createLayoutStore() {
     },
 
     // Update current path and auto-update parent path
-    setCurrentPath(path: string) {
+    setCurrentPath(path: string, resetSelectedFile: boolean = true) {
       update(state => {
         // 规范化路径分隔符
         let normalized = path.replace(/\//g, '\\');
@@ -96,7 +96,7 @@ function createLayoutStore() {
           ...state,
           currentPath: normalized,
           parentPath: parentPath,
-          selectedFile: null,
+          selectedFile: resetSelectedFile ? null : state.selectedFile,
         };
       });
     },

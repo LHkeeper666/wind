@@ -41,8 +41,6 @@
   let lastKeyTime: number = 0;
   let lastKey: string = '';
   let panelElement: HTMLDivElement | undefined = $state(undefined);
-  // t prefix state for tab operations
-  let waitingForTabKey: boolean = false;
   let isFocused: boolean = $state(false);
   let selectTimeout: ReturnType<typeof setTimeout> | null = null;
   let scrollRafId: number = 0;
@@ -63,6 +61,29 @@
       return files[selectedIndex].size ?? 0;
     }
     return 0;
+  }
+
+  export function getSelectedIndex(): number {
+    return selectedIndex;
+  }
+
+  export function getScrollOffset(): number {
+    if (!panelElement) return 0;
+    const container = panelElement.querySelector('.panel-content');
+    return container?.scrollTop ?? 0;
+  }
+
+  export function setSelectedIndex(index: number) {
+    if (index >= 0 && index < files.length) {
+      selectedIndex = index;
+      selectedPathInternal = files[index].path;
+    }
+  }
+
+  export function setScrollOffset(offset: number) {
+    if (!panelElement) return;
+    const container = panelElement.querySelector('.panel-content');
+    if (container) container.scrollTop = offset;
   }
 
   // Directory content cache
@@ -160,6 +181,16 @@
       const target = pendingSelectName;
       pendingSelectName = null;
       const idx = files.findIndex(f => f.name === target);
+      if (idx >= 0) {
+        selectedIndex = idx;
+        selectedPathInternal = files[idx].path;
+        onSelect(files[idx].path);
+        return;
+      }
+    }
+    // If selectedPath prop is set (e.g. from tab restore), try to use it
+    if (selectedPath) {
+      const idx = files.findIndex(f => f.path === selectedPath);
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = files[idx].path;
@@ -291,40 +322,8 @@
         onFullscreen();
         break;
       default:
-        // t prefix for tab operations
-        if (waitingForTabKey) {
-          waitingForTabKey = false;
-          layout.clearKeyPrefix();
-          const code = event.code;
-          const key = event.key;
-          event.preventDefault();
-          if (code === 'KeyT') {
-            onTabCommand('new');
-          } else if (code === 'KeyC') {
-            onTabCommand('close');
-          } else if (code === 'KeyR') {
-            onTabCommand('rename-hint');
-          } else if (code === 'KeyN' || code === 'BracketRight') {
-            onTabCommand('next');
-          } else if (code === 'KeyP' || code === 'BracketLeft') {
-            onTabCommand('prev');
-          } else if (code === 'Comma') {
-            onTabCommand('swap-prev');
-          } else if (code === 'Period') {
-            onTabCommand('swap-next');
-          } else if (key >= '1' && key <= '9') {
-            onTabCommand('switch-' + key);
-          }
-          return;
-        }
         // Use event.code for letter keys to support Chinese IME
         switch (event.code) {
-          case 'KeyT':
-            event.preventDefault();
-            waitingForTabKey = true;
-            layout.setKeyPrefix('t');
-            setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
-            break;
           case 'KeyJ':
             event.preventDefault();
             selectByIndex(Math.min(selectedIndex + 1, files.length - 1));

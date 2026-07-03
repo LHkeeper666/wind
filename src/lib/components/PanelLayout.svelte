@@ -36,6 +36,10 @@
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // t prefix state for tab operations (global, not per-panel)
+  let waitingForTabKey: boolean = $state(false);
+  let tabKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
   // Focus restore state
   let windowReady: boolean = $state(false);
   let focusUnlisten: (() => void) | null = null;
@@ -313,8 +317,15 @@
   }
 
   // Tab operations
+  function saveCurrentTabState() {
+    tabs.saveActiveTabState({
+      cursorIndex: currentDirectoryPanel?.getSelectedIndex() ?? 0,
+      scrollOffset: currentDirectoryPanel?.getScrollOffset() ?? 0,
+    });
+  }
+
   function handleTabNew() {
-    tabs.saveActiveTabState();
+    saveCurrentTabState();
     tabs.createTab(currentPath);
     restoreTabAndFocus();
     showToast('Tab created');
@@ -332,19 +343,19 @@
   }
 
   function handleTabSwitch(tabId: number) {
-    tabs.saveActiveTabState();
+    saveCurrentTabState();
     tabs.switchTab(tabId);
     restoreTabAndFocus();
   }
 
   function handleTabSwitchRelative(delta: number) {
-    tabs.saveActiveTabState();
+    saveCurrentTabState();
     tabs.switchTabRelative(delta);
     restoreTabAndFocus();
   }
 
   function handleTabSwitchByIndex(index: number) {
-    tabs.saveActiveTabState();
+    saveCurrentTabState();
     tabs.switchTabByIndex(index);
     restoreTabAndFocus();
   }
@@ -352,22 +363,49 @@
   function restoreTabAndFocus() {
     const active = getActiveTab();
     if (!active) return;
-    // Update layout store
+    // Update layout store (preserve selectedFile during tab switch)
     if (active.currentPath) {
-      layout.setCurrentPath(active.currentPath);
+      layout.setCurrentPath(active.currentPath, false);
     }
     // Sync PanelLayout local state
     currentPath = active.currentPath;
     selectedFile = active.selectedFile;
+    // Also update layout store's selectedFile
+    if (active.selectedFile) {
+      layout.setSelectedFile(active.selectedFile);
+    }
+    // Restore cursorIndex and scrollOffset after directory loads
+    if (active.cursorIndex > 0 || active.scrollOffset > 0) {
+      setTimeout(() => {
+        if (active.cursorIndex > 0) {
+          currentDirectoryPanel?.setSelectedIndex(active.cursorIndex);
+        }
+        if (active.scrollOffset > 0) {
+          currentDirectoryPanel?.setScrollOffset(active.scrollOffset);
+        }
+      }, 100);
+    }
     // Restore terminal state
     layout.setTerminalHeight(active.terminalHeight);
     if (active.terminalVisible) {
+      // If terminal should not get focus, suppress initTerminal's auto-focus
+      if (active.terminalMode !== 'insert') {
+        floatingTerminal?.setSuppressAutoFocus(true);
+      }
       layout.showTerminal();
+      // Focus based on saved terminal mode
+      if (active.terminalMode === 'insert') {
+        focusPanel('terminal');
+      } else {
+        // Terminal visible but in normal mode — sync mode and focus current panel
+        layout.setTerminalMode(active.terminalMode || 'normal');
+        floatingTerminal?.setMode(active.terminalMode || 'normal');
+        focusPanel('current');
+      }
     } else {
       layout.hideTerminal();
+      focusPanel('current');
     }
-    // Restore focus
-    focusPanel('current');
   }
 
   function getActiveTab() {
@@ -615,6 +653,56 @@
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
     const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal') && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+
+    // t prefix for tab operations (global)
+    // Works when: no modal open, not in terminal insert, not in editor insert
+    const canUseTabPrefix = !showCommandPalette && !showFileSearch
+      && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
+      && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
+      && !$layout.fullscreenTerminalOpen
+      && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')
+      && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
+
+    // Handle second key when waiting for t prefix
+    if (waitingForTabKey) {
+      waitingForTabKey = false;
+      layout.clearKeyPrefix();
+      if (tabKeyTimeout) { clearTimeout(tabKeyTimeout); tabKeyTimeout = null; }
+
+      const code = event.code;
+      const key = event.key;
+      event.preventDefault();
+
+      if (code === 'KeyT') {
+        handleTabNew();
+      } else if (code === 'KeyC') {
+        handleTabClose();
+      } else if (code === 'KeyR') {
+        showToast('Double-click tab name to rename');
+      } else if (code === 'KeyN' || code === 'BracketRight') {
+        handleTabSwitchRelative(1);
+      } else if (code === 'KeyP' || code === 'BracketLeft') {
+        handleTabSwitchRelative(-1);
+      } else if (code === 'Comma') {
+        tabs.swapTab(-1);
+      } else if (code === 'Period') {
+        tabs.swapTab(1);
+      } else if (key >= '1' && key <= '9') {
+        handleTabSwitchByIndex(parseInt(key) - 1);
+      }
+      return;
+    }
+
+    // Start t prefix
+    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+      event.preventDefault();
+      waitingForTabKey = true;
+      layout.setKeyPrefix('t');
+      if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
+      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
+      return;
+    }
+
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;

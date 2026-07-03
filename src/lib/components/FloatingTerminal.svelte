@@ -39,6 +39,8 @@
   let unlisten: (() => void) | undefined;
   let mode: 'normal' | 'insert' = $state('insert');
   let overlayElement: HTMLDivElement | undefined = $state(undefined);
+  // When true, initTerminal will not auto-focus (used during tab restore)
+  let suppressAutoFocus: boolean = false;
   let escapeHandler: ((e: KeyboardEvent) => void) | undefined;
   let terminalHeight: number = $state(300);
   let isDragging: boolean = $state(false);
@@ -58,36 +60,24 @@
     }
   });
 
-  // Initialize terminal and fit when visible changes
+  // Initialize terminal once when container is available
+  let terminalInitialized = false;
   $effect(() => {
-    if (visible) {
-      // Delay to ensure DOM is updated after {#if visible} renders
+    if (!terminalInitialized && terminalContainer) {
+      terminalInitialized = true;
+      // Small delay to ensure DOM is ready
       setTimeout(() => {
-        // Initialize terminal on first show
         if (!terminal && terminalContainer) {
           initTerminal();
         }
-        // Reinitialize if terminal exists but container is new (after hide/show)
-        else if (terminal && terminalContainer) {
-          // Open terminal in new container
-          terminal.open(terminalContainer);
-          fitAddon?.fit();
-          terminal.focus();
-          // Restart shell
-          startShell();
-        }
       }, 50);
-    } else {
-      // Cleanup when hiding terminal
-      if (terminal) {
-        terminal.dispose();
-        terminal = undefined;
-        fitAddon = undefined;
-      }
-      if (unlisten) {
-        unlisten();
-        unlisten = undefined;
-      }
+    }
+  });
+
+  // Fit terminal when visibility changes (needed because container size may change while hidden)
+  $effect(() => {
+    if (visible && terminal && fitAddon) {
+      setTimeout(() => fitAddon?.fit(), 50);
     }
   });
 
@@ -179,11 +169,19 @@
       invoke('terminal_resize', { cols, rows }).catch(console.error);
     });
 
-    fitAddon.fit();
-    terminal.focus();
+    // Only fit if container has valid dimensions (not hidden with display:none)
+    if (terminalContainer.offsetWidth > 0 && terminalContainer.offsetHeight > 0) {
+      fitAddon.fit();
+    }
+    if (!suppressAutoFocus) {
+      terminal.focus();
+    }
+    suppressAutoFocus = false;
 
     const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && !isZooming) fitAddon.fit();
+      if (fitAddon && !isZooming && terminalContainer && terminalContainer.offsetWidth > 0) {
+        fitAddon.fit();
+      }
     });
     resizeObserver.observe(terminalContainer);
 
@@ -282,6 +280,10 @@
     return mode;
   }
 
+  export function setSuppressAutoFocus(value: boolean) {
+    suppressAutoFocus = value;
+  }
+
   function startDrag(event: MouseEvent) {
     event.preventDefault();
     isDragging = true;
@@ -305,66 +307,64 @@
   }
 </script>
 
-{#if visible}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="floating-terminal" class:fullscreen style={fullscreen ? '' : `height: ${terminalHeight}px`} onkeydown={(e) => {
-    if (e.key === 'Escape' && mode === 'insert') {
-      e.preventDefault();
-      setMode('normal');
-    }
-  }}>
-    {#if !fullscreen}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div class="terminal-handle" onmousedown={startDrag} role="separator" aria-orientation="horizontal"></div>
-    {/if}
-    <div class="panel-header">
-      <span class="panel-title">Terminal</span>
-      <div class="shell-status">
-        {#if shellState.currentDirectory}
-          <span class="status-directory" title={shellState.currentDirectory}>
-            {shellState.currentDirectory.split(/[/\\]/).filter(Boolean).pop() || '~'}
-          </span>
-        {/if}
-        {#if shellState.isCommandRunning}
-          <span class="status-running">Running</span>
-        {:else if shellState.lastExitCode !== null && shellState.lastExitCode !== 0}
-          <span class="status-error">Exit {shellState.lastExitCode}</span>
-        {/if}
-      </div>
-      <div class="shell-selector">
-        <button
-          class="shell-btn"
-          class:selected={shellType === 'git-bash'}
-          onclick={() => changeShell('git-bash')}
-        >
-          Bash
-        </button>
-        <button
-          class="shell-btn"
-          class:selected={shellType === 'powershell'}
-          onclick={() => changeShell('powershell')}
-        >
-          Pwsh
-        </button>
-        <button
-          class="shell-btn"
-          class:selected={shellType === 'cmd'}
-          onclick={() => changeShell('cmd')}
-        >
-          CMD
-        </button>
-        <button class="shell-btn" onclick={() => clear()}>
-          Clear
-        </button>
-      </div>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="floating-terminal" class:fullscreen class:hidden={!visible} style={fullscreen ? '' : `height: ${terminalHeight}px`} onkeydown={(e) => {
+  if (e.key === 'Escape' && mode === 'insert') {
+    e.preventDefault();
+    setMode('normal');
+  }
+}}>
+  {#if !fullscreen}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="terminal-handle" onmousedown={startDrag} role="separator" aria-orientation="horizontal"></div>
+  {/if}
+  <div class="panel-header">
+    <span class="panel-title">Terminal</span>
+    <div class="shell-status">
+      {#if shellState.currentDirectory}
+        <span class="status-directory" title={shellState.currentDirectory}>
+          {shellState.currentDirectory.split(/[/\\]/).filter(Boolean).pop() || '~'}
+        </span>
+      {/if}
+      {#if shellState.isCommandRunning}
+        <span class="status-running">Running</span>
+      {:else if shellState.lastExitCode !== null && shellState.lastExitCode !== 0}
+        <span class="status-error">Exit {shellState.lastExitCode}</span>
+      {/if}
     </div>
-    <div class="terminal-container" bind:this={terminalContainer}></div>
-    {#if mode === 'normal'}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div class="terminal-overlay" bind:this={overlayElement} onkeydown={(e) => { if (e.key === 'i' && !e.ctrlKey && !e.altKey) { e.preventDefault(); setMode('insert'); } }} tabindex="0"></div>
-    {/if}
+    <div class="shell-selector">
+      <button
+        class="shell-btn"
+        class:selected={shellType === 'git-bash'}
+        onclick={() => changeShell('git-bash')}
+      >
+        Bash
+      </button>
+      <button
+        class="shell-btn"
+        class:selected={shellType === 'powershell'}
+        onclick={() => changeShell('powershell')}
+      >
+        Pwsh
+      </button>
+      <button
+        class="shell-btn"
+        class:selected={shellType === 'cmd'}
+        onclick={() => changeShell('cmd')}
+      >
+        CMD
+      </button>
+      <button class="shell-btn" onclick={() => clear()}>
+        Clear
+      </button>
+    </div>
   </div>
-{/if}
+  <div class="terminal-container" bind:this={terminalContainer}></div>
+  {#if mode === 'normal'}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="terminal-overlay" bind:this={overlayElement} onkeydown={(e) => { if (e.key === 'i' && !e.ctrlKey && !e.altKey) { e.preventDefault(); setMode('insert'); } }} tabindex="0"></div>
+  {/if}
+</div>
 
 <style>
   .floating-terminal {
@@ -373,6 +373,10 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+  }
+
+  .floating-terminal.hidden {
+    display: none;
   }
 
   .floating-terminal.fullscreen {
