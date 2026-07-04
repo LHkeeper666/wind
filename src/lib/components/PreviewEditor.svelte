@@ -42,6 +42,7 @@
   let binaryContent: ArrayBuffer | null = $state(null);
   let thumbnailMeta: { width: number; height: number; originalSize: number; isThumbnail: boolean } | null = $state(null);
   let videoMeta: VideoMeta | null = $state(null);
+  let originalFileSize: number = $state(0);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
   let previewContainer: HTMLElement | undefined = $state(undefined);
@@ -328,6 +329,10 @@
     const gen = ++loadGeneration;
     isModified = false;
 
+    // Clear previous content immediately to prevent stale flash
+    content = '';
+    binaryContent = null;
+
     // Track markdown state for TOC
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
@@ -489,38 +494,23 @@
       return;
     }
 
-    if (!isTextFile(path)) {
-      binaryContent = null;
-      content = '';
-      mode = 'global-normal';
-      return;
-    }
-
-    // Check file size before reading to prevent loading huge files
-    const MAX_PREVIEW_SIZE = 50 * 1024 * 1024; // 50MB
+    // Check file size — use partial read for large files
+    const MAX_PREVIEW_SIZE = 200 * 1024; // 200KB
+    originalFileSize = 0;
     try {
-      const fileSize = await invoke<number>('get_file_size', { path });
+      originalFileSize = await invoke<number>('get_file_size', { path });
       if (gen !== loadGeneration) return;
-      if (fileSize > MAX_PREVIEW_SIZE) {
-        content = '';
-        binaryContent = null;
-        if (editorView) {
-          editorView.destroy();
-          editorView = undefined;
-        }
-        mode = 'global-normal';
-        if (previewContainer) {
-          const sizeStr = formatSize(fileSize);
-          previewContainer.innerHTML = `<div class="preview-unsupported">文件过大 (${sizeStr})，无法预览</div>`;
-        }
-        return;
-      }
     } catch {
       // Can't get size, try loading anyway
     }
 
+    const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
+
+    // Try reading as text first
     try {
-      const newContent = await invoke<string>('read_file', { path });
+      const newContent = usePartial
+        ? await invoke<string>('read_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
+        : await invoke<string>('read_file', { path });
       if (gen !== loadGeneration) return;
       content = newContent;
       binaryContent = null;
@@ -529,15 +519,30 @@
         editorView.destroy();
         editorView = undefined;
       }
-    } catch (error) {
+    } catch {
       if (gen !== loadGeneration) return;
-      console.error('Failed to load file:', error);
-      content = '';
-      binaryContent = null;
+      // Text read failed — likely binary, read raw bytes for hex dump
+      try {
+        const base64 = usePartial
+          ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
+          : await invoke<string>('read_binary_file', { path });
+        if (gen !== loadGeneration) return;
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        content = '';
+        binaryContent = bytes.buffer;
+      } catch {
+        if (gen !== loadGeneration) return;
+        content = '';
+        binaryContent = null;
+      }
     }
     mode = 'global-normal';
     // Empty files: content is '' (falsy), effect won't trigger, render directly
-    if (!content) renderPreview();
+    if (!content && !binaryContent) renderPreview();
   }
 
   async function renderPreview() {
@@ -554,6 +559,12 @@
       delete previewContainer.dataset.thumbHeight;
       delete previewContainer.dataset.thumbOriginalSize;
       delete previewContainer.dataset.thumbIsThumbnail;
+    }
+    // Pass original file size for truncation notice
+    if (originalFileSize > 0) {
+      previewContainer.dataset.originalFileSize = String(originalFileSize);
+    } else {
+      delete previewContainer.dataset.originalFileSize;
     }
     const previewContent: string | ArrayBuffer = binaryContent ?? content;
     await getPreviewRouter().preview(filePath, previewContent, previewContainer);
@@ -658,6 +669,7 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup,
+      EditorView.lineWrapping,
       keymap.of([{
         key: 'Tab',
         run: (view) => {
@@ -940,7 +952,7 @@
       mode = 'editor-normal';
     } else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (!filePath || (!isTextFile(filePath) && !isImageFile(filePath) && !isPdfFile(filePath) && !isVideoFile(filePath))) {
+      if (!filePath) {
         onToast('此文件类型不支持全屏查看');
         return;
       }
@@ -1391,6 +1403,48 @@
     font-size: 13px;
   }
 
+  :global(.preview-code) {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  :global(.preview-code pre) {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  :global(.preview-plain) {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  :global(.preview-hex) {
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  :global(.hex-notice) {
+    padding: 8px 12px;
+    background: #3c3836;
+    color: #d79921;
+    font-size: 12px;
+    margin-bottom: 8px;
+    border-radius: 4px;
+  }
+
+  :global(.hex-dump) {
+    margin: 0;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  :global(.hex-dump code) {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
   :global(.preview-image) {
     display: flex;
     align-items: center;
@@ -1636,7 +1690,8 @@
   :global(.preview-markdown pre) {
     margin: 1em 0;
     border-radius: 4px;
-    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
     border: 1px solid var(--border);
   }
 

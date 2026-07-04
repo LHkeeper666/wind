@@ -134,6 +134,11 @@ export class MarkdownPreviewer implements Previewer {
       }
     }
 
+    // Auto-expand: if only one top-level heading, expand it one level
+    if (headings.length === 1) {
+      headings[0].expanded = true;
+    }
+
     return headings;
   }
 

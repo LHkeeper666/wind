@@ -164,6 +164,7 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup,
+      EditorView.lineWrapping,
       keymap.of([{
         key: 'Tab',
         run: (view) => {

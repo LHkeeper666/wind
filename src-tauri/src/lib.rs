@@ -388,6 +388,30 @@ fn read_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[tauri::command]
+fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
+    let file_path = Path::new(&path);
+
+    if !file_path.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    if file_path.is_dir() {
+        return Err(format!("Path is a directory, not a file: {}", path));
+    }
+
+    use std::io::Read;
+    let mut file = fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut buffer = vec![0u8; max_bytes as usize];
+    let bytes_read = file.read(&mut buffer)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    buffer.truncate(bytes_read);
+
+    String::from_utf8(buffer)
+        .map_err(|e| format!("File is not valid UTF-8: {}", e))
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImageThumbnail {
     data: String,
@@ -412,6 +436,29 @@ fn read_binary_file(path: String) -> Result<String, String> {
     let bytes = fs::read(file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+fn read_binary_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
+    let file_path = Path::new(&path);
+
+    if !file_path.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    if file_path.is_dir() {
+        return Err(format!("Path is a directory, not a file: {}", path));
+    }
+
+    use std::io::Read;
+    let mut file = fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut buffer = vec![0u8; max_bytes as usize];
+    let bytes_read = file.read(&mut buffer)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    buffer.truncate(bytes_read);
+
+    Ok(STANDARD.encode(buffer))
 }
 
 #[tauri::command]
@@ -931,7 +978,9 @@ pub fn run() {
             copy_file,
             get_file_size,
             read_file,
+            read_file_partial,
             read_binary_file,
+            read_binary_file_partial,
             read_image_thumbnail,
             write_file,
             terminal_spawn,
