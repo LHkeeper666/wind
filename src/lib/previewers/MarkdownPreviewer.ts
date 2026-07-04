@@ -1,10 +1,16 @@
 import type { Previewer, TocHeading } from './types';
+// @ts-ignore - markdown-it has no bundled types
 import MarkdownIt from 'markdown-it';
+// @ts-ignore - markdown-it-texmath has no bundled types
+import texmath from 'markdown-it-texmath';
+import katex from 'katex';
 import { codeToHtml } from 'shiki';
+import { invoke } from '@tauri-apps/api/core';
+import 'katex/dist/katex.min.css';
 
 export class MarkdownPreviewer implements Previewer {
   private container: HTMLElement | null = null;
-  private md: MarkdownIt;
+  private md: any;
   onHeadings?: (headings: TocHeading[]) => void;
 
   constructor() {
@@ -13,6 +19,61 @@ export class MarkdownPreviewer implements Previewer {
       linkify: true,
       typographer: true,
     });
+
+    // LaTeX math support via texmath + katex
+    this.md.use(texmath, {
+      engine: katex,
+      delimiters: ['dollars', 'brackets'],
+      katexOptions: {
+        throwOnError: false,
+      },
+    });
+
+    // Obsidian wikilink image support: ![[file]], ![[file|w]], ![[file|wxh]]
+    this.md.inline.ruler.after('image', 'obsidian_image', (state: any, silent: boolean) => {
+      const src = state.src;
+      const pos = state.pos;
+
+      // Must start with ![[  (not just [[)
+      if (src.charCodeAt(pos) !== 0x21 || src.charCodeAt(pos + 1) !== 0x5B || src.charCodeAt(pos + 2) !== 0x5B) {
+        return false;
+      }
+
+      // Find closing ]]
+      const closeIdx = src.indexOf(']]', pos + 3);
+      if (closeIdx === -1) return false;
+
+      if (silent) return true;
+
+      const inner = src.slice(pos + 3, closeIdx);
+      const parts = inner.split('|');
+      const filename = parts[0].trim();
+      const sizeSpec = parts[1]?.trim();
+
+      const token = state.push('obsidian_image', 'img', 0);
+      token.attrs = [['src', filename]];
+
+      if (sizeSpec) {
+        const dimMatch = sizeSpec.match(/^(\d+)(?:x(\d+))?$/);
+        if (dimMatch) {
+          token.attrs.push(['width', dimMatch[1]]);
+          if (dimMatch[2]) {
+            token.attrs.push(['height', dimMatch[2]]);
+          }
+        }
+      }
+
+      token.content = filename;
+      state.pos = closeIdx + 2;
+      return true;
+    });
+
+    // Render obsidian_image tokens as <img>
+    this.md.renderer.rules.obsidian_image = (tokens: any, idx: number) => {
+      const token = tokens[idx];
+      const attrs = token.attrs?.map(([k, v]: [string, string]) => `${k}="${v}"`).join(' ') || '';
+      return `<img ${attrs} alt="${token.content}">`;
+    };
 
     // Add data-line attribute to headings for scroll sync
     const defaultHeadingOpen = this.md.renderer.rules.heading_open || ((tokens: any, idx: number, options: any, env: any, self: any) => {
@@ -67,6 +128,7 @@ export class MarkdownPreviewer implements Previewer {
   async render(content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
     this.container = container;
     const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
+    const filePath = container.dataset.filePath || '';
 
     try {
       // Parse headings and emit
@@ -78,7 +140,7 @@ export class MarkdownPreviewer implements Previewer {
       const html = this.md.render(text);
       container.innerHTML = `<div class="preview-markdown">${html}</div>`;
 
-      // Post-process: highlight code blocks with Shiki
+      // Post-process: highlight code blocks with Shiki, render mermaid diagrams
       const codeBlocks = container.querySelectorAll('pre > code');
       for (const block of codeBlocks) {
         const pre = block.parentElement!;
@@ -86,6 +148,28 @@ export class MarkdownPreviewer implements Previewer {
           .find(c => c.startsWith('language-'))
           ?.replace('language-', '') || '';
         const code = block.textContent || '';
+
+        if (lang === 'mermaid') {
+          // Render mermaid diagram
+          try {
+            const { default: mermaid } = await import('mermaid');
+            const isDark = document.documentElement.classList.contains('dark');
+            mermaid.initialize({
+              startOnLoad: false,
+              theme: isDark ? 'dark' : 'default',
+            });
+            const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
+            const { svg } = await mermaid.render(id, code);
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mermaid-container';
+            wrapper.innerHTML = svg;
+            pre.replaceWith(wrapper);
+          } catch {
+            // Mermaid failed — keep the original <pre><code> with an error indicator
+            pre.classList.add('mermaid-error');
+          }
+          continue;
+        }
 
         try {
           const highlighted = await codeToHtml(code, {
@@ -97,6 +181,38 @@ export class MarkdownPreviewer implements Previewer {
           );
         } catch {
           // Shiki failed for this block — keep the original <pre><code>
+        }
+      }
+
+      // Post-process: load local images via Tauri binary file read
+      const images = container.querySelectorAll('img');
+      for (const img of images) {
+        const src = img.getAttribute('src');
+        if (!src) continue;
+        // Skip remote URLs and data URIs
+        if (/^(https?:\/\/|data:|blob:)/.test(src)) continue;
+
+        // Resolve relative to current file's directory
+        let resolvedPath = src;
+        if (filePath && !src.startsWith('/') && !src.match(/^[A-Z]:\\/i)) {
+          const dir = filePath.replace(/[\\/][^\\/]*$/, '');
+          resolvedPath = dir + '\\' + src;
+        }
+
+        // Normalize path separators
+        resolvedPath = resolvedPath.replace(/\//g, '\\');
+
+        try {
+          const base64 = await invoke<string>('read_binary_file', { path: resolvedPath });
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          const blob = new Blob([bytes.buffer]);
+          img.src = URL.createObjectURL(blob);
+        } catch (err) {
+          console.warn('[MarkdownPreviewer] Failed to load image:', resolvedPath, err);
         }
       }
     } catch (err) {

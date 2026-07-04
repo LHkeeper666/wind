@@ -1712,4 +1712,41 @@
     margin-left: 2em;
     color: var(--text-secondary);
   }
+
+  /* ── LaTeX / KaTeX ── */
+
+  :global(.preview-markdown .katex-display) {
+    margin: 1em 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+
+  :global(.preview-markdown eq),
+  :global(.preview-markdown eqn) {
+    display: inline;
+  }
+
+  :global(.preview-markdown section.eqno),
+  :global(.preview-markdown section:not(.eqno)) {
+    display: block;
+    text-align: center;
+    margin: 1em 0;
+  }
+
+  /* ── Mermaid ── */
+
+  :global(.preview-markdown .mermaid-container) {
+    margin: 1em 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+
+  :global(.preview-markdown .mermaid-container svg) {
+    max-width: 100%;
+    height: auto;
+  }
+
+  :global(.preview-markdown pre.mermaid-error) {
+    border-left: 3px solid var(--error, #e74c3c);
+  }
 </style>
