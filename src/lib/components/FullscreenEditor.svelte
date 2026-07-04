@@ -404,6 +404,12 @@
     border-top: 1px solid var(--border);
   }
 
+  .cmdline {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
   .hint {
     font-size: 10px;
     color: var(--text-muted);

@@ -10,6 +10,7 @@
   import { EditorState } from '@codemirror/state';
   import { keymap } from '@codemirror/view';
   import { oneDark } from '@codemirror/theme-one-dark';
+  import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
@@ -105,6 +106,8 @@
       // global-normal: show preview, hide editor
       if (previewContainer) previewContainer.style.display = 'block';
       if (editorContainer) editorContainer.style.display = 'none';
+      // Close search panel when leaving editor mode
+      if (editorView) closeSearchPanel(editorView);
       // Return focus to the panel (only on mode transition, not initial mount)
       if (changed && panelElement) {
         panelElement.focus();
@@ -669,6 +672,7 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup,
+      search({ top: true }),
       EditorView.lineWrapping,
       keymap.of([{
         key: 'Tab',
@@ -818,6 +822,20 @@
   let overlayCmdBuf = $state('');
   let overlayCmdActive = $state(false);
 
+  let searchActive: boolean = $state(false);
+  let searchBuf: string = $state('');
+
+  function executeSearch() {
+    if (!editorView || !searchBuf) return;
+    // Open search panel so the highlighter activates (panel is hidden by CSS)
+    openSearchPanel(editorView);
+    // Set our query
+    const query = new SearchQuery({ search: searchBuf, caseSensitive: false });
+    editorView.dispatch({ effects: setSearchQuery.of(query) });
+    // Select first match
+    findNext(editorView);
+  }
+
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
     if (trimmed === 'w' || trimmed === 'write') {
@@ -873,10 +891,59 @@
       return;
     }
 
+    // Search mode (triggered by '/' or '?')
+    if (searchActive) {
+      if (event.key === 'Enter') {
+        searchActive = false;
+        executeSearch();
+        return;
+      }
+      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') {
+        searchActive = false;
+        searchBuf = '';
+        return;
+      }
+      if (event.key === 'Backspace') {
+        if (searchBuf.length > 0) {
+          searchBuf = searchBuf.slice(0, -1);
+        } else {
+          searchActive = false;
+        }
+        return;
+      }
+      if (event.key.length === 1) {
+        searchBuf += event.key;
+      }
+      return;
+    }
+
     if (event.key === ':') {
       overlayCmdActive = true;
       overlayCmdBuf = '';
       return;
+    }
+
+    if (event.key === '/' || event.key === '?') {
+      searchActive = true;
+      searchBuf = '';
+      return;
+    }
+
+    // n/N: repeat last search
+    if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      if (editorView) {
+        if (event.shiftKey) {
+          findPrevious(editorView);
+        } else {
+          findNext(editorView);
+        }
+      }
+      return;
+    }
+
+    // Escape: close search panel if open
+    if (event.key === 'Escape' && editorView) {
+      closeSearchPanel(editorView);
     }
 
     // Normal vim key handling
@@ -1131,6 +1198,10 @@
   {#if mode === 'editor-normal' && overlayCmdActive}
     <div class="panel-cmdline">:{overlayCmdBuf}</div>
   {/if}
+
+  {#if mode === 'editor-normal' && searchActive}
+    <div class="panel-cmdline">/{searchBuf}</div>
+  {/if}
 </div>
 
 <style>
@@ -1323,6 +1394,24 @@
 
   :global(.cm-editor) {
     height: 100%;
+  }
+
+  /* Hide CodeMirror search panel (we use our own overlay input) */
+  :global(.cm-panel) {
+    display: none !important;
+  }
+
+  /* Search match highlights */
+  :global(.cm-searchMatch) {
+    background-color: #fabd2f55;
+    outline: 1px solid #fabd2f88;
+    border-radius: 2px;
+  }
+
+  :global(.cm-searchMatch-selected) {
+    background-color: #fabd2faa;
+    outline: 1px solid #fabd2fcc;
+    border-radius: 2px;
   }
 
   :global(.dir-list) {

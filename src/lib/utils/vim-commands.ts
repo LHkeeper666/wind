@@ -15,57 +15,20 @@ export function createVimCommandHandler(
 ): Extension {
   return ViewPlugin.define((view) => {
     let commandBuffer = '';
-    let statusElement: HTMLElement | null = null;
-    let modeText = 'NORMAL';
-
-    function isCommandActive(): boolean {
-      return statusElement !== null && statusElement.dataset.mode === 'command';
-    }
+    let commandActive = false;
+    let lastImeMode = 'NORMAL';
 
     function showCommand() {
       commandBuffer = '';
-      renderStatus(':', 'command');
+      commandActive = true;
+      onStatus?.(':');
     }
 
     function hideCommand() {
       commandBuffer = '';
-      renderStatus(modeText, 'normal');
+      commandActive = false;
+      onStatus?.('');
       view.focus();
-    }
-
-    function renderStatus(text: string, mode: 'normal' | 'command') {
-      if (!statusElement) {
-        statusElement = document.createElement('div');
-        statusElement.style.cssText = `
-          position: absolute; bottom: 0; left: 0; right: 0;
-          background: #1e1e1e; color: #cccccc; padding: 2px 8px;
-          font-family: monospace; font-size: 13px; z-index: 10;
-          border-top: 1px solid #333;
-        `;
-        view.dom.style.position = 'relative';
-        view.dom.appendChild(statusElement);
-      }
-      statusElement.textContent = text;
-      statusElement.dataset.mode = mode;
-    }
-
-    function updateModeDisplay() {
-      const cm = (view as any).cm;
-      if (!cm) return;
-      const vimState = cm.state?.vim;
-      if (!vimState) return;
-
-      let newMode = 'NORMAL';
-      if (vimState.insertMode) newMode = 'INSERT';
-      else if (vimState.visualMode) newMode = 'VISUAL';
-
-      if (newMode !== modeText) {
-        modeText = newMode;
-        invoke('set_ime_enabled', { enabled: newMode === 'INSERT' }).catch(() => {});
-        if (!isCommandActive()) {
-          renderStatus(modeText, 'normal');
-        }
-      }
     }
 
     function processCommand(cmd: string) {
@@ -83,27 +46,37 @@ export function createVimCommandHandler(
     }
 
     function handleKeydown(event: KeyboardEvent) {
-      if (isCommandActive()) {
+      if (commandActive) {
         if (event.key === 'Enter') { event.preventDefault(); event.stopImmediatePropagation(); processCommand(commandBuffer); hideCommand(); return; }
         if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); hideCommand(); return; }
-        if (event.key === 'Backspace') { event.preventDefault(); event.stopImmediatePropagation(); if (commandBuffer.length > 0) { commandBuffer = commandBuffer.slice(0, -1); renderStatus(':' + commandBuffer, 'command'); } else { hideCommand(); } return; }
+        if (event.key === 'Backspace') { event.preventDefault(); event.stopImmediatePropagation(); if (commandBuffer.length > 0) { commandBuffer = commandBuffer.slice(0, -1); onStatus?.(':' + commandBuffer); } else { hideCommand(); } return; }
         if (event.key.length > 1) return;
         event.preventDefault(); event.stopImmediatePropagation();
-        commandBuffer += event.key; renderStatus(':' + commandBuffer, 'command'); return;
+        commandBuffer += event.key; onStatus?.(':' + commandBuffer); return;
       }
     }
 
     view.dom.addEventListener('keydown', handleKeydown, true);
-    view.dom.addEventListener('focus', () => { if (isCommandActive()) hideCommand(); });
+    view.dom.addEventListener('focus', () => { if (commandActive) hideCommand(); });
 
     invoke('set_ime_enabled', { enabled: false }).catch(() => {});
-    requestAnimationFrame(() => updateModeDisplay());
 
     return {
-      update(_update: ViewUpdate) { updateModeDisplay(); },
+      update(_update: ViewUpdate) {
+        const cm = (view as any).cm;
+        if (!cm) return;
+        const vimState = cm.state?.vim;
+        if (!vimState) return;
+        let mode = 'NORMAL';
+        if (vimState.insertMode) mode = 'INSERT';
+        else if (vimState.visualMode) mode = 'VISUAL';
+        if (mode !== lastImeMode) {
+          lastImeMode = mode;
+          invoke('set_ime_enabled', { enabled: mode === 'INSERT' }).catch(() => {});
+        }
+      },
       destroy() {
         view.dom.removeEventListener('keydown', handleKeydown, true);
-        statusElement?.remove();
         invoke('set_ime_enabled', { enabled: true }).catch(() => {});
       },
     };
