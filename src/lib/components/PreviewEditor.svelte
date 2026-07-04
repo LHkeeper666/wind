@@ -7,13 +7,66 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { EditorView, basicSetup } from 'codemirror';
-  import { EditorState } from '@codemirror/state';
-  import { keymap } from '@codemirror/view';
+  import { EditorState, StateField, StateEffect } from '@codemirror/state';
+  import { keymap, Decoration } from '@codemirror/view';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
+
+  // Independent StateField for :s live preview (nvim inccommand style)
+  const triggerSMatchUpdate = StateEffect.define<void>();
+  const clearSMatch = StateEffect.define<void>();
+  const sMatchField = StateField.define({
+    create() { return Decoration.none as any; },
+    update(value, tr) {
+      for (const e of tr.effects) {
+        if (e.is(clearSMatch)) return Decoration.none as any;
+        if (e.is(triggerSMatchUpdate)) {
+          const cmd = overlayCmdBuf;
+          const m = cmd.match(/^(['<,'>]*)([%]?)s(.)/);
+          if (!m) return Decoration.none as any;
+          const delim = m[3];
+          const esc = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const re = new RegExp(`s${esc}([^${esc}]*)(?:${esc}([^${esc}]*))?(?:${esc}([ggiI]*))?`);
+          const pm = cmd.match(re);
+          if (!pm) return Decoration.none as any;
+          const pattern = pm[1];
+          const replacement = pm[2] ?? '';
+          const flags = pm[3] ?? '';
+          const global = flags.includes('g');
+          if (!pattern) return Decoration.none as any;
+          let regex: RegExp;
+          try {
+            regex = new RegExp(pattern, flags.replace('g', '') + 'gi');
+          } catch { return Decoration.none as any; }
+          const hasRange = m[1] !== '' || m[2] !== '';
+          const mark = Decoration.mark({ class: replacement ? 'cm-sMatch-replace' : 'cm-sMatch' });
+          const decos: any[] = [];
+          const doc = tr.state.doc;
+          const startLine = hasRange ? 1 : doc.lineAt(tr.state.selection.main.head).number;
+          const endLine = hasRange ? doc.lines : startLine;
+          for (let i = startLine; i <= endLine; i++) {
+            const line = doc.line(i);
+            if (global) {
+              let m: RegExpExecArray | null;
+              while ((m = regex.exec(line.text)) !== null) {
+                decos.push(mark.range(line.from + m.index, line.from + m.index + m[0].length));
+                if (!m[0].length) break;
+              }
+            } else {
+              const m = regex.exec(line.text);
+              if (m) decos.push(mark.range(line.from + m.index, line.from + m.index + m[0].length));
+            }
+          }
+          return Decoration.set(decos.sort((a, b) => a.from - b.from));
+        }
+      }
+      return value.map(tr.changes);
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
 
   interface FileEntry {
     name: string;
@@ -673,6 +726,7 @@
     const extensions = [
       basicSetup,
       search({ top: true }),
+      sMatchField,
       EditorView.lineWrapping,
       keymap.of([{
         key: 'Tab',
@@ -836,6 +890,28 @@
     findNext(editorView);
   }
 
+  // Live-highlight :s matches as user types (nvim inccommand style)
+  function highlightSMatches() {
+    if (!editorView) return;
+    // Parse :s command to extract replacement for CSS variable
+    const cmd = overlayCmdBuf;
+    const delimMatch = cmd.match(/^(['<,'>]*)([%]?)s(.)/);
+    if (delimMatch) {
+      const delim = delimMatch[3];
+      const esc = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`s${esc}([^${esc}]*)(?:${esc}([^${esc}]*))?(?:${esc}([ggiI]*))?`);
+      const pm = cmd.match(re);
+      if (pm && pm[2] !== undefined) {
+        editorView.dom.style.setProperty('--s-replacement', JSON.stringify(pm[2]));
+      } else {
+        editorView.dom.style.removeProperty('--s-replacement');
+      }
+    } else {
+      editorView.dom.style.removeProperty('--s-replacement');
+    }
+    editorView.dispatch({ effects: triggerSMatchUpdate.of() });
+  }
+
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
     if (trimmed === 'w' || trimmed === 'write') {
@@ -854,8 +930,14 @@
       saveFile().then(() => { mode = 'global-normal'; });
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
       saveFile().then(() => { mode = 'global-normal'; });
-    } else {
-      onToast(`E492: Not an editor command: ${trimmed}`);
+    } else if (editorView) {
+      const cm = getCM(editorView);
+      if (cm) {
+        Vim.handleEx(cm as any, trimmed);
+        // Clear :s highlights after ex command completes
+        editorView.dispatch({ effects: clearSMatch.of() });
+        editorView.dom.style.removeProperty('--s-replacement');
+      }
     }
   }
 
@@ -875,6 +957,7 @@
         overlayCmdActive = false;
         overlayCmdBuf = '';
         onToast('');
+        if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); }
         return;
       }
       if (event.key === 'Backspace') {
@@ -883,10 +966,12 @@
         } else {
           overlayCmdActive = false;
         }
+        highlightSMatches();
         return;
       }
       if (event.key.length === 1) {
         overlayCmdBuf += event.key;
+        highlightSMatches();
       }
       return;
     }
@@ -1412,6 +1497,27 @@
     background-color: #fabd2faa;
     outline: 1px solid #fabd2fcc;
     border-radius: 2px;
+  }
+
+  :global(.cm-sMatch) {
+    background-color: #b8bb2644;
+    outline: 1px solid #b8bb2688;
+    border-radius: 2px;
+  }
+
+  :global(.cm-sMatch-replace) {
+    background-color: #b8bb2644;
+    outline: 1px solid #b8bb2688;
+    border-radius: 2px;
+    font-size: 0;
+    color: transparent;
+  }
+
+  :global(.cm-sMatch-replace::after) {
+    content: var(--s-replacement, '');
+    font-size: initial;
+    color: #83a598;
+    font-style: italic;
   }
 
   :global(.dir-list) {
