@@ -4,14 +4,26 @@ import MarkdownIt from 'markdown-it';
 // @ts-ignore - markdown-it-texmath has no bundled types
 import texmath from 'markdown-it-texmath';
 import katex from 'katex';
-import { codeToHtml } from 'shiki';
+import { createHighlighter, type Highlighter } from 'shiki';
 import { invoke } from '@tauri-apps/api/core';
 import 'katex/dist/katex.min.css';
 
 export class MarkdownPreviewer implements Previewer {
   private container: HTMLElement | null = null;
   private md: any;
+  private highlighter: Highlighter | null = null;
+  private mermaidModule: any = null;
   onHeadings?: (headings: TocHeading[]) => void;
+
+  private async getHighlighter(): Promise<Highlighter> {
+    if (!this.highlighter) {
+      this.highlighter = await createHighlighter({
+        themes: ['github-dark'],
+        langs: ['javascript', 'typescript', 'json', 'html', 'css', 'python', 'rust', 'bash', 'powershell', 'markdown'],
+      });
+    }
+    return this.highlighter;
+  }
 
   constructor() {
     this.md = new MarkdownIt({
@@ -140,8 +152,15 @@ export class MarkdownPreviewer implements Previewer {
       const html = this.md.render(text);
       container.innerHTML = `<div class="preview-markdown">${html}</div>`;
 
-      // Post-process: highlight code blocks with Shiki, render mermaid diagrams
+      // Collect code blocks and images for parallel processing
       const codeBlocks = container.querySelectorAll('pre > code');
+      const images = container.querySelectorAll('img');
+
+      // Prepare code block highlighting tasks (skip mermaid, handle separately)
+      const highlightTasks: Promise<void>[] = [];
+      const mermaidTasks: Promise<void>[] = [];
+      const highlighterPromise = this.getHighlighter();
+
       for (const block of codeBlocks) {
         const pre = block.parentElement!;
         const lang = [...block.classList]
@@ -150,74 +169,103 @@ export class MarkdownPreviewer implements Previewer {
         const code = block.textContent || '';
 
         if (lang === 'mermaid') {
-          // Render mermaid diagram
-          try {
-            const { default: mermaid } = await import('mermaid');
-            const isDark = document.documentElement.classList.contains('dark');
-            mermaid.initialize({
-              startOnLoad: false,
-              theme: isDark ? 'dark' : 'default',
-            });
-            const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
-            const { svg } = await mermaid.render(id, code);
-            const wrapper = document.createElement('div');
-            wrapper.className = 'mermaid-container';
-            wrapper.innerHTML = svg;
-            pre.replaceWith(wrapper);
-          } catch {
-            // Mermaid failed — keep the original <pre><code> with an error indicator
-            pre.classList.add('mermaid-error');
-          }
+          mermaidTasks.push(this.renderMermaidBlock(pre, code));
           continue;
         }
 
-        try {
-          const highlighted = await codeToHtml(code, {
-            lang: lang || 'text',
-            theme: 'github-dark',
-          });
-          pre.replaceWith(
-            Object.assign(document.createElement('div'), { innerHTML: highlighted }).firstChild!
-          );
-        } catch {
-          // Shiki failed for this block — keep the original <pre><code>
-        }
+        highlightTasks.push(
+          this.highlightCodeBlock(highlighterPromise, pre, code, lang)
+        );
       }
 
-      // Post-process: load local images via Tauri binary file read
-      const images = container.querySelectorAll('img');
+      // Prepare image loading tasks
+      const imageTasks: Promise<void>[] = [];
       for (const img of images) {
         const src = img.getAttribute('src');
         if (!src) continue;
-        // Skip remote URLs and data URIs
         if (/^(https?:\/\/|data:|blob:)/.test(src)) continue;
 
-        // Resolve relative to current file's directory
         let resolvedPath = src;
         if (filePath && !src.startsWith('/') && !src.match(/^[A-Z]:\\/i)) {
           const dir = filePath.replace(/[\\/][^\\/]*$/, '');
           resolvedPath = dir + '\\' + src;
         }
-
-        // Normalize path separators
         resolvedPath = resolvedPath.replace(/\//g, '\\');
 
-        try {
-          const base64 = await invoke<string>('read_binary_file', { path: resolvedPath });
-          const binary = atob(base64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          const blob = new Blob([bytes.buffer]);
-          img.src = URL.createObjectURL(blob);
-        } catch (err) {
-          console.warn('[MarkdownPreviewer] Failed to load image:', resolvedPath, err);
-        }
+        imageTasks.push(this.loadLocalImage(img, resolvedPath));
       }
+
+      // Run all post-processing in parallel
+      await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
     } catch (err) {
       console.error('[MarkdownPreviewer] render failed:', err);
       container.innerHTML = `<pre class="preview-plain"><code>${this.escapeHtml(text)}</code></pre>`;
+    }
+  }
+
+  private async highlightCodeBlock(
+    highlighterPromise: Promise<Highlighter>,
+    pre: Element,
+    code: string,
+    lang: string
+  ): Promise<void> {
+    try {
+      const highlighter = await highlighterPromise;
+      // Load language if not already loaded
+      if (lang && !highlighter.getLoadedLanguages().includes(lang)) {
+        try {
+          await highlighter.loadLanguage(lang as any);
+        } catch {
+          // Language not available, fall back to text
+          lang = 'text';
+        }
+      }
+      const highlighted = highlighter.codeToHtml(code, {
+        lang: lang || 'text',
+        theme: 'github-dark',
+      });
+      pre.replaceWith(
+        Object.assign(document.createElement('div'), { innerHTML: highlighted }).firstChild!
+      );
+    } catch {
+      // Shiki failed for this block — keep the original <pre><code>
+    }
+  }
+
+  private async renderMermaidBlock(pre: Element, code: string): Promise<void> {
+    try {
+      if (!this.mermaidModule) {
+        this.mermaidModule = await import('mermaid');
+      }
+      const mermaid = this.mermaidModule.default;
+      const isDark = document.documentElement.classList.contains('dark');
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: isDark ? 'dark' : 'default',
+      });
+      const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
+      const { svg } = await mermaid.render(id, code);
+      const wrapper = document.createElement('div');
+      wrapper.className = 'mermaid-container';
+      wrapper.innerHTML = svg;
+      pre.replaceWith(wrapper);
+    } catch {
+      pre.classList.add('mermaid-error');
+    }
+  }
+
+  private async loadLocalImage(img: HTMLImageElement, resolvedPath: string): Promise<void> {
+    try {
+      const base64 = await invoke<string>('read_binary_file', { path: resolvedPath });
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes.buffer]);
+      img.src = URL.createObjectURL(blob);
+    } catch (err) {
+      console.warn('[MarkdownPreviewer] Failed to load image:', resolvedPath, err);
     }
   }
 
@@ -231,6 +279,10 @@ export class MarkdownPreviewer implements Previewer {
     if (this.container) {
       this.container.innerHTML = '';
       this.container = null;
+    }
+    if (this.highlighter) {
+      this.highlighter.dispose();
+      this.highlighter = null;
     }
   }
 }
