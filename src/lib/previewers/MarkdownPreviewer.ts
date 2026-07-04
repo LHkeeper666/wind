@@ -118,7 +118,7 @@ export class MarkdownPreviewer implements Previewer {
           ?.map((c: any) => c.content || '')
           .join('') || '';
         const line = tokens[i].map ? tokens[i].map[0] : 0;
-        const heading: TocHeading = { level, text, line, children: [], expanded: true };
+        const heading: TocHeading = { level, text, line, children: [], expanded: false };
 
         // Find parent: pop stack until we find a heading with lower level
         while (stack.length > 0 && stack[stack.length - 1].level >= level) {

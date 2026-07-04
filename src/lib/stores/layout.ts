@@ -199,7 +199,6 @@ function createLayoutStore() {
         originalRatios: [...state.columnRatios] as [number, number, number],
         columnRatios: [0, 1, 4],
         previewExpanded: true,
-        activeColumn: 'preview',
       }));
     },
 
@@ -209,7 +208,6 @@ function createLayoutStore() {
         ...state,
         columnRatios: [...state.originalRatios] as [number, number, number],
         previewExpanded: false,
-        activeColumn: 'current',
       }));
     },
 

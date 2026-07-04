@@ -429,11 +429,10 @@
   function handleActivate(filePath: string) {
     layout.setSelectedFile(filePath);
     selectedFile = filePath;
-    // Enter expanded preview mode for any file (l/Enter)
     if (!$layout.previewExpanded) {
       layout.expandPreview();
-      focusPanel('preview');
     }
+    focusPanel('preview');
   }
 
   function togglePreviewLayout() {
