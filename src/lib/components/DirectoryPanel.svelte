@@ -503,6 +503,7 @@
 
     // Don't intercept keys when a modal or dialog is open
     if (showDeleteConfirm || inputVisible || isSearchModalOpen) {
+      event.stopPropagation();
       return;
     }
 

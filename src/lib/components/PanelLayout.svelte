@@ -644,6 +644,13 @@
   }
 
   async function handleGlobalKeydown(event: KeyboardEvent) {
+    // Skip when typing in an input field (InputDialog, SearchModal search box, etc.)
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+      // Only allow Escape and Ctrl shortcuts through
+      if (event.key !== 'Escape' && !event.ctrlKey) return;
+    }
+
     // Tab / Shift+Tab: prevent native focus switching
     // Skip when command palette is open (Tab = path completion)
     if (event.key === 'Tab' && !showCommandPalette) {
