@@ -529,15 +529,11 @@
     setTimeout(() => panelElement?.focus(), 0);
   }
 
-  function setSort(mode: 'name' | 'size' | 'ext' | 'modified' | 'created') {
+  function setSort(mode: 'name' | 'size' | 'ext' | 'modified' | 'created', reverse: boolean = false) {
     sortBy = mode;
+    sortReverse = reverse;
     const labels: Record<string, string> = { name: 'name', size: 'size', ext: 'extension', modified: 'modified time', created: 'created time' };
-    onToast(`Sorted by ${labels[mode] || mode}`);
-  }
-
-  function toggleSortReverse() {
-    sortReverse = !sortReverse;
-    onToast(sortReverse ? 'Sort reversed' : 'Sort restored');
+    onToast(`Sorted by ${labels[mode] || mode}${reverse ? ' (reversed)' : ''}`);
   }
 
   function toggleDirFirst() {
@@ -680,20 +676,22 @@
     const isSortPrefix = lastKey === 'KeyS' && now - lastKeyTime < 500;
 
     // Handle sort prefix sub-keys before the main switch
+    // Lowercase = ascending, uppercase (Shift) = descending
     if (isSortPrefix) {
-      const sortKey = event.code === 'KeyN' ? 'name'
+      const baseKey = event.code === 'KeyN' ? 'name'
         : event.code === 'KeyS' ? 'size'
         : event.code === 'KeyE' ? 'ext'
         : event.code === 'KeyM' ? 'modified'
         : event.code === 'KeyC' ? 'created'
-        : event.code === 'KeyR' ? 'reverse'
         : event.code === 'KeyT' ? 'dirfirst'
         : null;
-      if (sortKey) {
+      if (baseKey) {
         event.preventDefault();
-        if (sortKey === 'reverse') toggleSortReverse();
-        else if (sortKey === 'dirfirst') toggleDirFirst();
-        else setSort(sortKey as any);
+        if (baseKey === 'dirfirst') {
+          toggleDirFirst();
+        } else {
+          setSort(baseKey as any, event.shiftKey);
+        }
         lastKey = '';
         return;
       }
