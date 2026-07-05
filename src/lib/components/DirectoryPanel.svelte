@@ -676,21 +676,24 @@
     const isSortPrefix = lastKey === 'KeyS' && now - lastKeyTime < 500;
 
     // Handle sort prefix sub-keys before the main switch
-    // Lowercase = ascending, uppercase (Shift) = descending
+    // Lowercase = ascending, uppercase = descending
     if (isSortPrefix) {
-      const baseKey = event.code === 'KeyN' ? 'name'
-        : event.code === 'KeyS' ? 'size'
-        : event.code === 'KeyE' ? 'ext'
-        : event.code === 'KeyM' ? 'modified'
-        : event.code === 'KeyC' ? 'created'
-        : event.code === 'KeyT' ? 'dirfirst'
-        : null;
+      const k = event.key;
+      const sortMap: Record<string, string> = {
+        n: 'name', N: 'name',
+        s: 'size', S: 'size',
+        e: 'ext', E: 'ext',
+        m: 'modified', M: 'modified',
+        c: 'created', C: 'created',
+        t: 'dirfirst',
+      };
+      const baseKey = sortMap[k];
       if (baseKey) {
         event.preventDefault();
         if (baseKey === 'dirfirst') {
           toggleDirFirst();
         } else {
-          setSort(baseKey as any, event.shiftKey);
+          setSort(baseKey as any, k === k.toUpperCase());
         }
         lastKey = '';
         return;
