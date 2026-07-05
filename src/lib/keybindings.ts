@@ -40,6 +40,13 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'y', context: 'directory', description: 'Yank selected files (copy)' },
       { key: 'x', context: 'directory', description: 'Cut selected files (move)' },
       { key: 'p', context: 'directory', description: 'Paste from clipboard' },
+      { key: 'P', context: 'directory', description: 'Force paste (overwrite all)' },
+      { key: 'd', context: 'directory', description: 'Move to trash' },
+      { key: 'D', context: 'directory', description: 'Permanent delete' },
+      { key: 'r', context: 'directory', description: 'Rename' },
+      { key: 'a', context: 'directory', description: 'Create new file' },
+      { key: 'a/', context: 'directory', description: 'Create new directory' },
+      { key: '.', context: 'directory', description: 'Toggle hidden files' },
     ],
   },
   {

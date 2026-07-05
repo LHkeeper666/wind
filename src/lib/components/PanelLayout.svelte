@@ -468,7 +468,7 @@
     pasteResolve = null;
   }
 
-  async function handlePaste() {
+  async function handlePaste(force: boolean = false) {
     let state: any;
     const unsub = clipboard.subscribe(v => state = v)();
     if (!state.entries || state.entries.length === 0) {
@@ -494,14 +494,16 @@
       }
 
       if (exists) {
-        const choice = await promptConflict(entry.name);
-        if (choice === 'abort') {
-          showToast(`Paste aborted (${processed}/${entries.length} done)`);
-          currentDirectoryPanel?.refresh();
-          return;
-        }
-        if (choice === 'skip') {
-          continue;
+        if (!force) {
+          const choice = await promptConflict(entry.name);
+          if (choice === 'abort') {
+            showToast(`Paste aborted (${processed}/${entries.length} done)`);
+            currentDirectoryPanel?.refresh();
+            return;
+          }
+          if (choice === 'skip') {
+            continue;
+          }
         }
         // Overwrite: delete existing first
         try {
@@ -842,8 +844,15 @@
       return;
     }
 
+    // P key for force paste (skip conflict confirmation)
+    if (event.key === 'P' && event.shiftKey && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+      event.preventDefault();
+      handlePaste(true);
+      return;
+    }
+
     // p key for paste (works in directory panels, not in terminal insert or editor)
-    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && !event.shiftKey && canUseTabPrefix) {
       event.preventDefault();
       handlePaste();
       return;

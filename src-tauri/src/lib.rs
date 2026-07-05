@@ -28,6 +28,7 @@ fn list_drives() -> Vec<FileEntry> {
                 path: drive,
                 is_dir: true,
                 size: None,
+                is_hidden: false,
                 children: None,
             });
         }
@@ -41,6 +42,7 @@ pub struct FileEntry {
     path: String,
     is_dir: bool,
     size: Option<u64>,
+    is_hidden: bool,
     children: Option<Vec<FileEntry>>,
 }
 
@@ -107,12 +109,18 @@ fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
                         } else {
                             entry.metadata().ok().map(|m| m.len())
                         };
+                        let is_hidden = file_name.starts_with('.')
+                            || entry.metadata().map(|m| {
+                                use std::os::windows::fs::MetadataExt;
+                                m.file_attributes() & 0x2 != 0  // FILE_ATTRIBUTE_HIDDEN
+                            }).unwrap_or(false);
 
                         entries.push(FileEntry {
                             name: file_name,
                             path: file_path,
                             is_dir,
                             size,
+                            is_hidden,
                             children: None,
                         });
                     }
@@ -222,12 +230,24 @@ fn delete_file(path: String) -> Result<(), String> {
         return Err(format!("Path does not exist: {}", path));
     }
 
+    trash::delete(file_path)
+        .map_err(|e| format!("Failed to move to trash: {}", e))
+}
+
+#[tauri::command]
+fn permanent_delete(path: String) -> Result<(), String> {
+    let file_path = Path::new(&path);
+
+    if !file_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
     if file_path.is_dir() {
         fs::remove_dir_all(file_path)
-            .map_err(|e| format!("Failed to delete directory: {}", e))
+            .map_err(|e| format!("Failed to permanently delete directory: {}", e))
     } else {
         fs::remove_file(file_path)
-            .map_err(|e| format!("Failed to delete file: {}", e))
+            .map_err(|e| format!("Failed to permanently delete file: {}", e))
     }
 }
 
@@ -1024,6 +1044,7 @@ pub fn run() {
             list_archive_entries,
             list_drives,
             delete_file,
+            permanent_delete,
             rename_file,
             create_file,
             copy_file,
