@@ -67,8 +67,17 @@
     showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden)
   );
   let selectedFile: FileEntry | null = $derived(
-    selectedIndex >= 0 && selectedIndex < files.length ? files[selectedIndex] : null
+    selectedIndex >= 0 && selectedIndex < displayFiles.length ? displayFiles[selectedIndex] : null
   );
+
+  // Clamp selectedIndex when displayFiles shrinks (e.g. hidden files toggled off)
+  $effect(() => {
+    const len = displayFiles.length;
+    if (selectedIndex >= len && len > 0) {
+      selectedIndex = len - 1;
+      selectedPathInternal = displayFiles[selectedIndex].path;
+    }
+  });
 
   // InputDialog state
   let inputVisible: boolean = $state(false);
@@ -95,8 +104,8 @@
   }
 
   export function getSelectedFileSize(): number {
-    if (selectedIndex >= 0 && selectedIndex < files.length) {
-      return files[selectedIndex].size ?? 0;
+    if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+      return displayFiles[selectedIndex].size ?? 0;
     }
     return 0;
   }
@@ -112,9 +121,9 @@
   }
 
   export function setSelectedIndex(index: number) {
-    if (index >= 0 && index < files.length) {
+    if (index >= 0 && index < displayFiles.length) {
       selectedIndex = index;
-      selectedPathInternal = files[index].path;
+      selectedPathInternal = displayFiles[index].path;
     }
   }
 
@@ -195,10 +204,10 @@
   let prevPropPath: string | null = null;
   $effect(() => {
     const sp = selectedPath;
-    const f = files;
-    if (sp !== prevPropPath && sp && f.length > 0) {
+    const df = displayFiles;
+    if (sp !== prevPropPath && sp && df.length > 0) {
       prevPropPath = sp;
-      const idx = f.findIndex(entry => entry.path === sp);
+      const idx = df.findIndex(entry => entry.path === sp);
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = sp;
@@ -229,33 +238,33 @@
   });
 
   function selectInitialEntry() {
-    if (selectedIndex >= 0 || files.length === 0) return;
+    if (selectedIndex >= 0 || displayFiles.length === 0) return;
     // If navigating back, try to highlight the directory we came from
     if (pendingSelectName) {
       const target = pendingSelectName;
       pendingSelectName = null;
-      const idx = files.findIndex(f => f.name === target);
+      const idx = displayFiles.findIndex(f => f.name === target);
       if (idx >= 0) {
         selectedIndex = idx;
-        selectedPathInternal = files[idx].path;
-        onSelect(files[idx].path);
+        selectedPathInternal = displayFiles[idx].path;
+        onSelect(displayFiles[idx].path);
         return;
       }
     }
     // If selectedPath prop is set (e.g. from tab restore), try to use it
     if (selectedPath) {
-      const idx = files.findIndex(f => f.path === selectedPath);
+      const idx = displayFiles.findIndex(f => f.path === selectedPath);
       if (idx >= 0) {
         selectedIndex = idx;
-        selectedPathInternal = files[idx].path;
-        onSelect(files[idx].path);
+        selectedPathInternal = displayFiles[idx].path;
+        onSelect(displayFiles[idx].path);
         return;
       }
     }
-    const firstReal = files.findIndex(f => f.name !== '..');
+    const firstReal = displayFiles.findIndex(f => f.name !== '..');
     selectedIndex = firstReal >= 0 ? firstReal : 0;
-    selectedPathInternal = files[selectedIndex].path;
-    onSelect(files[selectedIndex].path);
+    selectedPathInternal = displayFiles[selectedIndex].path;
+    onSelect(displayFiles[selectedIndex].path);
   }
 
   async function loadDirectory(dirPath: string, forceRefresh: boolean = false) {
@@ -304,9 +313,9 @@
   }
 
   function selectByIndex(index: number) {
-    if (index >= 0 && index < files.length) {
+    if (index >= 0 && index < displayFiles.length) {
       selectedIndex = index;
-      selectedPathInternal = files[index].path;
+      selectedPathInternal = displayFiles[index].path;
 
       // Debounce onSelect to avoid rapid file loading
       if (selectTimeout) {
@@ -316,7 +325,7 @@
       selectTimeout = setTimeout(() => {
         // Only fire if user is still on the same item
         if (selectedIndex === capturedIndex) {
-          onSelect(files[capturedIndex].path);
+          onSelect(displayFiles[capturedIndex].path);
         }
       }, 200);
     }
@@ -343,8 +352,8 @@
   }
 
   function startRename() {
-    if (selectedIndex < 0 || selectedIndex >= files.length) return;
-    const entry = files[selectedIndex];
+    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
+    const entry = displayFiles[selectedIndex];
     if (entry.name === '..') return;
     inputMode = 'rename';
     inputValue = entry.name;
@@ -373,7 +382,7 @@
     inputVisible = false;
     try {
       if (inputMode === 'rename') {
-        const entry = files[selectedIndex];
+        const entry = displayFiles[selectedIndex];
         const parentPath = path.replace(/[\\\/]+$/, '');
         const newPath = parentPath + '\\' + value;
         await invoke('rename_file', { oldPath: entry.path, newName: value });
@@ -470,8 +479,8 @@
         .filter(f => f.name !== '..' && selectedPaths.has(f.path))
         .map(f => ({ path: f.path, name: f.name, is_dir: f.is_dir }));
     }
-    if (selectedIndex >= 0 && selectedIndex < files.length) {
-      const f = files[selectedIndex];
+    if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+      const f = displayFiles[selectedIndex];
       if (f.name === '..') return [];
       return [{ path: f.path, name: f.name, is_dir: f.is_dir }];
     }
@@ -494,8 +503,8 @@
     switch (event.key) {
       case 'Enter':
         event.preventDefault();
-        if (selectedIndex >= 0 && selectedIndex < files.length) {
-          const entry = files[selectedIndex];
+        if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+          const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
             onNavigate(entry.path);
           } else {
@@ -524,7 +533,7 @@
         switch (event.code) {
           case 'KeyJ':
             event.preventDefault();
-            selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
+            selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
             break;
           case 'KeyK':
             event.preventDefault();
@@ -539,7 +548,7 @@
             }
             if (event.shiftKey) {
               event.preventDefault();
-              selectByIndex(files.length - 1);
+              selectByIndex(displayFiles.length - 1);
             }
             break;
           case 'KeyH':
@@ -554,8 +563,8 @@
           case 'KeyL':
             if (type === 'current') {
               event.preventDefault();
-              if (selectedIndex >= 0 && selectedIndex < files.length) {
-                const entry = files[selectedIndex];
+              if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+                const entry = displayFiles[selectedIndex];
                 if (entry.is_dir) {
                   onNavigate(entry.path);
                 } else {
@@ -581,8 +590,8 @@
             break;
           case 'Space':
             event.preventDefault();
-            if (selectedIndex >= 0 && selectedIndex < files.length) {
-              const entry = files[selectedIndex];
+            if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+              const entry = displayFiles[selectedIndex];
               if (entry.name !== '..') {
                 const newSet = new Set(selectedPaths);
                 if (newSet.has(entry.path)) {
@@ -593,7 +602,7 @@
                 selectedPaths = newSet;
               }
               // Advance cursor
-              selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
+              selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
             }
             break;
           case 'KeyV':

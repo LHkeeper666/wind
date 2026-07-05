@@ -35,51 +35,80 @@
       event.preventDefault();
       onCancel();
     }
+    event.stopPropagation();
+  }
+
+  function handleOverlayKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onCancel();
+    }
+    event.stopPropagation();
   }
 </script>
 
 {#if visible}
-  <div class="input-dialog">
-    {#if prompt}
-      <span class="input-prompt">{prompt}</span>
-    {/if}
-    <input
-      bind:this={inputEl}
-      bind:value={value}
-      {placeholder}
-      onkeydown={handleKeydown}
-      class="input-field"
-      spellcheck="false"
-    />
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="input-overlay" onkeydown={handleOverlayKeydown}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="input-modal" onkeydown={handleKeydown}>
+      {#if prompt}
+        <div class="input-prompt">{prompt}</div>
+      {/if}
+      <input
+        bind:this={inputEl}
+        bind:value={value}
+        {placeholder}
+        onkeydown={handleKeydown}
+        class="input-field"
+        spellcheck="false"
+      />
+    </div>
   </div>
 {/if}
 
 <style>
-  .input-dialog {
+  .input-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
-    padding: 4px 12px;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .input-modal {
     background-color: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
-    gap: 8px;
+    border: 1px solid var(--border);
+    padding: 12px 16px;
+    min-width: 320px;
     font-family: var(--font-mono);
+    zoom: var(--zoom-level);
   }
 
   .input-prompt {
     color: var(--accent);
     font-size: 13px;
-    flex-shrink: 0;
+    margin-bottom: 8px;
   }
 
   .input-field {
-    flex: 1;
+    width: 100%;
     background: none;
-    border: none;
+    border: 1px solid var(--border);
     outline: none;
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 13px;
-    padding: 2px 0;
+    padding: 4px 8px;
+  }
+
+  .input-field:focus {
+    border-color: var(--accent);
   }
 
   .input-field::placeholder {
