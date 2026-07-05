@@ -4,12 +4,15 @@
   import { layout } from '$lib/stores/layout';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import SearchModal from './SearchModal.svelte';
+  import InputDialog from './InputDialog.svelte';
+  import ConfirmModal from './ConfirmModal.svelte';
 
   interface FileEntry {
     name: string;
     path: string;
     is_dir: boolean;
     size?: number | null;
+    is_hidden?: boolean;
   }
 
   let {
@@ -55,6 +58,29 @@
 
   // Multi-select state
   let selectedPaths: Set<string> = $state(new Set());
+
+  // Hidden files toggle
+  let showHidden: boolean = $state(false);
+
+  // Derived values that depend on state declared above
+  let displayFiles: FileEntry[] = $derived(
+    showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden)
+  );
+  let selectedFile: FileEntry | null = $derived(
+    selectedIndex >= 0 && selectedIndex < files.length ? files[selectedIndex] : null
+  );
+
+  // InputDialog state
+  let inputVisible: boolean = $state(false);
+  let inputValue: string = $state('');
+  let inputPlaceholder: string = $state('');
+  let inputPrompt: string = $state('');
+  let inputMode: 'rename' | 'create-file' | 'create-dir' = $state('rename');
+
+  // Delete confirmation state
+  let showDeleteConfirm: boolean = $state(false);
+  let deleteIsPermanent: boolean = $state(false);
+  let deleteResolve: ((confirm: boolean) => void) | null = null;
 
   // Cut file paths from clipboard (for visual indicator)
   let cutPaths: Set<string> = $state(new Set());
@@ -316,6 +342,128 @@
     }
   }
 
+  function startRename() {
+    if (selectedIndex < 0 || selectedIndex >= files.length) return;
+    const entry = files[selectedIndex];
+    if (entry.name === '..') return;
+    inputMode = 'rename';
+    inputValue = entry.name;
+    inputPlaceholder = '';
+    inputPrompt = 'Rename:';
+    inputVisible = true;
+  }
+
+  function startCreateFile() {
+    inputMode = 'create-file';
+    inputValue = '';
+    inputPlaceholder = 'New file name';
+    inputPrompt = 'New file:';
+    inputVisible = true;
+  }
+
+  function startCreateDir() {
+    inputMode = 'create-dir';
+    inputValue = '';
+    inputPlaceholder = 'New directory name';
+    inputPrompt = 'New dir:';
+    inputVisible = true;
+  }
+
+  async function handleInputConfirm(value: string) {
+    inputVisible = false;
+    try {
+      if (inputMode === 'rename') {
+        const entry = files[selectedIndex];
+        const parentPath = path.replace(/[\\\/]+$/, '');
+        const newPath = parentPath + '\\' + value;
+        await invoke('rename_file', { oldPath: entry.path, newName: value });
+        await currentDirectoryPanel_refresh();
+        onSelect(newPath);
+        onToast(`Renamed to ${value}`);
+      } else if (inputMode === 'create-file') {
+        const parentPath = path.replace(/[\\\/]+$/, '');
+        const newPath = parentPath + '\\' + value;
+        await invoke('create_file', { path: newPath, isDir: false });
+        await currentDirectoryPanel_refresh();
+        onSelect(newPath);
+        onToast(`Created ${value}`);
+      } else if (inputMode === 'create-dir') {
+        const parentPath = path.replace(/[\\\/]+$/, '');
+        const newPath = parentPath + '\\' + value;
+        await invoke('create_file', { path: newPath, isDir: true });
+        await currentDirectoryPanel_refresh();
+        onSelect(newPath);
+        onToast(`Created ${value}/`);
+      }
+    } catch (e) {
+      onToast(`Error: ${e}`);
+    }
+    // Restore focus
+    setTimeout(() => panelElement?.focus(), 0);
+  }
+
+  function handleInputCancel() {
+    inputVisible = false;
+    setTimeout(() => panelElement?.focus(), 0);
+  }
+
+  // Refresh helper that returns a promise
+  let refreshResolve: (() => void) | null = null;
+  function currentDirectoryPanel_refresh(): Promise<void> {
+    return new Promise(resolve => {
+      refreshResolve = resolve;
+      loadDirectory(path, true).then(() => {
+        resolve();
+        refreshResolve = null;
+      });
+    });
+  }
+
+  function promptDelete(permanent: boolean): Promise<boolean> {
+    return new Promise(resolve => {
+      deleteIsPermanent = permanent;
+      showDeleteConfirm = true;
+      deleteResolve = resolve;
+    });
+  }
+
+  function handleDeleteConfirm() {
+    showDeleteConfirm = false;
+    deleteResolve?.(true);
+    deleteResolve = null;
+  }
+
+  function handleDeleteCancel() {
+    showDeleteConfirm = false;
+    deleteResolve?.(false);
+    deleteResolve = null;
+  }
+
+  async function handleDelete(permanent: boolean) {
+    const entries = getEntriesToOperate();
+    if (entries.length === 0) return;
+
+    const confirmed = await promptDelete(permanent);
+    if (!confirmed) return;
+
+    const cmd = permanent ? 'permanent_delete' : 'delete_file';
+    let deleted = 0;
+    for (const entry of entries) {
+      try {
+        await invoke(cmd, { path: entry.path });
+        deleted++;
+      } catch (e) {
+        onToast(`Failed to delete ${entry.name}: ${e}`);
+      }
+    }
+
+    selectedPaths = new Set();
+    if (deleted > 0) {
+      onToast(`${deleted} ${deleted === 1 ? 'file' : 'files'} ${permanent ? 'permanently deleted' : 'moved to trash'}`);
+      await loadDirectory(path, true);
+    }
+  }
+
   function getEntriesToOperate(): ClipboardEntry[] {
     if (selectedPaths.size > 0) {
       return files
@@ -358,6 +506,14 @@
       case 'R':
         event.preventDefault();
         if (path) loadDirectory(path, true); // Force refresh
+        break;
+      case 'r':
+        event.preventDefault();
+        startRename();
+        break;
+      case 'D':
+        event.preventDefault();
+        handleDelete(true);
         break;
       case 'E':
         event.preventDefault();
@@ -410,13 +566,18 @@
             break;
           case 'Slash':
             event.preventDefault();
-            if (isGSlash) {
+            if (lastKey === 'KeyA' && now - lastKeyTime < 500) {
+              // a/ = create directory
+              lastKey = '';
+              startCreateDir();
+            } else if (isGSlash) {
               searchMode = 'recursive';
               lastKey = '';
+              openSearchModal();
             } else {
               searchMode = 'current';
+              openSearchModal();
             }
-            openSearchModal();
             break;
           case 'Space':
             event.preventDefault();
@@ -465,6 +626,28 @@
               }
             }
             break;
+          case 'Period':
+            event.preventDefault();
+            showHidden = !showHidden;
+            onToast(showHidden ? 'Showing hidden files' : 'Hiding hidden files');
+            break;
+          case 'KeyA':
+            event.preventDefault();
+            // a alone = create file, a/ = create dir (handled via lastKey in Slash case)
+            if (lastKey === 'KeyA' && now - lastKeyTime < 500) {
+              // Double-a: do nothing special
+            }
+            // Delay to check if '/' follows
+            setTimeout(() => {
+              if (lastKey === 'KeyA') {
+                startCreateFile();
+              }
+            }, 300);
+            break;
+          case 'KeyD':
+            event.preventDefault();
+            handleDelete(false);
+            break;
         }
         break;
     }
@@ -503,23 +686,32 @@
   </div>
 
   <div class="panel-content">
+    <InputDialog
+      visible={inputVisible}
+      value={inputValue}
+      placeholder={inputPlaceholder}
+      prompt={inputPrompt}
+      onConfirm={handleInputConfirm}
+      onCancel={handleInputCancel}
+    />
     {#if isLoading}
       <p class="placeholder">Loading...</p>
     {:else if errorMessage}
       <p class="error">{errorMessage}</p>
-    {:else if files.length === 0}
+    {:else if displayFiles.length === 0}
       <p class="placeholder">Empty directory</p>
     {:else}
       <div class="file-list">
-        {#each files as file, index (file.path)}
+        {#each displayFiles as file, index (file.path)}
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
             class="file-item"
-            class:selected={index === selectedIndex}
+            class:selected={selectedFile?.path === file.path}
             class:multi-selected={selectedPaths.has(file.path)}
             class:cut-marked={cutPaths.has(file.path)}
             class:directory={file.is_dir}
-            onclick={() => handleItemClick(index)}
+            class:hidden-file={file.is_hidden}
+            onclick={() => handleItemClick(files.findIndex(f => f.path === file.path))}
             ondblclick={() => handleItemDblClick(file)}
             onkeydown={() => {}}
             data-path={file.path}
@@ -543,6 +735,16 @@
     mode={searchMode}
     onClose={closeSearchModal}
     onSelect={handleSearchSelect}
+  />
+
+  <ConfirmModal
+    visible={showDeleteConfirm}
+    fileName={deleteIsPermanent
+      ? `Permanently delete ${getEntriesToOperate().length} item(s)?`
+      : `Move ${getEntriesToOperate().length} item(s) to trash?`}
+    onOverwrite={handleDeleteConfirm}
+    onSkip={handleDeleteCancel}
+    onAbort={handleDeleteCancel}
   />
 </div>
 
@@ -607,6 +809,10 @@
 
   .file-item.cut-marked {
     opacity: 0.5;
+  }
+
+  .file-item.hidden-file {
+    opacity: 0.6;
   }
 
   .select-marker {
