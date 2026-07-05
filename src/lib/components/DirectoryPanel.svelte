@@ -1,7 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { layout } from '$lib/stores/layout';
+  import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import SearchModal from './SearchModal.svelte';
 
   interface FileEntry {
@@ -22,6 +23,7 @@
     onFullscreen = () => {},
     onNavigateUp = () => {},
     onTabCommand = (cmd: string) => {},
+    onToast = (message: string) => {},
   }: {
     type: 'parent' | 'current';
     path: string;
@@ -33,6 +35,7 @@
     onFullscreen?: () => void;
     onNavigateUp?: () => void;
     onTabCommand?: (cmd: string) => void;
+    onToast?: (message: string) => void;
   } = $props();
 
   let files: FileEntry[] = $state([]);
@@ -49,6 +52,13 @@
   let pendingSelectName: string | null = null;
   let isSearchModalOpen: boolean = $state(false);
   let searchMode: 'current' | 'recursive' = $state('current');
+
+  // Multi-select state
+  let selectedPaths: Set<string> = $state(new Set());
+
+  // Cut file paths from clipboard (for visual indicator)
+  let cutPaths: Set<string> = $state(new Set());
+  let clipboardUnsub: (() => void) | null = null;
 
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
 
@@ -117,7 +127,7 @@
   }
 
   export function refresh() {
-    loadDirectory(path, true);
+    return loadDirectory(path, true);
   }
 
   function handleFocus() {
@@ -135,8 +145,24 @@
       prevPath = path;
       selectedIndex = -1;
       selectedPathInternal = null;
+      selectedPaths = new Set();
       untrack(() => loadDirectory(path));
     }
+  });
+
+  // Subscribe to clipboard for cut file indicators
+  onMount(() => {
+    clipboardUnsub = clipboard.subscribe(state => {
+      if (state.operation === 'cut') {
+        cutPaths = new Set(state.entries.map(e => e.path));
+      } else {
+        cutPaths = new Set();
+      }
+    });
+  });
+
+  onDestroy(() => {
+    if (clipboardUnsub) { clipboardUnsub(); clipboardUnsub = null; }
   });
 
   // Sync from selectedPath prop only when it actually changes
@@ -290,6 +316,20 @@
     }
   }
 
+  function getEntriesToOperate(): ClipboardEntry[] {
+    if (selectedPaths.size > 0) {
+      return files
+        .filter(f => f.name !== '..' && selectedPaths.has(f.path))
+        .map(f => ({ path: f.path, name: f.name, is_dir: f.is_dir }));
+    }
+    if (selectedIndex >= 0 && selectedIndex < files.length) {
+      const f = files[selectedIndex];
+      if (f.name === '..') return [];
+      return [{ path: f.path, name: f.name, is_dir: f.is_dir }];
+    }
+    return [];
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     // Only handle if this panel has focus
     if (!isFocused) {
@@ -378,6 +418,53 @@
             }
             openSearchModal();
             break;
+          case 'Space':
+            event.preventDefault();
+            if (selectedIndex >= 0 && selectedIndex < files.length) {
+              const entry = files[selectedIndex];
+              if (entry.name !== '..') {
+                const newSet = new Set(selectedPaths);
+                if (newSet.has(entry.path)) {
+                  newSet.delete(entry.path);
+                } else {
+                  newSet.add(entry.path);
+                }
+                selectedPaths = newSet;
+              }
+              // Advance cursor
+              selectByIndex(Math.min(selectedIndex + 1, files.length - 1));
+            }
+            break;
+          case 'KeyV':
+            event.preventDefault();
+            if (selectedPaths.size > 0) {
+              selectedPaths = new Set();
+            } else {
+              selectedPaths = new Set(files.filter(f => f.name !== '..').map(f => f.path));
+            }
+            break;
+          case 'KeyY':
+            event.preventDefault();
+            {
+              const entries = getEntriesToOperate();
+              if (entries.length > 0) {
+                clipboard.yank(entries);
+                selectedPaths = new Set();
+                onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked`);
+              }
+            }
+            break;
+          case 'KeyX':
+            event.preventDefault();
+            {
+              const entries = getEntriesToOperate();
+              if (entries.length > 0) {
+                clipboard.cut(entries);
+                selectedPaths = new Set();
+                onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} cut`);
+              }
+            }
+            break;
         }
         break;
     }
@@ -429,6 +516,8 @@
           <div
             class="file-item"
             class:selected={index === selectedIndex}
+            class:multi-selected={selectedPaths.has(file.path)}
+            class:cut-marked={cutPaths.has(file.path)}
             class:directory={file.is_dir}
             onclick={() => handleItemClick(index)}
             ondblclick={() => handleItemDblClick(file)}
@@ -436,6 +525,11 @@
             data-path={file.path}
             data-index={index}
           >
+            {#if selectedPaths.has(file.path)}
+              <span class="select-marker">*</span>
+            {:else if cutPaths.has(file.path)}
+              <span class="cut-marker">x</span>
+            {/if}
             <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
           </div>
         {/each}
@@ -504,6 +598,34 @@
 
   .file-item.selected {
     background-color: var(--bg-active);
+  }
+
+  .file-item.multi-selected {
+    background-color: var(--bg-hover);
+    border-left: 2px solid var(--accent);
+  }
+
+  .file-item.cut-marked {
+    opacity: 0.5;
+  }
+
+  .select-marker {
+    display: inline-block;
+    width: 12px;
+    font-size: 11px;
+    color: var(--accent);
+    flex-shrink: 0;
+    text-align: center;
+  }
+
+  .cut-marker {
+    display: inline-block;
+    width: 12px;
+    font-size: 11px;
+    color: var(--error);
+    flex-shrink: 0;
+    text-align: center;
+    font-weight: bold;
   }
 
   .file-name {

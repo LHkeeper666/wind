@@ -35,6 +35,11 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'h', context: 'directory', description: 'Go to parent directory' },
       { key: '/', context: 'directory', description: 'Search in current dir' },
       { key: 'g/', context: 'directory', description: 'Search recursively' },
+      { key: 'Space', context: 'directory', description: 'Toggle file selection' },
+      { key: 'v', context: 'directory', description: 'Select all / Deselect all' },
+      { key: 'y', context: 'directory', description: 'Yank selected files (copy)' },
+      { key: 'x', context: 'directory', description: 'Cut selected files (move)' },
+      { key: 'p', context: 'directory', description: 'Paste from clipboard' },
     ],
   },
   {
@@ -92,6 +97,8 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'cd <path>', context: 'global', description: 'Change directory' },
       { key: 'e <path>', context: 'global', description: 'Open file/directory' },
       { key: 'help', context: 'global', description: 'Show keybindings' },
+      { key: 'clip', context: 'global', description: 'Show clipboard contents' },
+      { key: 'clear', context: 'global', description: 'Clear clipboard' },
     ],
   },
 ];

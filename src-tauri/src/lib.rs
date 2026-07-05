@@ -291,13 +291,21 @@ fn copy_file(source: String, destination: String) -> Result<(), String> {
         return Err(format!("Destination already exists: {}", destination));
     }
 
+    // Ensure destination parent directory exists
+    if let Some(parent) = dst.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination directory {}: {}", parent.display(), e))?;
+        }
+    }
+
     if src.is_dir() {
         // Copy directory recursively
         copy_dir_recursive(src, dst)
             .map_err(|e| format!("Failed to copy directory: {}", e))
     } else {
         fs::copy(src, dst)
-            .map_err(|e| format!("Failed to copy file: {}", e))?;
+            .map_err(|e| format!("Failed to copy {} -> {}: {}", source, destination, e))?;
         Ok(())
     }
 }
@@ -320,6 +328,49 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn move_file(source: String, destination: String) -> Result<(), String> {
+    let src = Path::new(&source);
+    let dst = Path::new(&destination);
+
+    if !src.exists() {
+        return Err(format!("Source path does not exist: {}", source));
+    }
+
+    if dst.exists() {
+        return Err(format!("Destination already exists: {}", destination));
+    }
+
+    // Ensure destination parent directory exists
+    if let Some(parent) = dst.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination directory {}: {}", parent.display(), e))?;
+        }
+    }
+
+    // Same drive: atomic rename. Cross drive: copy + delete.
+    let src_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
+    let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
+
+    if src_drive == dst_drive {
+        fs::rename(src, dst).map_err(|e| format!("Failed to move {} -> {}: {}", source, destination, e))
+    } else {
+        // Cross-drive: copy then delete
+        if src.is_dir() {
+            copy_dir_recursive(src, dst)
+                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+            fs::remove_dir_all(src)
+                .map_err(|e| format!("Failed to remove source directory: {}", e))
+        } else {
+            fs::copy(src, dst)
+                .map_err(|e| format!("Failed to copy file: {}", e))?;
+            fs::remove_file(src)
+                .map_err(|e| format!("Failed to remove source file: {}", e))
+        }
+    }
 }
 
 #[tauri::command]
@@ -976,6 +1027,7 @@ pub fn run() {
             rename_file,
             create_file,
             copy_file,
+            move_file,
             get_file_size,
             read_file,
             read_file_partial,

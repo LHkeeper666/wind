@@ -17,6 +17,8 @@
   import SearchModal from './SearchModal.svelte';
   import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
+  import ConfirmModal from './ConfirmModal.svelte';
+  import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
 
   let currentPath: string = $state('');
   let selectedFile: string | null = $state(null);
@@ -32,6 +34,11 @@
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
+
+  // Paste conflict state
+  let showConfirmModal: boolean = $state(false);
+  let confirmFileName: string = $state('');
+  let pasteResolve: ((choice: 'overwrite' | 'skip' | 'abort') => void) | null = null;
 
   // Ctrl+W prefix state for vim-style window navigation
   let waitingForWindowKey: boolean = $state(false);
@@ -435,6 +442,102 @@
     focusPanel('preview');
   }
 
+  function promptConflict(fileName: string): Promise<'overwrite' | 'skip' | 'abort'> {
+    return new Promise(resolve => {
+      confirmFileName = fileName;
+      showConfirmModal = true;
+      pasteResolve = resolve;
+    });
+  }
+
+  function handleConfirmOverwrite() {
+    showConfirmModal = false;
+    pasteResolve?.('overwrite');
+    pasteResolve = null;
+  }
+
+  function handleConfirmSkip() {
+    showConfirmModal = false;
+    pasteResolve?.('skip');
+    pasteResolve = null;
+  }
+
+  function handleConfirmAbort() {
+    showConfirmModal = false;
+    pasteResolve?.('abort');
+    pasteResolve = null;
+  }
+
+  async function handlePaste() {
+    let state: any;
+    const unsub = clipboard.subscribe(v => state = v)();
+    if (!state.entries || state.entries.length === 0) {
+      showToast('Clipboard empty');
+      return;
+    }
+
+    const entries = state.entries;
+    const operation = state.operation;
+    const destDir = currentPath.replace(/[\\\/]+$/, '');
+    let processed = 0;
+    let firstPastedPath: string | null = null;
+
+    for (const entry of entries) {
+      const destPath = destDir + '\\' + entry.name;
+
+      // Check if destination exists
+      let exists = false;
+      try {
+        exists = await invoke<boolean>('file_exists', { path: destPath });
+      } catch {
+        exists = false;
+      }
+
+      if (exists) {
+        const choice = await promptConflict(entry.name);
+        if (choice === 'abort') {
+          showToast(`Paste aborted (${processed}/${entries.length} done)`);
+          currentDirectoryPanel?.refresh();
+          return;
+        }
+        if (choice === 'skip') {
+          continue;
+        }
+        // Overwrite: delete existing first
+        try {
+          await invoke('delete_file', { path: destPath });
+        } catch (e) {
+          showToast(`Failed to overwrite ${entry.name}: ${e}`);
+          continue;
+        }
+      }
+
+      try {
+        if (operation === 'copy') {
+          await invoke('copy_file', { source: entry.path, destination: destPath });
+        } else {
+          await invoke('move_file', { source: entry.path, destination: destPath });
+        }
+        if (!firstPastedPath) firstPastedPath = destPath;
+        processed++;
+      } catch (e) {
+        showToast(`Failed to ${operation} ${entry.name}: ${e}`);
+      }
+    }
+
+    // Cut: clear clipboard since source files no longer exist
+    if (operation === 'cut') {
+      clipboard.clear();
+    }
+    if (processed > 0) {
+      showToast(`${processed} ${processed === 1 ? 'file' : 'files'} ${operation === 'copy' ? 'copied' : 'moved'}`);
+      await currentDirectoryPanel?.refresh();
+      if (firstPastedPath) {
+        handleSelect(firstPastedPath);
+      }
+    }
+  }
+
   function togglePreviewLayout() {
     if ($layout.previewExpanded) {
       layout.collapsePreview();
@@ -739,6 +842,13 @@
       return;
     }
 
+    // p key for paste (works in directory panels, not in terminal insert or editor)
+    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+      event.preventDefault();
+      handlePaste();
+      return;
+    }
+
     if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
       event.preventDefault();
       showCommandPalette = true;
@@ -882,6 +992,27 @@
           return;
         }
       }
+      // Clip command - show clipboard contents
+      if (q === 'clip') {
+        let clipState: any;
+        const unsub = clipboard.subscribe(v => clipState = v)();
+        if (clipState.entries.length === 0) {
+          showToast('Clipboard empty');
+        } else {
+          const op = clipState.operation === 'copy' ? 'yanked' : 'cut';
+          const lines = clipState.entries.map((e: any) => `  ${e.name}`).join('\n');
+          showToast(`${clipState.entries.length} files ${op}:\n${lines}`);
+        }
+        showCommandPalette = false;
+        return;
+      }
+      // Clear command - clear clipboard
+      if (q === 'clear') {
+        clipboard.clear();
+        showToast('Clipboard cleared');
+        showCommandPalette = false;
+        return;
+      }
       // Otherwise execute filtered command
       if (filteredCommands.length > 0) {
         executeCommand(filteredCommands[0]);
@@ -993,6 +1124,7 @@
         onSelect={() => {}}  // Parent column doesn't need to select files
         onSwitchPanel={handleSwitchPanel}
         onTabCommand={handleTabCommand}
+        onToast={showToast}
       />
     </div>
 
@@ -1030,6 +1162,7 @@
         onFullscreen={handleFullscreenEditor}
         onNavigateUp={() => handleNavigate($layout.parentPath)}
         onTabCommand={handleTabCommand}
+        onToast={showToast}
       />
     </div>
 
@@ -1125,7 +1258,10 @@
     <span class="status-mode">{$layout.activeColumn === 'terminal' ? `TERMINAL-${($layout.terminalMode || 'insert').toUpperCase()}` : $layout.activeColumn.toUpperCase()}</span>
     <span class="status-path">{currentPath || 'No path'}</span>
     <span class="status-prefix">{$layout.keyPrefix || ''}</span>
-    <button class="theme-toggle" onclick={() => theme.toggle()}>
+    {#if $clipboardSummary}
+      <span class="status-clipboard">{$clipboardSummary}</span>
+    {/if}
+    <button class="theme-toggle" class:light={$theme === 'dark'} class:dark={$theme === 'light'} onclick={() => theme.toggle()}>
       {$theme === 'dark' ? 'LGT' : 'DRK'}
     </button>
   </div>
@@ -1167,6 +1303,15 @@
 
   <!-- Help Overlay -->
   <HelpOverlay bind:visible={showHelp} />
+
+  <!-- Paste Conflict Confirm Modal -->
+  <ConfirmModal
+    visible={showConfirmModal}
+    fileName={confirmFileName}
+    onOverwrite={handleConfirmOverwrite}
+    onSkip={handleConfirmSkip}
+    onAbort={handleConfirmAbort}
+  />
 
   <!-- Toast Notification -->
   {#if toastMessage}
@@ -1260,14 +1405,32 @@
     text-align: right;
   }
 
+  .status-clipboard {
+    color: var(--text-muted);
+    margin-left: 12px;
+    font-size: 11px;
+  }
+
   .theme-toggle {
     background: none;
-    border: none;
+    border: 1px solid var(--border);
     cursor: pointer;
-    font-size: 14px;
-    padding: 0 4px;
+    font-size: 12px;
+    padding: 1px 8px;
     line-height: 1;
-    color: var(--text-muted);
+    margin-left: 8px;
+  }
+
+  .theme-toggle.light {
+    color: var(--bg-primary);
+    background-color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .theme-toggle.dark {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+    border-color: var(--text-muted);
   }
 
   .command-palette-overlay {
