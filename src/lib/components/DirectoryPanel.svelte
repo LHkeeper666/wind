@@ -743,9 +743,10 @@
     fileName={deleteIsPermanent
       ? `Permanently delete ${getEntriesToOperate().length} item(s)?`
       : `Move ${getEntriesToOperate().length} item(s) to trash?`}
-    onOverwrite={handleDeleteConfirm}
-    onSkip={handleDeleteCancel}
-    onAbort={handleDeleteCancel}
+    buttons={[
+      { key: 'D', label: 'elete', action: handleDeleteConfirm, style: 'danger' },
+      { key: 'C', label: 'ancel', action: handleDeleteCancel },
+    ]}
   />
 </div>
 

@@ -1,8 +1,16 @@
 <script lang="ts">
+  interface ConfirmButton {
+    key: string;
+    label: string;
+    action: () => void;
+    style?: 'primary' | 'danger' | 'default';
+  }
+
   let {
     visible = false,
     title = 'File already exists',
     fileName = '',
+    buttons = [] as ConfirmButton[],
     onOverwrite = () => {},
     onSkip = () => {},
     onAbort = () => {},
@@ -10,12 +18,22 @@
     visible?: boolean;
     title?: string;
     fileName?: string;
+    buttons?: ConfirmButton[];
     onOverwrite?: () => void;
     onSkip?: () => void;
     onAbort?: () => void;
   } = $props();
 
   let modalElement: HTMLDivElement | undefined = $state(undefined);
+
+  // Default buttons for backward compatibility (paste conflict)
+  let effectiveButtons: ConfirmButton[] = $derived(
+    buttons.length > 0 ? buttons : [
+      { key: 'O', label: 'verwrite', action: onOverwrite, style: 'danger' },
+      { key: 'S', label: 'kip', action: onSkip },
+      { key: 'A', label: 'bort', action: onAbort },
+    ]
+  );
 
   $effect(() => {
     if (visible && modalElement) {
@@ -24,15 +42,17 @@
   });
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'o' || event.key === 'O') {
+    for (const btn of effectiveButtons) {
+      if (event.key === btn.key || event.key === btn.key.toLowerCase()) {
+        event.preventDefault();
+        btn.action();
+        return;
+      }
+    }
+    if (event.key === 'Escape') {
       event.preventDefault();
-      onOverwrite();
-    } else if (event.key === 's' || event.key === 'S') {
-      event.preventDefault();
-      onSkip();
-    } else if (event.key === 'a' || event.key === 'A' || event.key === 'Escape') {
-      event.preventDefault();
-      onAbort();
+      // Last button is always the cancel/abort action
+      effectiveButtons[effectiveButtons.length - 1].action();
     }
   }
 </script>
@@ -45,15 +65,11 @@
       <div class="confirm-title">{title}</div>
       <div class="confirm-message">{fileName}</div>
       <div class="confirm-actions">
-        <button class="confirm-btn overwrite" onclick={onOverwrite}>
-          <span class="btn-key">O</span>verwrite
-        </button>
-        <button class="confirm-btn skip" onclick={onSkip}>
-          <span class="btn-key">S</span>kip
-        </button>
-        <button class="confirm-btn abort" onclick={onAbort}>
-          <span class="btn-key">A</span>bort
-        </button>
+        {#each effectiveButtons as btn}
+          <button class="confirm-btn {btn.style || 'default'}" onclick={btn.action}>
+            <span class="btn-key">{btn.key}</span>{btn.label}
+          </button>
+        {/each}
       </div>
     </div>
   </div>
@@ -118,10 +134,16 @@
     background-color: var(--bg-hover);
   }
 
-  .confirm-btn.overwrite:hover {
+  .confirm-btn.danger:hover {
     background-color: var(--error);
     color: var(--bg-primary);
     border-color: var(--error);
+  }
+
+  .confirm-btn.primary:hover {
+    background-color: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
   }
 
   .btn-key {
