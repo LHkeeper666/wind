@@ -29,6 +29,8 @@ fn list_drives() -> Vec<FileEntry> {
                 is_dir: true,
                 size: None,
                 is_hidden: false,
+                modified: None,
+                created: None,
                 children: None,
             });
         }
@@ -43,6 +45,8 @@ pub struct FileEntry {
     is_dir: bool,
     size: Option<u64>,
     is_hidden: bool,
+    modified: Option<u64>,
+    created: Option<u64>,
     children: Option<Vec<FileEntry>>,
 }
 
@@ -115,12 +119,23 @@ fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
                                 m.file_attributes() & 0x2 != 0  // FILE_ATTRIBUTE_HIDDEN
                             }).unwrap_or(false);
 
+                        let modified = entry.metadata().ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs());
+                        let created = entry.metadata().ok()
+                            .and_then(|m| m.created().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs());
+
                         entries.push(FileEntry {
                             name: file_name,
                             path: file_path,
                             is_dir,
                             size,
                             is_hidden,
+                            modified,
+                            created,
                             children: None,
                         });
                     }
@@ -601,44 +616,12 @@ fn open_file(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_with_dialog(path: String) -> Result<(), String> {
-    // On Windows, "open with" is triggered by ShellExecuteExW with verb "openas"
-    // The `open` crate doesn't directly support "openas", so we use a workaround:
-    // `open::that_detached` opens with default; for "open with" we need Windows API.
-    #[cfg(target_os = "windows")]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::UI::Shell::ShellExecuteExW;
-        use windows::Win32::UI::Shell::SHELLEXECUTEINFOW;
-        use windows::Win32::Foundation::HWND;
-
-        let path_wide: Vec<u16> = OsStr::new(&path).encode_wide().chain(std::iter::once(0)).collect();
-        let verb_wide: Vec<u16> = OsStr::new("openas").encode_wide().chain(std::iter::once(0)).collect();
-
-        let mut sei = SHELLEXECUTEINFOW {
-            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: Default::default(),
-            hwnd: HWND::default(),
-            lpVerb: windows::core::PCWSTR(verb_wide.as_ptr()),
-            lpFile: windows::core::PCWSTR(path_wide.as_ptr()),
-            lpParameters: windows::core::PCWSTR::null(),
-            lpDirectory: windows::core::PCWSTR::null(),
-            nShow: 1, // SW_SHOWNORMAL
-            ..Default::default()
-        };
-
-        unsafe {
-            ShellExecuteExW(&mut sei)
-                .map_err(|e| format!("Failed to open with dialog: {}", e))?;
-        }
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        open::that(&path)
-            .map_err(|e| format!("Failed to open: {}", e))
-    }
+    // Use rundll32 shell32.dll,OpenAs_RunDLL which is the standard Windows "Open With" dialog
+    std::process::Command::new("rundll32")
+        .args(["shell32.dll,OpenAs_RunDLL", &path])
+        .spawn()
+        .map_err(|e| format!("Failed to open with dialog: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]

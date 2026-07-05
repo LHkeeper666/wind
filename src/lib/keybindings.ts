@@ -54,6 +54,8 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'sn', context: 'directory', description: 'Sort by name' },
       { key: 'ss', context: 'directory', description: 'Sort by size' },
       { key: 'se', context: 'directory', description: 'Sort by extension' },
+      { key: 'sm', context: 'directory', description: 'Sort by modified time' },
+      { key: 'sc', context: 'directory', description: 'Sort by created time' },
       { key: 'sr', context: 'directory', description: 'Reverse sort' },
       { key: 'st', context: 'directory', description: 'Toggle directory first' },
     ],

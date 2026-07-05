@@ -23,6 +23,14 @@
     onClose?: () => void;
   } = $props();
 
+  let overlayEl: HTMLDivElement | undefined = $state(undefined);
+
+  $effect(() => {
+    if (visible && overlayEl) {
+      overlayEl.focus();
+    }
+  });
+
   function formatSize(bytes: number): string {
     if (bytes === 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -39,7 +47,7 @@
 
 {#if visible && info}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="file-info-overlay" onkeydown={handleKeydown} onclick={onClose}>
+  <div class="file-info-overlay" bind:this={overlayEl} tabindex="-1" onkeydown={handleKeydown} onclick={onClose}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="file-info-panel" onclick={(e) => e.stopPropagation()}>
       <div class="info-header">{info.name}{info.is_dir ? '/' : ''}</div>

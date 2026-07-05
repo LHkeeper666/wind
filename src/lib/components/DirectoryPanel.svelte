@@ -15,6 +15,8 @@
     is_dir: boolean;
     size?: number | null;
     is_hidden?: boolean;
+    modified?: number | null;
+    created?: number | null;
   }
 
   let {
@@ -65,7 +67,7 @@
   let showHidden: boolean = $state(false);
 
   // Sort state
-  let sortBy: 'name' | 'size' | 'ext' = $state('name');
+  let sortBy: 'name' | 'size' | 'ext' | 'modified' | 'created' = $state('name');
   let sortReverse: boolean = $state(false);
   let dirFirst: boolean = $state(true);
 
@@ -102,6 +104,10 @@
         const extA = a.name.split('.').pop()?.toLowerCase() || '';
         const extB = b.name.split('.').pop()?.toLowerCase() || '';
         cmp = extA.localeCompare(extB);
+      } else if (sortBy === 'modified') {
+        cmp = (a.modified ?? 0) - (b.modified ?? 0);
+      } else if (sortBy === 'created') {
+        cmp = (a.created ?? 0) - (b.created ?? 0);
       }
 
       return sortReverse ? -cmp : cmp;
@@ -523,9 +529,10 @@
     setTimeout(() => panelElement?.focus(), 0);
   }
 
-  function setSort(mode: 'name' | 'size' | 'ext') {
+  function setSort(mode: 'name' | 'size' | 'ext' | 'modified' | 'created') {
     sortBy = mode;
-    onToast(`Sorted by ${mode}`);
+    const labels: Record<string, string> = { name: 'name', size: 'size', ext: 'extension', modified: 'modified time', created: 'created time' };
+    onToast(`Sorted by ${labels[mode] || mode}`);
   }
 
   function toggleSortReverse() {
@@ -670,8 +677,35 @@
     const now = Date.now();
     const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
     const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
+    const isSortPrefix = lastKey === 'KeyS' && now - lastKeyTime < 500;
+
+    // Handle sort prefix sub-keys before the main switch
+    if (isSortPrefix) {
+      const sortKey = event.code === 'KeyN' ? 'name'
+        : event.code === 'KeyS' ? 'size'
+        : event.code === 'KeyE' ? 'ext'
+        : event.code === 'KeyM' ? 'modified'
+        : event.code === 'KeyC' ? 'created'
+        : event.code === 'KeyR' ? 'reverse'
+        : event.code === 'KeyT' ? 'dirfirst'
+        : null;
+      if (sortKey) {
+        event.preventDefault();
+        if (sortKey === 'reverse') toggleSortReverse();
+        else if (sortKey === 'dirfirst') toggleDirFirst();
+        else setSort(sortKey as any);
+        lastKey = '';
+        return;
+      }
+    }
 
     switch (event.key) {
+      case 'Escape':
+        if (filterPattern) {
+          event.preventDefault();
+          clearFilter();
+        }
+        break;
       case 'Enter':
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
@@ -847,48 +881,6 @@
           case 'KeyD':
             event.preventDefault();
             handleDelete(false);
-            break;
-          case 'KeyS':
-            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
-              // ss = sort by size
-              event.preventDefault();
-              setSort('size');
-              lastKey = '';
-              return;
-            }
-            // First s press: set as prefix, wait for sub-key
-            break;
-          case 'KeyN':
-            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
-              event.preventDefault();
-              setSort('name');
-              lastKey = '';
-              return;
-            }
-            break;
-          case 'KeyE':
-            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
-              event.preventDefault();
-              setSort('ext');
-              lastKey = '';
-              return;
-            }
-            break;
-          case 'KeyR':
-            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
-              event.preventDefault();
-              toggleSortReverse();
-              lastKey = '';
-              return;
-            }
-            break;
-          case 'KeyT':
-            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
-              event.preventDefault();
-              toggleDirFirst();
-              lastKey = '';
-              return;
-            }
             break;
         }
         break;
