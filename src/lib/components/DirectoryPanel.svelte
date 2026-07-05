@@ -610,7 +610,7 @@
             if (selectedPaths.size > 0) {
               selectedPaths = new Set();
             } else {
-              selectedPaths = new Set(files.filter(f => f.name !== '..').map(f => f.path));
+              selectedPaths = new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path));
             }
             break;
           case 'KeyY':
