@@ -42,6 +42,7 @@
   });
 
   function handleKeydown(event: KeyboardEvent) {
+    event.stopPropagation();
     for (const btn of effectiveButtons) {
       if (event.key === btn.key || event.key === btn.key.toLowerCase()) {
         event.preventDefault();

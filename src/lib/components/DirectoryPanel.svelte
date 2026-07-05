@@ -440,12 +440,20 @@
     showDeleteConfirm = false;
     deleteResolve?.(true);
     deleteResolve = null;
+    refocusPanel();
   }
 
   function handleDeleteCancel() {
     showDeleteConfirm = false;
     deleteResolve?.(false);
     deleteResolve = null;
+    refocusPanel();
+  }
+
+  function refocusPanel() {
+    setTimeout(() => {
+      if (panelElement) panelElement.focus();
+    }, 0);
   }
 
   async function handleDelete(permanent: boolean) {
@@ -490,6 +498,11 @@
   function handleKeydown(event: KeyboardEvent) {
     // Only handle if this panel has focus
     if (!isFocused) {
+      return;
+    }
+
+    // Don't intercept keys when a modal or dialog is open
+    if (showDeleteConfirm || inputVisible || isSearchModalOpen) {
       return;
     }
 
