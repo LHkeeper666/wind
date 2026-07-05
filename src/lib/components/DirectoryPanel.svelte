@@ -670,30 +670,30 @@
     // Stop event propagation to prevent other panels from handling
     event.stopPropagation();
 
+    // Ignore standalone modifier key presses
+    if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
+      return;
+    }
+
     const now = Date.now();
     const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
     const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
     const isSortPrefix = lastKey === 'KeyS' && now - lastKeyTime < 500;
 
     // Handle sort prefix sub-keys before the main switch
-    // Lowercase = ascending, uppercase = descending
+    // Lowercase = ascending, uppercase (Shift) = descending
     if (isSortPrefix) {
-      const k = event.key;
-      const sortMap: Record<string, string> = {
-        n: 'name', N: 'name',
-        s: 'size', S: 'size',
-        e: 'ext', E: 'ext',
-        m: 'modified', M: 'modified',
-        c: 'created', C: 'created',
-        t: 'dirfirst',
+      const codeMap: Record<string, string> = {
+        KeyN: 'name', KeyS: 'size', KeyE: 'ext',
+        KeyM: 'modified', KeyC: 'created', KeyT: 'dirfirst',
       };
-      const baseKey = sortMap[k];
+      const baseKey = codeMap[event.code];
       if (baseKey) {
         event.preventDefault();
         if (baseKey === 'dirfirst') {
           toggleDirFirst();
         } else {
-          setSort(baseKey as any, k === k.toUpperCase());
+          setSort(baseKey as any, event.shiftKey);
         }
         lastKey = '';
         return;
@@ -887,8 +887,12 @@
         break;
     }
 
-    lastKey = event.code;
-    lastKeyTime = now;
+    // Don't overwrite prefix state when modifier keys are pressed first
+    // (e.g. user presses s, then Shift+N — Shift keydown fires before N)
+    if (!['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
+      lastKey = event.code;
+      lastKeyTime = now;
+    }
   }
 
   function handleItemClick(index: number) {
