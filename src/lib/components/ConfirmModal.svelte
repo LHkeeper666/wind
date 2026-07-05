@@ -1,12 +1,14 @@
 <script lang="ts">
   let {
     visible = false,
+    title = 'File already exists',
     fileName = '',
     onOverwrite = () => {},
     onSkip = () => {},
     onAbort = () => {},
   }: {
     visible?: boolean;
+    title?: string;
     fileName?: string;
     onOverwrite?: () => void;
     onSkip?: () => void;
@@ -40,7 +42,7 @@
   <div class="confirm-overlay" onkeydown={handleKeydown}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="confirm-modal" bind:this={modalElement} tabindex="-1" onkeydown={handleKeydown}>
-      <div class="confirm-title">File already exists</div>
+      <div class="confirm-title">{title}</div>
       <div class="confirm-message">{fileName}</div>
       <div class="confirm-actions">
         <button class="confirm-btn overwrite" onclick={onOverwrite}>

@@ -739,6 +739,7 @@
 
   <ConfirmModal
     visible={showDeleteConfirm}
+    title={deleteIsPermanent ? 'Permanent Delete' : 'Move to Trash'}
     fileName={deleteIsPermanent
       ? `Permanently delete ${getEntriesToOperate().length} item(s)?`
       : `Move ${getEntriesToOperate().length} item(s) to trash?`}
