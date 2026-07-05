@@ -274,6 +274,51 @@ fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
     Ok(new_path.to_string_lossy().to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenameEntry {
+    old_path: String,
+    new_name: String,
+}
+
+#[tauri::command]
+fn batch_rename(entries: Vec<RenameEntry>) -> Result<Vec<String>, String> {
+    let mut errors = Vec::new();
+    let mut renamed = Vec::new();
+
+    for entry in &entries {
+        let old = Path::new(&entry.old_path);
+        if !old.exists() {
+            errors.push(format!("{}: file not found", entry.old_path));
+            continue;
+        }
+
+        let parent = match old.parent() {
+            Some(p) => p,
+            None => {
+                errors.push(format!("{}: cannot get parent", entry.old_path));
+                continue;
+            }
+        };
+
+        let new_path = parent.join(&entry.new_name);
+        if new_path.exists() {
+            errors.push(format!("{}: destination already exists", entry.new_name));
+            continue;
+        }
+
+        match fs::rename(old, &new_path) {
+            Ok(()) => renamed.push(entry.old_path.clone()),
+            Err(e) => errors.push(format!("{}: {}", entry.old_path, e)),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(renamed)
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 #[tauri::command]
 fn create_file(path: String, is_dir: bool) -> Result<(), String> {
     let file_path = Path::new(&path);
@@ -441,6 +486,159 @@ fn get_file_size(path: String) -> Result<u64, String> {
         .metadata()
         .map(|m| m.len())
         .map_err(|e| format!("Failed to get file size: {}", e))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileInfo {
+    name: String,
+    path: String,
+    size: u64,
+    is_dir: bool,
+    created: Option<String>,
+    modified: Option<String>,
+    accessed: Option<String>,
+    is_readonly: bool,
+    is_hidden: bool,
+    is_system: bool,
+    item_count: Option<usize>,
+}
+
+#[tauri::command]
+fn get_file_info(path: String) -> Result<FileInfo, String> {
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    let metadata = fs::metadata(&path)
+        .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+
+    let name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    use std::os::windows::fs::MetadataExt;
+    let attrs = metadata.file_attributes();
+    let is_hidden = name.starts_with('.') || (attrs & 0x2 != 0);
+    let is_system = attrs & 0x4 != 0;
+
+    let format_time = |t: std::io::Result<std::time::SystemTime>| -> Option<String> {
+        t.ok().map(|t| {
+            let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let secs = duration.as_secs();
+            let datetime = chrono_like(secs);
+            datetime
+        })
+    };
+
+    let created = format_time(metadata.created());
+    let modified = format_time(metadata.modified());
+    let accessed = format_time(metadata.accessed());
+
+    let item_count = if metadata.is_dir() {
+        fs::read_dir(&path).ok().map(|entries| entries.count())
+    } else {
+        None
+    };
+
+    Ok(FileInfo {
+        name,
+        path,
+        size: metadata.len(),
+        is_dir: metadata.is_dir(),
+        created,
+        modified,
+        accessed,
+        is_readonly: metadata.permissions().readonly(),
+        is_hidden,
+        is_system,
+        item_count,
+    })
+}
+
+fn chrono_like(secs: u64) -> String {
+    // Simple timestamp formatting without chrono dependency
+    let s = secs as i64;
+    let days = s / 86400;
+    let time_of_day = s % 86400;
+    let hour = time_of_day / 3600;
+    let minute = (time_of_day % 3600) / 60;
+    let second = time_of_day % 60;
+
+    // Days since epoch to Y-M-D (simplified leap year calculation)
+    let mut y = 1970;
+    let mut remaining_days = days;
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap(y);
+    let month_days: [i64; 12] = [
+        31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut m = 0usize;
+    while m < 12 && remaining_days >= month_days[m] {
+        remaining_days -= month_days[m];
+        m += 1;
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m + 1, remaining_days + 1, hour, minute, second)
+}
+
+fn is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+#[tauri::command]
+fn open_file(path: String) -> Result<(), String> {
+    open::that(&path)
+        .map_err(|e| format!("Failed to open: {}", e))
+}
+
+#[tauri::command]
+fn open_with_dialog(path: String) -> Result<(), String> {
+    // On Windows, "open with" is triggered by ShellExecuteExW with verb "openas"
+    // The `open` crate doesn't directly support "openas", so we use a workaround:
+    // `open::that_detached` opens with default; for "open with" we need Windows API.
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::UI::Shell::ShellExecuteExW;
+        use windows::Win32::UI::Shell::SHELLEXECUTEINFOW;
+        use windows::Win32::Foundation::HWND;
+
+        let path_wide: Vec<u16> = OsStr::new(&path).encode_wide().chain(std::iter::once(0)).collect();
+        let verb_wide: Vec<u16> = OsStr::new("openas").encode_wide().chain(std::iter::once(0)).collect();
+
+        let mut sei = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: Default::default(),
+            hwnd: HWND::default(),
+            lpVerb: windows::core::PCWSTR(verb_wide.as_ptr()),
+            lpFile: windows::core::PCWSTR(path_wide.as_ptr()),
+            lpParameters: windows::core::PCWSTR::null(),
+            lpDirectory: windows::core::PCWSTR::null(),
+            nShow: 1, // SW_SHOWNORMAL
+            ..Default::default()
+        };
+
+        unsafe {
+            ShellExecuteExW(&mut sei)
+                .map_err(|e| format!("Failed to open with dialog: {}", e))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        open::that(&path)
+            .map_err(|e| format!("Failed to open: {}", e))
+    }
 }
 
 #[tauri::command]
@@ -1046,10 +1244,14 @@ pub fn run() {
             delete_file,
             permanent_delete,
             rename_file,
+            batch_rename,
             create_file,
             copy_file,
             move_file,
             get_file_size,
+            get_file_info,
+            open_file,
+            open_with_dialog,
             read_file,
             read_file_partial,
             read_binary_file,

@@ -6,6 +6,8 @@
   import SearchModal from './SearchModal.svelte';
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
+  import FileInfoPanel from './FileInfoPanel.svelte';
+  import BatchRenameModal from './BatchRenameModal.svelte';
 
   interface FileEntry {
     name: string;
@@ -62,10 +64,51 @@
   // Hidden files toggle
   let showHidden: boolean = $state(false);
 
+  // Sort state
+  let sortBy: 'name' | 'size' | 'ext' = $state('name');
+  let sortReverse: boolean = $state(false);
+  let dirFirst: boolean = $state(true);
+
+  // Filter state
+  let filterPattern: string = $state('');
+
   // Derived values that depend on state declared above
-  let displayFiles: FileEntry[] = $derived(
-    showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden)
-  );
+  let displayFiles: FileEntry[] = $derived.by(() => {
+    let result = showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden);
+
+    // Apply filter
+    if (filterPattern) {
+      const pattern = filterPattern.replace(/\*/g, '.*').replace(/\?/g, '.');
+      const regex = new RegExp(`^${pattern}$`, 'i');
+      result = result.filter(f => f.name === '..' || regex.test(f.name));
+    }
+
+    // Apply sort (.. always stays first)
+    const dotdot = result.filter(f => f.name === '..');
+    const rest = result.filter(f => f.name !== '..');
+
+    rest.sort((a, b) => {
+      // dirFirst: directories before files
+      if (dirFirst && a.is_dir !== b.is_dir) {
+        return a.is_dir ? -1 : 1;
+      }
+
+      let cmp = 0;
+      if (sortBy === 'name') {
+        cmp = a.name.localeCompare(b.name);
+      } else if (sortBy === 'size') {
+        cmp = (a.size ?? 0) - (b.size ?? 0);
+      } else if (sortBy === 'ext') {
+        const extA = a.name.split('.').pop()?.toLowerCase() || '';
+        const extB = b.name.split('.').pop()?.toLowerCase() || '';
+        cmp = extA.localeCompare(extB);
+      }
+
+      return sortReverse ? -cmp : cmp;
+    });
+
+    return [...dotdot, ...rest];
+  });
   let selectedFile: FileEntry | null = $derived(
     selectedIndex >= 0 && selectedIndex < displayFiles.length ? displayFiles[selectedIndex] : null
   );
@@ -84,12 +127,20 @@
   let inputValue: string = $state('');
   let inputPlaceholder: string = $state('');
   let inputPrompt: string = $state('');
-  let inputMode: 'rename' | 'create-file' | 'create-dir' = $state('rename');
+  let inputMode: 'rename' | 'create-file' | 'create-dir' | 'filter' = $state('rename');
 
   // Delete confirmation state
   let showDeleteConfirm: boolean = $state(false);
   let deleteIsPermanent: boolean = $state(false);
   let deleteResolve: ((confirm: boolean) => void) | null = null;
+
+  // File info state
+  let showFileInfo: boolean = $state(false);
+  let fileInfo: any = $state(null);
+
+  // Batch rename state
+  let showBatchRename: boolean = $state(false);
+  let batchRenameFiles: { path: string; name: string }[] = $state([]);
 
   // Cut file paths from clipboard (for visual indicator)
   let cutPaths: Set<string> = $state(new Set());
@@ -378,6 +429,32 @@
     inputVisible = true;
   }
 
+  function startBatchRename() {
+    const entries = files.filter(f => selectedPaths.has(f.path));
+    if (entries.length < 2) return;
+    batchRenameFiles = entries.map(f => ({ path: f.path, name: f.name }));
+    showBatchRename = true;
+  }
+
+  async function handleBatchRenameConfirm(renames: { old_path: string; new_name: string }[]) {
+    showBatchRename = false;
+    try {
+      const result = await invoke('batch_rename', { entries: renames });
+      selectedPaths = new Set();
+      await loadDirectory(path, true);
+      onToast(`Renamed ${(result as string[]).length} file(s)`);
+    } catch (e) {
+      onToast(`Batch rename error: ${e}`);
+      await loadDirectory(path, true);
+    }
+    setTimeout(() => panelElement?.focus(), 0);
+  }
+
+  function handleBatchRenameCancel() {
+    showBatchRename = false;
+    setTimeout(() => panelElement?.focus(), 0);
+  }
+
   async function handleInputConfirm(value: string) {
     inputVisible = false;
     try {
@@ -403,6 +480,13 @@
         await currentDirectoryPanel_refresh();
         onSelect(newPath);
         onToast(`Created ${value}/`);
+      } else if (inputMode === 'filter') {
+        filterPattern = value;
+        if (value) {
+          onToast(`Filter: ${value}`);
+        } else {
+          onToast('Filter cleared');
+        }
       }
     } catch (e) {
       onToast(`Error: ${e}`);
@@ -414,6 +498,79 @@
   function handleInputCancel() {
     inputVisible = false;
     setTimeout(() => panelElement?.focus(), 0);
+  }
+
+  async function toggleFileInfo() {
+    if (showFileInfo) {
+      showFileInfo = false;
+      fileInfo = null;
+      return;
+    }
+    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
+    const entry = displayFiles[selectedIndex];
+    if (entry.name === '..') return;
+    try {
+      fileInfo = await invoke('get_file_info', { path: entry.path });
+      showFileInfo = true;
+    } catch (e) {
+      onToast(`Failed to get file info: ${e}`);
+    }
+  }
+
+  function closeFileInfo() {
+    showFileInfo = false;
+    fileInfo = null;
+    setTimeout(() => panelElement?.focus(), 0);
+  }
+
+  function setSort(mode: 'name' | 'size' | 'ext') {
+    sortBy = mode;
+    onToast(`Sorted by ${mode}`);
+  }
+
+  function toggleSortReverse() {
+    sortReverse = !sortReverse;
+    onToast(sortReverse ? 'Sort reversed' : 'Sort restored');
+  }
+
+  function toggleDirFirst() {
+    dirFirst = !dirFirst;
+    onToast(dirFirst ? 'Directories first' : 'Mixed order');
+  }
+
+  function startFilter() {
+    inputMode = 'filter';
+    inputValue = filterPattern;
+    inputPlaceholder = '*.txt, *.rs, *.{js,ts}';
+    inputPrompt = 'Filter:';
+    inputVisible = true;
+  }
+
+  function clearFilter() {
+    filterPattern = '';
+    onToast('Filter cleared');
+  }
+
+  async function openSelectedFile() {
+    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
+    const entry = displayFiles[selectedIndex];
+    if (entry.name === '..') return;
+    try {
+      await invoke('open_file', { path: entry.path });
+    } catch (e) {
+      onToast(`Failed to open: ${e}`);
+    }
+  }
+
+  async function openSelectedFileWith() {
+    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
+    const entry = displayFiles[selectedIndex];
+    if (entry.name === '..') return;
+    try {
+      await invoke('open_with_dialog', { path: entry.path });
+    } catch (e) {
+      onToast(`Failed to open: ${e}`);
+    }
   }
 
   // Refresh helper that returns a promise
@@ -502,7 +659,7 @@
     }
 
     // Don't intercept keys when a modal or dialog is open
-    if (showDeleteConfirm || inputVisible || isSearchModalOpen) {
+    if (showDeleteConfirm || inputVisible || isSearchModalOpen || showFileInfo || showBatchRename) {
       event.stopPropagation();
       return;
     }
@@ -532,7 +689,11 @@
         break;
       case 'r':
         event.preventDefault();
-        startRename();
+        if (selectedPaths.size > 1) {
+          startBatchRename();
+        } else {
+          startRename();
+        }
         break;
       case 'D':
         event.preventDefault();
@@ -541,6 +702,22 @@
       case 'E':
         event.preventDefault();
         onFullscreen();
+        break;
+      case 'i':
+        event.preventDefault();
+        toggleFileInfo();
+        break;
+      case 'f':
+        event.preventDefault();
+        startFilter();
+        break;
+      case 'o':
+        event.preventDefault();
+        openSelectedFile();
+        break;
+      case 'O':
+        event.preventDefault();
+        openSelectedFileWith();
         break;
       default:
         // Use event.code for letter keys to support Chinese IME
@@ -671,6 +848,48 @@
             event.preventDefault();
             handleDelete(false);
             break;
+          case 'KeyS':
+            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
+              // ss = sort by size
+              event.preventDefault();
+              setSort('size');
+              lastKey = '';
+              return;
+            }
+            // First s press: set as prefix, wait for sub-key
+            break;
+          case 'KeyN':
+            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
+              event.preventDefault();
+              setSort('name');
+              lastKey = '';
+              return;
+            }
+            break;
+          case 'KeyE':
+            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
+              event.preventDefault();
+              setSort('ext');
+              lastKey = '';
+              return;
+            }
+            break;
+          case 'KeyR':
+            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
+              event.preventDefault();
+              toggleSortReverse();
+              lastKey = '';
+              return;
+            }
+            break;
+          case 'KeyT':
+            if (lastKey === 'KeyS' && now - lastKeyTime < 500) {
+              event.preventDefault();
+              toggleDirFirst();
+              lastKey = '';
+              return;
+            }
+            break;
         }
         break;
     }
@@ -705,6 +924,9 @@
   <div class="panel-header">
     {#if path}
       <span class="panel-path" title={path}>{path === '/' ? '/' : path.split('\\').pop() || path.split('/').pop() || path}</span>
+    {/if}
+    {#if filterPattern}
+      <span class="filter-badge" title={filterPattern}>{filterPattern}</span>
     {/if}
   </div>
 
@@ -771,6 +993,19 @@
       { key: 'C', label: 'ancel', action: handleDeleteCancel },
     ]}
   />
+
+  <FileInfoPanel
+    visible={showFileInfo}
+    info={fileInfo}
+    onClose={closeFileInfo}
+  />
+
+  <BatchRenameModal
+    visible={showBatchRename}
+    files={batchRenameFiles}
+    onConfirm={handleBatchRenameConfirm}
+    onCancel={handleBatchRenameCancel}
+  />
 </div>
 
 <style>
@@ -798,6 +1033,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .filter-badge {
+    font-size: 10px;
+    color: var(--bg-primary);
+    background-color: var(--accent);
+    padding: 0 6px;
+    margin-left: auto;
+    flex-shrink: 0;
   }
 
   .panel-content {
