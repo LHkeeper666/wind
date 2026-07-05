@@ -7,7 +7,6 @@
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
-  import BatchRenameModal from './BatchRenameModal.svelte';
 
   interface FileEntry {
     name: string;
@@ -31,6 +30,7 @@
     onNavigateUp = () => {},
     onTabCommand = (cmd: string) => {},
     onToast = (message: string) => {},
+    onBatchRenameStart = (_files: { path: string; name: string }[]) => {},
   }: {
     type: 'parent' | 'current';
     path: string;
@@ -43,6 +43,7 @@
     onNavigateUp?: () => void;
     onTabCommand?: (cmd: string) => void;
     onToast?: (message: string) => void;
+    onBatchRenameStart?: (files: { path: string; name: string }[]) => void;
   } = $props();
 
   let files: FileEntry[] = $state([]);
@@ -143,10 +144,6 @@
   // File info state
   let showFileInfo: boolean = $state(false);
   let fileInfo: any = $state(null);
-
-  // Batch rename state
-  let showBatchRename: boolean = $state(false);
-  let batchRenameFiles: { path: string; name: string }[] = $state([]);
 
   // Cut file paths from clipboard (for visual indicator)
   let cutPaths: Set<string> = $state(new Set());
@@ -438,27 +435,8 @@
   function startBatchRename() {
     const entries = files.filter(f => selectedPaths.has(f.path));
     if (entries.length < 2) return;
-    batchRenameFiles = entries.map(f => ({ path: f.path, name: f.name }));
-    showBatchRename = true;
-  }
-
-  async function handleBatchRenameConfirm(renames: { old_path: string; new_name: string }[]) {
-    showBatchRename = false;
-    try {
-      const result = await invoke('batch_rename', { entries: renames });
-      selectedPaths = new Set();
-      await loadDirectory(path, true);
-      onToast(`Renamed ${(result as string[]).length} file(s)`);
-    } catch (e) {
-      onToast(`Batch rename error: ${e}`);
-      await loadDirectory(path, true);
-    }
-    setTimeout(() => panelElement?.focus(), 0);
-  }
-
-  function handleBatchRenameCancel() {
-    showBatchRename = false;
-    setTimeout(() => panelElement?.focus(), 0);
+    const renameFiles = entries.map(f => ({ path: f.path, name: f.name }));
+    onBatchRenameStart(renameFiles);
   }
 
   async function handleInputConfirm(value: string) {
@@ -662,7 +640,7 @@
     }
 
     // Don't intercept keys when a modal or dialog is open
-    if (showDeleteConfirm || inputVisible || isSearchModalOpen || showFileInfo || showBatchRename) {
+    if (showDeleteConfirm || inputVisible || isSearchModalOpen || showFileInfo) {
       event.stopPropagation();
       return;
     }
@@ -997,12 +975,6 @@
     onClose={closeFileInfo}
   />
 
-  <BatchRenameModal
-    visible={showBatchRename}
-    files={batchRenameFiles}
-    onConfirm={handleBatchRenameConfirm}
-    onCancel={handleBatchRenameCancel}
-  />
 </div>
 
 <style>

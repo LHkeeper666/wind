@@ -82,6 +82,9 @@
     onToast = (message: string) => {},
     onTabCommand = (cmd: string) => {},
     onToggleLayout = () => {},
+    batchRenameTempPath = null as string | null,
+    onBatchRenameSave = (_content: string) => {},
+    onBatchRenameCancel = () => {},
   }: {
     filePath: string | null;
     onFullscreen?: () => void;
@@ -89,6 +92,9 @@
     onToast?: (message: string) => void;
     onTabCommand?: (cmd: string) => void;
     onToggleLayout?: () => void;
+    batchRenameTempPath?: string | null;
+    onBatchRenameSave?: (content: string) => void;
+    onBatchRenameCancel?: () => void;
   } = $props();
 
   let content: string = $state('');
@@ -182,6 +188,14 @@
   // Sync mode to layout store
   export function getMode(): string {
     return mode;
+  }
+
+  // Enter vim normal mode (used by batch rename)
+  export function enterEditorMode() {
+    mode = 'editor-normal';
+    setTimeout(() => {
+      if (overlayElement) overlayElement.focus();
+    }, 50);
   }
 
   // Tab: indent line when after list marker, insert spaces otherwise (called from global Tab handler)
@@ -751,12 +765,28 @@
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
-          save: async () => { await saveFile(); },
-          quit: () => { mode = 'global-normal'; },
+          save: async () => {
+            if (batchRenameTempPath) {
+              onBatchRenameSave(content);
+            } else {
+              await saveFile();
+            }
+          },
+          quit: () => {
+            if (batchRenameTempPath) {
+              onBatchRenameCancel();
+            } else {
+              mode = 'global-normal';
+            }
+          },
           forceQuit: () => {
-            content = savedContent;
-            isModified = false;
-            mode = 'global-normal';
+            if (batchRenameTempPath) {
+              onBatchRenameCancel();
+            } else {
+              content = savedContent;
+              isModified = false;
+              mode = 'global-normal';
+            }
           },
           isModified: () => isModified,
         }),
@@ -915,21 +945,39 @@
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
     if (trimmed === 'w' || trimmed === 'write') {
-      saveFile();
+      if (batchRenameTempPath) {
+        onBatchRenameSave(content);
+      } else {
+        saveFile();
+      }
     } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
-      content = savedContent;
-      isModified = false;
-      mode = 'global-normal';
+      if (batchRenameTempPath) {
+        onBatchRenameCancel();
+      } else {
+        content = savedContent;
+        isModified = false;
+        mode = 'global-normal';
+      }
     } else if (trimmed === 'q' || trimmed === 'quit') {
-      if (isModified) {
+      if (batchRenameTempPath) {
+        onBatchRenameCancel();
+      } else if (isModified) {
         onToast('E37: No write since last change (add ! to override)');
       } else {
         mode = 'global-normal';
       }
     } else if (trimmed === 'wq' || trimmed === 'x') {
-      saveFile().then(() => { mode = 'global-normal'; });
+      if (batchRenameTempPath) {
+        onBatchRenameSave(content);
+      } else {
+        saveFile().then(() => { mode = 'global-normal'; });
+      }
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
-      saveFile().then(() => { mode = 'global-normal'; });
+      if (batchRenameTempPath) {
+        onBatchRenameSave(content);
+      } else {
+        saveFile().then(() => { mode = 'global-normal'; });
+      }
     } else if (editorView) {
       const cm = getCM(editorView);
       if (cm) {
@@ -1200,8 +1248,10 @@
   tabindex="0"
 >
   <div class="panel-header">
-    <span class="panel-title">{mode === 'global-normal' ? 'Preview' : 'Editor'}</span>
-    {#if filePath}
+    <span class="panel-title">{batchRenameTempPath ? 'Batch Rename' : mode === 'global-normal' ? 'Preview' : 'Editor'}</span>
+    {#if batchRenameTempPath}
+      <span class="file-name">:w to rename, :q! to cancel</span>
+    {:else if filePath}
       <span class="file-name">{getFileName()}</span>
       {#if isModified}
         <span class="modified-indicator">●</span>

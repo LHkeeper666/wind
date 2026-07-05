@@ -335,6 +335,21 @@ fn batch_rename(entries: Vec<RenameEntry>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn create_batch_rename_temp_file(files: Vec<String>) -> Result<String, String> {
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("wind_batch_rename.txt");
+    fs::write(&temp_file, files.join("\n"))
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    Ok(temp_file.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn delete_temp_file(path: String) -> Result<(), String> {
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[tauri::command]
 fn create_file(path: String, is_dir: bool) -> Result<(), String> {
     let file_path = Path::new(&path);
 
@@ -1228,6 +1243,8 @@ pub fn run() {
             permanent_delete,
             rename_file,
             batch_rename,
+            create_batch_rename_temp_file,
+            delete_temp_file,
             create_file,
             copy_file,
             move_file,

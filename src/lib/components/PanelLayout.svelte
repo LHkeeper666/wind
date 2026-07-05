@@ -35,6 +35,9 @@
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
 
+  // Batch rename state
+  let batchRenameTempPath: string | null = $state(null);
+
   // Paste conflict state
   let showConfirmModal: boolean = $state(false);
   let confirmFileName: string = $state('');
@@ -612,6 +615,74 @@
     }
   }
 
+  async function handleBatchRenameStart(files: { path: string; name: string }[]) {
+    try {
+      const tempPath = await invoke<string>('create_batch_rename_temp_file', {
+        files: files.map(f => f.name),
+      });
+      batchRenameTempPath = tempPath;
+      batchRenameFileEntries = files;
+      // Show temp file in preview editor
+      selectedFile = tempPath;
+      layout.setSelectedFile(tempPath);
+      layout.setActiveColumn('preview');
+      // Enter vim normal mode after file loads
+      setTimeout(() => previewEditor?.enterEditorMode(), 200);
+    } catch (e) {
+      showToast(`Failed to create temp file: ${e}`);
+    }
+  }
+
+  let batchRenameFileEntries: { path: string; name: string }[] = [];
+
+  async function handleBatchRenameSave(content: string) {
+    if (!batchRenameTempPath) return;
+    const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length !== batchRenameFileEntries.length) {
+      showToast(`Expected ${batchRenameFileEntries.length} filenames, got ${lines.length}`);
+      return;
+    }
+
+    const renames: { old_path: string; new_name: string }[] = [];
+    for (let i = 0; i < batchRenameFileEntries.length; i++) {
+      if (lines[i] !== batchRenameFileEntries[i].name) {
+        renames.push({ old_path: batchRenameFileEntries[i].path, new_name: lines[i] });
+      }
+    }
+
+    if (renames.length === 0) {
+      handleBatchRenameCancel();
+      return;
+    }
+
+    try {
+      const result = await invoke<string[]>('batch_rename', { entries: renames });
+      showToast(`Renamed ${result.length} file(s)`);
+    } catch (e) {
+      showToast(`Batch rename error: ${e}`);
+    }
+
+    // Cleanup
+    await invoke('delete_temp_file', { path: batchRenameTempPath });
+    batchRenameTempPath = null;
+    batchRenameFileEntries = [];
+    selectedFile = null;
+    currentDirectoryPanel?.focus();
+    // Refresh directory
+    currentDirectoryPanel?.refresh();
+  }
+
+  async function handleBatchRenameCancel() {
+    if (batchRenameTempPath) {
+      await invoke('delete_temp_file', { path: batchRenameTempPath });
+    }
+    batchRenameTempPath = null;
+    batchRenameFileEntries = [];
+    selectedFile = null;
+    currentDirectoryPanel?.focus();
+    showToast('Batch rename cancelled');
+  }
+
   function handleCloseTerminal() {
     layout.hideTerminal();
     focusPanel('current');
@@ -1179,6 +1250,7 @@
         onNavigateUp={() => handleNavigate($layout.parentPath)}
         onTabCommand={handleTabCommand}
         onToast={showToast}
+        onBatchRenameStart={handleBatchRenameStart}
       />
     </div>
 
@@ -1213,6 +1285,9 @@
         onToast={showToast}
         onTabCommand={handleTabCommand}
         onToggleLayout={togglePreviewLayout}
+        batchRenameTempPath={batchRenameTempPath}
+        onBatchRenameSave={handleBatchRenameSave}
+        onBatchRenameCancel={handleBatchRenameCancel}
       />
     </div>
   </div>
