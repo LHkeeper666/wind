@@ -601,22 +601,18 @@
     const confirmed = await promptDelete(permanent);
     if (!confirmed) return;
 
-    const cmd = permanent ? 'permanent_delete' : 'delete_file';
-    let deleted = 0;
+    // Use async delete: progress bar for directories, non-blocking for all
     for (const entry of entries) {
       try {
-        await invoke(cmd, { path: entry.path });
-        deleted++;
+        await invoke('delete_file_async', { path: entry.path, permanent });
       } catch (e) {
         onToast(`Failed to delete ${entry.name}: ${e}`);
       }
     }
 
     selectedPaths = new Set();
-    if (deleted > 0) {
-      onToast(`${deleted} ${deleted === 1 ? 'file' : 'files'} ${permanent ? 'permanently deleted' : 'moved to trash'}`);
-      await loadDirectory(path, true);
-    }
+    onToast(`Deleting ${entries.length} ${entries.length === 1 ? 'file' : 'files'}...`);
+    // Directory refresh handled by persistent op-complete listener in PanelLayout
   }
 
   function getEntriesToOperate(): ClipboardEntry[] {

@@ -2,6 +2,7 @@ mod terminal;
 mod neovim;
 mod pdf;
 mod video;
+mod file_ops;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -465,6 +466,243 @@ fn move_file(source: String, destination: String) -> Result<(), String> {
             fs::remove_file(src)
                 .map_err(|e| format!("Failed to remove source file: {}", e))
         }
+    }
+}
+
+// ── Async file operations ──
+
+#[tauri::command]
+async fn check_copy_conflicts(
+    sources: Vec<String>,
+    dest_dir: String,
+) -> Result<Vec<String>, String> {
+    let pairs: Vec<(std::path::PathBuf, String)> = sources
+        .iter()
+        .map(|s| (std::path::PathBuf::from(s), String::new()))
+        .collect();
+    let dest = std::path::Path::new(&dest_dir);
+    Ok(file_ops::check_conflicts(&pairs, dest))
+}
+
+#[tauri::command]
+async fn copy_file_async(
+    app: tauri::AppHandle,
+    sources: Vec<String>,
+    dest_dir: String,
+) -> Result<u64, String> {
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut progress = file_ops::Progress::new(
+            file_ops::OpType::Copy,
+            format!("Copying {} items", sources.len()),
+        );
+        let op_id = progress.op_id;
+        let dest_path = std::path::Path::new(&dest_dir);
+
+        // Ensure destination directory exists
+        if !dest_path.exists() {
+            std::fs::create_dir_all(dest_path)
+                .map_err(|e| format!("Failed to create dest dir: {}", e))?;
+        }
+
+        // Phase 1: scan
+        let mut total_bytes: u64 = 0;
+        let mut total_files: u32 = 0;
+        for src in &sources {
+            let src_path = std::path::Path::new(src);
+            if src_path.is_dir() {
+                if let Ok((b, f)) = file_ops::scan_directory(src_path, 20) {
+                    total_bytes += b;
+                    total_files += f;
+                }
+            } else if let Ok(meta) = src_path.metadata() {
+                total_bytes += meta.len();
+                total_files += 1;
+            }
+        }
+        progress.set_scan_result(total_bytes, total_files);
+        file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
+
+        // Phase 2: execute
+        let mut total_copied: u64 = 0;
+        for src in &sources {
+            if progress.cancelled() {
+                file_ops::emit_cancelled(op_id, &app_clone);
+                return Err("Cancelled".into());
+            }
+            let src_path = std::path::Path::new(src);
+            let file_name = src_path.file_name().unwrap_or_default();
+            let dst_path = dest_path.join(file_name);
+
+            if src_path.is_dir() {
+                match file_ops::copy_dir_chunked(src_path, &dst_path, &mut progress, &app_clone) {
+                    Ok(n) => total_copied += n,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::Interrupted {
+                            file_ops::emit_cancelled(op_id, &app_clone);
+                            return Err("Cancelled".into());
+                        }
+                        let _ = std::fs::remove_dir_all(&dst_path);
+                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
+                        return Err(e.to_string());
+                    }
+                }
+            } else {
+                match file_ops::copy_file_chunked(src_path, &dst_path, &mut progress, &app_clone) {
+                    Ok(n) => {
+                        total_copied += n;
+                        progress.file_done(&app_clone);
+                    }
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::Interrupted {
+                            file_ops::emit_cancelled(op_id, &app_clone);
+                            return Err("Cancelled".into());
+                        }
+                        let _ = std::fs::remove_file(&dst_path);
+                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
+                        return Err(e.to_string());
+                    }
+                }
+            }
+        }
+
+        file_ops::emit_complete(op_id, &app_clone);
+        Ok(total_copied)
+    })
+    .await
+    .map_err(|e| format!("Join error: {}", e))?
+}
+
+#[tauri::command]
+async fn move_file_async(
+    app: tauri::AppHandle,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    let src_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
+    let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
+
+    if src_drive == dst_drive {
+        std::fs::rename(&source, &destination)
+            .map_err(|e| format!("Failed to move: {}", e))
+    } else {
+        let app_clone = app.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut progress = file_ops::Progress::new(
+                file_ops::OpType::Move,
+                format!("Moving {}", source),
+            );
+            let op_id = progress.op_id;
+            let src_path = std::path::Path::new(&source);
+            let dst_path = std::path::Path::new(&destination);
+
+            let (total_bytes, total_files) = if src_path.is_dir() {
+                file_ops::scan_directory(src_path, 20).unwrap_or((0, 0))
+            } else {
+                (src_path.metadata().map(|m| m.len()).unwrap_or(0), 1)
+            };
+            progress.set_scan_result(total_bytes, total_files);
+            file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
+
+            let result = if src_path.is_dir() {
+                file_ops::copy_dir_chunked(src_path, dst_path, &mut progress, &app_clone).map(|_| ())
+            } else {
+                file_ops::copy_file_chunked(src_path, dst_path, &mut progress, &app_clone).map(|_| ())
+            };
+
+            match result {
+                Ok(()) => {
+                    let _ = if src_path.is_dir() {
+                        std::fs::remove_dir_all(src_path)
+                    } else {
+                        std::fs::remove_file(src_path)
+                    };
+                    file_ops::emit_complete(op_id, &app_clone);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = if dst_path.is_dir() {
+                        std::fs::remove_dir_all(dst_path)
+                    } else {
+                        std::fs::remove_file(dst_path)
+                    };
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        file_ops::emit_cancelled(op_id, &app_clone);
+                    } else {
+                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
+                    }
+                    Err(e.to_string())
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+    }
+}
+
+#[tauri::command]
+async fn delete_file_async(
+    app: tauri::AppHandle,
+    path: String,
+    permanent: Option<bool>,
+) -> Result<(), String> {
+    let is_permanent = permanent.unwrap_or(false);
+    let app_clone = app.clone();
+    let path_clone = path.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut progress = file_ops::Progress::new(
+            file_ops::OpType::Delete,
+            format!("Deleting {}", path_clone),
+        );
+        let op_id = progress.op_id;
+        let p = std::path::Path::new(&path_clone);
+
+        let (total_bytes, total_files) = if p.is_dir() {
+            file_ops::scan_directory(p, 20).unwrap_or((0, 0))
+        } else {
+            (p.metadata().map(|m| m.len()).unwrap_or(0), 1)
+        };
+        progress.set_scan_result(total_bytes, total_files);
+        file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
+
+        let result = if is_permanent {
+            file_ops::delete_recursive(p, &mut progress, &app_clone)
+        } else {
+            match trash::delete(p) {
+                Ok(()) => {
+                    progress.file_done(&app_clone);
+                    Ok(())
+                }
+                Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                file_ops::emit_complete(op_id, &app_clone);
+                Ok(())
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    file_ops::emit_cancelled(op_id, &app_clone);
+                } else {
+                    file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
+                }
+                Err(e.to_string())
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Join error: {}", e))?
+}
+
+#[tauri::command]
+async fn cancel_file_op(id: u64) -> Result<(), String> {
+    if file_ops::cancel_op(id) {
+        Ok(())
+    } else {
+        Err(format!("Operation {} not found", id))
     }
 }
 
@@ -1247,7 +1485,12 @@ pub fn run() {
             delete_temp_file,
             create_file,
             copy_file,
+            copy_file_async,
             move_file,
+            move_file_async,
+            delete_file_async,
+            cancel_file_op,
+            check_copy_conflicts,
             get_file_size,
             get_file_info,
             open_file,

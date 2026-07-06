@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
@@ -18,6 +19,7 @@
   import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
+  import FileOpProgress from './FileOpProgress.svelte';
   import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
 
   let currentPath: string = $state('');
@@ -305,9 +307,22 @@
     } catch (error) {
       console.error('Failed to get home directory:', error);
     }
+
+    // Listen to file operation events to auto-refresh current directory
+    const refreshCurrentDir = () => {
+      currentDirectoryPanel?.refresh();
+    };
+    fileOpUnlistens.push(
+      await listen('op-complete', refreshCurrentDir),
+      await listen('op-cancelled', refreshCurrentDir),
+      await listen('op-failed', refreshCurrentDir),
+    );
   });
 
+  let fileOpUnlistens: (() => void)[] = [];
+
   onDestroy(() => {
+    fileOpUnlistens.forEach(fn => fn());
     window.removeEventListener('keydown', handleGlobalKeydown, true);
     window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
     if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
@@ -484,11 +499,12 @@
     const destDir = currentPath.replace(/[\\\/]+$/, '');
     let processed = 0;
     let firstPastedPath: string | null = null;
+    const resolvedSources: string[] = [];
 
+    // Phase 1: resolve conflicts
     for (const entry of entries) {
       const destPath = destDir + '\\' + entry.name;
 
-      // Check if destination exists
       let exists = false;
       try {
         exists = await invoke<boolean>('file_exists', { path: destPath });
@@ -517,30 +533,38 @@
         }
       }
 
-      try {
-        if (operation === 'copy') {
-          await invoke('copy_file', { source: entry.path, destination: destPath });
-        } else {
-          await invoke('move_file', { source: entry.path, destination: destPath });
-        }
-        if (!firstPastedPath) firstPastedPath = destPath;
-        processed++;
-      } catch (e) {
-        showToast(`Failed to ${operation} ${entry.name}: ${e}`);
+      resolvedSources.push(entry.path);
+      if (!firstPastedPath) firstPastedPath = destPath;
+    }
+
+    if (resolvedSources.length === 0) return;
+
+    // Phase 2: execute async
+    if (operation === 'copy') {
+      // Batch copy for multiple files
+      if (resolvedSources.length > 1) {
+        await invoke('copy_file_async', { sources: resolvedSources, destDir });
+        showToast(`Copying ${resolvedSources.length} items...`);
+      } else {
+        await invoke('copy_file_async', { sources: resolvedSources, destDir });
+        showToast('Copying...');
       }
+    } else {
+      // Move: handle one by one through async
+      for (const src of resolvedSources) {
+        const name = src.split(/[/\\]/).pop() || src;
+        const destPath = destDir + '\\' + name;
+        await invoke('move_file_async', { source: src, destination: destPath });
+      }
+      showToast(`Moving ${resolvedSources.length} items...`);
     }
 
     // Cut: clear clipboard since source files no longer exist
     if (operation === 'cut') {
       clipboard.clear();
     }
-    if (processed > 0) {
-      showToast(`${processed} ${processed === 1 ? 'file' : 'files'} ${operation === 'copy' ? 'copied' : 'moved'}`);
-      await currentDirectoryPanel?.refresh();
-      if (firstPastedPath) {
-        handleSelect(firstPastedPath);
-      }
-    }
+
+    // Auto-refresh handled by persistent listeners in onMount
   }
 
   function togglePreviewLayout() {
@@ -1343,6 +1367,9 @@
     zoomLevel={zoomLevel}
     onClose={handleCloseTerminal}
   />
+
+  <!-- File Operation Progress -->
+  <FileOpProgress />
 
   <!-- Status Bar -->
   <div class="status-bar">
