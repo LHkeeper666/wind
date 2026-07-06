@@ -11,11 +11,13 @@
   let {
     filePath = null,
     content = '',
+    initialLine = 0,
     onClose = () => {},
     onSave = (content: string) => {},
   }: {
     filePath: string | null;
     content: string;
+    initialLine?: number;
     onClose?: () => void;
     onSave?: (content: string) => void;
   } = $props();
@@ -235,15 +237,37 @@
       extensions.push(language);
     }
 
+    let selection = undefined;
+    if (initialLine > 0) {
+      let pos = 0;
+      let line = 0;
+      for (let i = 0; i < content.length && line < initialLine; i++) {
+        if (content[i] === '\n') line++;
+        if (line < initialLine) pos = i + 1;
+      }
+      selection = { anchor: pos };
+    }
+
     const state = EditorState.create({
       doc: content,
       extensions,
+      selection,
     });
 
     editorView = new EditorView({
       state,
       parent: editorContainer,
     });
+
+    if (initialLine > 0 && editorView) {
+      editorView.dispatch({ effects: EditorView.scrollIntoView(editorView.state.selection.main.head, { y: 'center' }) });
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const s = editorView!.scrollDOM;
+          s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
+        });
+      });
+    }
 
     // Focus overlay first (editor starts in normal mode)
     if (overlayElement) overlayElement.focus();

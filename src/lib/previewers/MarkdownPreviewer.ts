@@ -87,17 +87,31 @@ export class MarkdownPreviewer implements Previewer {
       return `<img ${attrs} alt="${token.content}">`;
     };
 
-    // Add data-line attribute to headings for scroll sync
-    const defaultHeadingOpen = this.md.renderer.rules.heading_open || ((tokens: any, idx: number, options: any, env: any, self: any) => {
-      return self.renderToken(tokens, idx, options);
-    });
-    this.md.renderer.rules.heading_open = (tokens: any, idx: number, options: any, env: any, self: any) => {
-      const token = tokens[idx];
-      if (token.map) {
-        token.attrSet('data-line', String(token.map[0]));
-      }
-      return defaultHeadingOpen(tokens, idx, options, env, self);
-    };
+    // Add data-line attribute to block-level elements for editor cursor sync
+    const blockTokens = ['heading_open', 'paragraph_open', 'bullet_list_open', 'ordered_list_open',
+      'list_item_open', 'blockquote_open', 'table_open'];
+    for (const type of blockTokens) {
+      const defaultRule = this.md.renderer.rules[type] ||
+        ((tokens: any, idx: number, options: any, env: any, self: any) => self.renderToken(tokens, idx, options));
+      this.md.renderer.rules[type] = (tokens: any, idx: number, options: any, env: any, self: any) => {
+        const token = tokens[idx];
+        if (token.map) token.attrSet('data-line', String(token.map[0]));
+        return defaultRule(tokens, idx, options, env, self);
+      };
+    }
+    // Also handle self-closing block tokens (fence, code_block, hr)
+    for (const type of ['fence', 'code_block', 'hr']) {
+      const defaultRule = this.md.renderer.rules[type] ||
+        ((tokens: any, idx: number, _opts: any, _env: any, self: any) => self.renderToken(tokens, idx, _opts));
+      this.md.renderer.rules[type] = (tokens: any, idx: number, opts: any, env: any, self: any) => {
+        const token = tokens[idx];
+        const result = defaultRule(tokens, idx, opts, env, self);
+        if (token.map) {
+          return result.replace(/^<(\w+)/, `<$1 data-line="${token.map[0]}"`);
+        }
+        return result;
+      };
+    }
   }
 
   match(filePath: string): boolean {
@@ -229,9 +243,15 @@ export class MarkdownPreviewer implements Previewer {
         lang: lang || 'text',
         theme: 'github-dark',
       });
-      pre.replaceWith(
-        Object.assign(document.createElement('div'), { innerHTML: highlighted }).firstChild!
-      );
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = highlighted;
+      const shikiPre = wrapper.firstChild as HTMLElement;
+      if (shikiPre) {
+        // Preserve data-line from the original pre for editor cursor sync
+        const dataLine = pre.getAttribute('data-line');
+        if (dataLine) shikiPre.setAttribute('data-line', dataLine);
+        pre.replaceWith(shikiPre);
+      }
     } catch {
       // Shiki failed for this block — keep the original <pre><code>
     }

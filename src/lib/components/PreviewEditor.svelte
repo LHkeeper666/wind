@@ -124,6 +124,7 @@
   let tocFocused: boolean = $state(false);
   let scrollObserver: IntersectionObserver | undefined;
   let isMarkdown: boolean = $state(false);
+  let editorTargetLine: number = -1;
 
   // Load file when filePath changes
   $effect(() => {
@@ -153,6 +154,8 @@
       // Initialize editor if needed
       if (!editorView && editorContainer && filePath) {
         initEditor();
+      } else if (editorView && editorTargetLine >= 0 && changed) {
+        moveCursorToLine(editorTargetLine);
       }
       // Focus overlay in normal mode (IME won't activate on it),
       // or CodeMirror editor in insert mode.
@@ -657,6 +660,55 @@
     }
   }
 
+  export function getVisibleLine(): number {
+    if (!previewContainer || !content) return 0;
+    // Use data-line attributes if available (markdown with block-level annotations)
+    const rect = previewContainer.getBoundingClientRect();
+    const el = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    if (el) {
+      const lined = el.closest('[data-line]');
+      if (lined) {
+        const line = parseInt(lined.getAttribute('data-line')!);
+        if (!isNaN(line)) return line;
+      }
+    }
+    // Fallback: scroll ratio (code files with uniform line height)
+    const maxScroll = previewContainer.scrollHeight - previewContainer.clientHeight;
+    if (maxScroll <= 0) return 0;
+    const ratio = previewContainer.scrollTop / maxScroll;
+    const totalLines = content.split('\n').length;
+    return Math.round(ratio * (totalLines - 1));
+  }
+
+  function getPosAtLine(text: string, lineNumber: number): number {
+    let pos = 0;
+    let line = 0;
+    for (let i = 0; i < text.length && line < lineNumber; i++) {
+      if (text[i] === '\n') line++;
+      if (line < lineNumber) pos = i + 1;
+    }
+    return pos;
+  }
+
+  function moveCursorToLine(lineNumber: number) {
+    if (!editorView) return;
+    const targetLine = Math.min(lineNumber + 1, editorView.state.doc.lines);
+    const pos = editorView.state.doc.line(targetLine).from;
+    editorView.dispatch({ selection: { anchor: pos } });
+    scrollEditorToPos(editorView, pos);
+    editorTargetLine = -1;
+  }
+
+  function scrollEditorToPos(view: EditorView, pos: number) {
+    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const s = view.scrollDOM;
+        s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
+      });
+    });
+  }
+
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -819,12 +871,19 @@
     const state = EditorState.create({
       doc: content,
       extensions,
+      selection: editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) } : undefined,
     });
+    const needsScroll = editorTargetLine >= 0;
+    editorTargetLine = -1;
 
     editorView = new EditorView({
       state,
       parent: editorContainer,
     });
+
+    if (needsScroll && editorView) {
+      scrollEditorToPos(editorView, editorView.state.selection.main.head);
+    }
 
     // Intercept Enter on list lines before CodeMirror/markdown extension handles it
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -1149,6 +1208,7 @@
         onToast('此文件类型不支持编辑');
         return;
       }
+      editorTargetLine = getVisibleLine();
       mode = 'editor-normal';
     } else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();

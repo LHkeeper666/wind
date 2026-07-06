@@ -32,6 +32,7 @@
   let fileSearchHomeDir: string = $state('');
   let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
+  let editorInitialLine: number = $state(0);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
@@ -620,6 +621,7 @@
       layout.openFullscreenVideoPlayer();
     } else {
       preFullscreenColumn = $layout.activeColumn;
+      editorInitialLine = previewEditor?.getVisibleLine() ?? 0;
       layout.openFullscreenEditor();
     }
   }
@@ -1321,6 +1323,7 @@
     <FullscreenEditor
       filePath={selectedFile}
       content={previewEditor?.getContent() || ''}
+      initialLine={editorInitialLine}
       onClose={handleCloseFullscreen}
       onSave={handleSaveFullscreen}
     />
