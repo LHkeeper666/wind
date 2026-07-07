@@ -83,6 +83,17 @@
     }
   });
 
+  export function getSelectedIndex(): number {
+    return selectedIndex;
+  }
+
+  export function setSelectedTocIndex(index: number) {
+    if (index >= 0 && index < flatItems.length) {
+      selectedIndex = index;
+      scrollToSelected();
+    }
+  }
+
   export function focus() {
     if (panelElement) {
       panelElement.focus();

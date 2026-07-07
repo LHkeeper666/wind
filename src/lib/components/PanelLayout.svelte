@@ -345,9 +345,19 @@
 
   // Tab operations
   function saveCurrentTabState() {
+    // Cache full editor state for tab restore
+    const state = getTabsState();
+    previewEditor?.cacheTabState(state.activeTabId);
+    const snapshot = previewEditor?.getEditorStateSnapshot();
+
     tabs.saveActiveTabState({
       cursorIndex: currentDirectoryPanel?.getSelectedIndex() ?? 0,
       scrollOffset: currentDirectoryPanel?.getScrollOffset() ?? 0,
+      editorMode: snapshot?.mode ?? 'global-normal',
+      previewScrollTop: snapshot?.previewScrollTop ?? 0,
+      isModified: snapshot?.isModified ?? false,
+      pdfCurrentPage: snapshot?.pdfCurrentPage ?? 0,
+      tocOpen: snapshot?.tocOpen ?? true,
     });
   }
 
@@ -367,6 +377,7 @@
     const closingTabId = tabsState.activeTabId;
     tabs.closeTab(closingTabId);
     terminalManager.destroy(closingTabId);
+    previewEditor?.clearTabCache(closingTabId);
     restoreTabAndFocus();
     showToast('Tab closed');
   }
@@ -392,6 +403,11 @@
   function restoreTabAndFocus() {
     const active = getActiveTab();
     if (!active) return;
+    // Set pending cursor/scroll BEFORE path change — for cached dirs, loadDirectory
+    // completes synchronously, so pending must be set first
+    if (active.cursorIndex > 0 || active.scrollOffset > 0) {
+      currentDirectoryPanel?.setPendingRestore(active.cursorIndex, active.scrollOffset);
+    }
     // Update layout store (preserve selectedFile during tab switch)
     if (active.currentPath) {
       layout.setCurrentPath(active.currentPath, false);
@@ -400,39 +416,26 @@
     currentPath = active.currentPath;
     selectedFile = active.selectedFile;
     // Also update layout store's selectedFile
-    if (active.selectedFile) {
-      layout.setSelectedFile(active.selectedFile);
-    }
-    // Restore cursorIndex and scrollOffset after directory loads
-    if (active.cursorIndex > 0 || active.scrollOffset > 0) {
-      setTimeout(() => {
-        if (active.cursorIndex > 0) {
-          currentDirectoryPanel?.setSelectedIndex(active.cursorIndex);
-        }
-        if (active.scrollOffset > 0) {
-          currentDirectoryPanel?.setScrollOffset(active.scrollOffset);
-        }
-      }, 100);
-    }
+    layout.setSelectedFile(active.selectedFile);
     // Restore terminal state
     layout.setTerminalHeight(active.terminalHeight);
     if (active.terminalVisible) {
       layout.showTerminal();
-      // Restore fullscreen state
       if (active.fullscreenTerminalOpen) {
         layout.openFullscreenTerminal();
       } else {
         layout.closeFullscreenTerminal();
       }
-      // Sync terminal mode to store (FloatingTerminal will read it on tab switch)
       layout.setTerminalMode(active.terminalMode || 'insert');
-      // Focus will be restored by FloatingTerminal's tab-switch effect
-      // after activeTabId updates (deferred to next microtask)
     } else {
       layout.closeFullscreenTerminal();
       layout.hideTerminal();
-      focusPanel('current');
     }
+    // Restore focus to saved activeColumn
+    const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
+      ? 'terminal'
+      : (active.activeColumn !== 'terminal' ? active.activeColumn : 'current');
+    focusPanel(targetPanel);
   }
 
   function getActiveTab() {
@@ -917,6 +920,7 @@
       const code = event.code;
       const key = event.key;
       event.preventDefault();
+      event.stopPropagation();
 
       if (code === 'KeyT') {
         handleTabNew();
@@ -941,6 +945,7 @@
     // Start t prefix
     if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
       event.preventDefault();
+      event.stopPropagation();
       waitingForTabKey = true;
       layout.setKeyPrefix('t');
       if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
@@ -1152,8 +1157,12 @@
       } else if (panel === 'current' && currentDirectoryPanel) {
         currentDirectoryPanel.focus();
       } else if (panel === 'preview' && previewPanel) {
-        const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
-        if (element) element.focus();
+        if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
+          previewEditor.focusToc();
+        } else {
+          const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
+          if (element) element.focus();
+        }
       }
     }, 0);
   }
@@ -1306,6 +1315,7 @@
       <PreviewEditor
         bind:this={previewEditor}
         filePath={selectedFile}
+        currentTabId={$activeTab.id}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}

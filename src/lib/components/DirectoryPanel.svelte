@@ -187,6 +187,26 @@
     if (container) container.scrollTop = offset;
   }
 
+  // Pending cursor/scroll restoration, applied after next directory load
+  let pendingCursorIndex: number = -1;
+  let pendingScrollOffset: number = -1;
+
+  export function setPendingRestore(cursorIndex: number, scrollOffset: number) {
+    pendingCursorIndex = cursorIndex;
+    pendingScrollOffset = scrollOffset;
+  }
+
+  function applyPendingRestore() {
+    if (pendingCursorIndex >= 0) {
+      setSelectedIndex(pendingCursorIndex);
+    }
+    if (pendingScrollOffset >= 0) {
+      setScrollOffset(pendingScrollOffset);
+    }
+    pendingCursorIndex = -1;
+    pendingScrollOffset = -1;
+  }
+
   // Directory content cache
   const directoryCache: Map<string, FileEntry[]> = new Map();
 
@@ -336,6 +356,7 @@
         files = [{ name: '..', path: parentPath, is_dir: true }, ...files];
       }
       selectInitialEntry();
+      applyPendingRestore();
       isLoading = false;
       return;
     }
@@ -358,6 +379,7 @@
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
       selectInitialEntry();
+      applyPendingRestore();
     } catch (error) {
       console.error('Failed to load directory:', error);
       errorMessage = `Failed to load: ${error}`;

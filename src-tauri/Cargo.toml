@@ -38,4 +38,5 @@ portable-pty = "0.8"
 tiny_http = "0.12"
 trash = "4"
 open = "5"
+notify = "6"
 

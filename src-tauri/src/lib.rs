@@ -3,6 +3,7 @@ mod neovim;
 mod pdf;
 mod video;
 mod file_ops;
+mod file_watcher;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -62,6 +63,7 @@ pub struct ArchiveEntry {
 struct AppState {
     terminal: terminal::TerminalManager,
     neovim: Mutex<neovim::Neovim>,
+    file_watcher: Mutex<file_watcher::FileWatcher>,
 }
 
 #[tauri::command]
@@ -79,6 +81,38 @@ fn get_home_dir() -> String {
 #[tauri::command]
 fn file_exists(path: String) -> bool {
     Path::new(&path).exists()
+}
+
+#[derive(Serialize)]
+struct FileMetadata {
+    size: u64,
+    modified: u64,
+}
+
+#[tauri::command]
+fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
+    let metadata = fs::metadata(&path).map_err(|e| format!("Failed to read metadata: {}", e))?;
+    let modified = metadata.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(FileMetadata {
+        size: metadata.len(),
+        modified,
+    })
+}
+
+#[tauri::command]
+fn start_watch_file(path: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.file_watcher.lock().map_err(|e| e.to_string())?.start(&path, app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_watch_file(state: State<'_, AppState>) -> Result<(), String> {
+    state.file_watcher.lock().map_err(|e| e.to_string())?.stop();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1467,6 +1501,7 @@ pub fn run() {
             app.manage(AppState {
                 terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),
+                file_watcher: Mutex::new(file_watcher::FileWatcher::new()),
             });
             Ok(())
         })
@@ -1474,6 +1509,9 @@ pub fn run() {
             greet,
             get_home_dir,
             file_exists,
+            get_file_metadata,
+            start_watch_file,
+            stop_watch_file,
             read_directory,
             list_archive_entries,
             list_drives,

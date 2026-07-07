@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
   import { layout } from '$lib/stores/layout';
   import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
@@ -77,6 +78,7 @@
 
   let {
     filePath = null,
+    currentTabId = 0,
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
@@ -87,6 +89,7 @@
     onBatchRenameCancel = () => {},
   }: {
     filePath: string | null;
+    currentTabId?: number;
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
@@ -122,9 +125,126 @@
   let tocActiveLine: number = $state(-1);
   let tocSidebar: TocSidebar | undefined = $state(undefined);
   let tocFocused: boolean = $state(false);
+  let tocOpen: boolean = $state(true);
+  let pendingTocExpanded: Set<number> | null = null;
+
+  function collectExpandedLines(headings: TocHeading[]): number[] {
+    const lines: number[] = [];
+    function walk(items: TocHeading[]) {
+      for (const h of items) {
+        if (h.expanded && h.children.length > 0) {
+          lines.push(h.line);
+          walk(h.children);
+        }
+      }
+    }
+    walk(headings);
+    return lines;
+  }
+
+  function restoreExpandedLines(headings: TocHeading[], lines: Set<number>) {
+    function walk(items: TocHeading[]) {
+      for (const h of items) {
+        if (lines.has(h.line) && h.children.length > 0) {
+          h.expanded = true;
+          walk(h.children);
+        }
+      }
+    }
+    walk(headings);
+  }
   let scrollObserver: IntersectionObserver | undefined;
   let isMarkdown: boolean = $state(false);
   let editorTargetLine: number = -1;
+
+  // Per-tab editor state cache
+  interface TabEditorCache {
+    filePath: string;
+    content: string;
+    savedContent: string;
+    binaryContent: ArrayBuffer | null;
+    mode: 'global-normal' | 'editor-normal' | 'editor-insert';
+    previewScrollTop: number;
+    isModified: boolean;
+    pdfCurrentPage: number;
+    pdfPageCount: number;
+    fileMtime: number;
+    tocOpen: boolean;
+    tocExpandedLines: number[];
+    tocFocused: boolean;
+    tocSelectedIndex: number;
+  }
+  const tabEditorCache = new Map<number, TabEditorCache>();
+  let pendingRestoreScrollTop: number = -1;
+  let pendingTocSelectedIndex: number = -1;
+  let currentFileMtime: number = 0;
+  let fileChangedUnlisten: (() => void) | null = null;
+
+  export function clearTabCache(tabId: number) {
+    tabEditorCache.delete(tabId);
+  }
+
+  export function cacheTabState(tabId: number) {
+    if (!filePath) return;
+    console.log('[PreviewEditor] cacheTabState:', tabId, 'tocOpen:', tocOpen, 'mode:', mode);
+    tabEditorCache.set(tabId, {
+      filePath,
+      content,
+      savedContent,
+      binaryContent,
+      mode,
+      previewScrollTop: previewContainer?.scrollTop ?? 0,
+      isModified,
+      pdfCurrentPage,
+      pdfPageCount,
+      fileMtime: currentFileMtime,
+      tocOpen,
+      tocExpandedLines: collectExpandedLines(tocHeadings),
+      tocFocused,
+      tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
+    });
+  }
+
+  export function getEditorStateSnapshot(): {
+    mode: 'global-normal' | 'editor-normal' | 'editor-insert';
+    previewScrollTop: number;
+    isModified: boolean;
+    pdfCurrentPage: number;
+    tocOpen: boolean;
+    tocExpandedLines: number[];
+  } {
+    const s = {
+      mode,
+      previewScrollTop: previewContainer?.scrollTop ?? 0,
+      isModified,
+      pdfCurrentPage,
+      tocOpen,
+      tocExpandedLines: collectExpandedLines(tocHeadings),
+    };
+    return s;
+  }
+
+  // File watching for real-time preview updates
+  function startWatching(path: string) {
+    stopWatching();
+    console.log('[PreviewEditor] start_watch_file:', path);
+    invoke('start_watch_file', { path }).catch(e => console.error('[PreviewEditor] start_watch_file error:', e));
+  }
+
+  function stopWatching() {
+    invoke('stop_watch_file').catch(() => {});
+  }
+
+  async function handleFileChanged(eventPath: string) {
+    console.log('[PreviewEditor] handleFileChanged:', eventPath, 'current:', filePath);
+    if (!filePath) return;
+    const a = eventPath.replace(/\//g, '\\').toLowerCase();
+    const b = filePath.replace(/\//g, '\\').toLowerCase();
+    if (a !== b) return;
+    console.log('[PreviewEditor] Reloading due to external change');
+    tabEditorCache.delete(currentTabId);
+    await loadFile(filePath);
+  }
 
   // Load file when filePath changes
   $effect(() => {
@@ -139,6 +259,21 @@
       editorView.destroy();
     }
     scrollObserver?.disconnect();
+    stopWatching();
+    if (fileChangedUnlisten) {
+      fileChangedUnlisten();
+      fileChangedUnlisten = null;
+    }
+  });
+
+  // Set up file-changed listener for real-time preview updates
+  listen('file-changed', (event: any) => {
+    console.log('[PreviewEditor] file-changed event:', event.payload);
+    const changedPath = typeof event.payload === 'string' ? event.payload : String(event.payload ?? '');
+    handleFileChanged(changedPath);
+  }).then(unlisten => {
+    fileChangedUnlisten = unlisten;
+    console.log('[PreviewEditor] file-changed listener registered');
   });
 
   // Handle mode transitions (display toggling + focus)
@@ -171,7 +306,8 @@
       // Close search panel when leaving editor mode
       if (editorView) closeSearchPanel(editorView);
       // Return focus to the panel (only on mode transition, not initial mount)
-      if (changed && panelElement) {
+      // Skip if TOC was focused before the switch (focus will be restored by renderPreview)
+      if (changed && panelElement && !tocFocused) {
         panelElement.focus();
       }
     }
@@ -316,7 +452,7 @@
 
   // TOC: check if TOC should be visible
   export function isTocVisible(): boolean {
-    return isMarkdown && tocHeadings.length > 0 && mode === 'global-normal';
+    return isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen;
   }
 
   // TOC: focus management
@@ -400,11 +536,55 @@
 
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
-    isModified = false;
 
-    // Clear previous content immediately to prevent stale flash
-    content = '';
-    binaryContent = null;
+    // Check per-tab cache during tab switch
+    const cached = tabEditorCache.get(currentTabId);
+    if (cached && cached.filePath === path) {
+      if (gen !== loadGeneration) return;
+      // Restore from cache immediately (no async gap = no flicker)
+      content = cached.content;
+      savedContent = cached.savedContent;
+      binaryContent = cached.binaryContent;
+      isModified = cached.isModified;
+      pdfCurrentPage = cached.pdfCurrentPage;
+      pdfPageCount = cached.pdfPageCount;
+      currentFileMtime = cached.fileMtime;
+      tocOpen = cached.tocOpen;
+      tocFocused = cached.tocFocused;
+      pendingTocSelectedIndex = cached.tocSelectedIndex;
+      pendingTocExpanded = new Set(cached.tocExpandedLines);
+      pendingRestoreScrollTop = cached.previewScrollTop;
+      const ext = path.split('.').pop()?.toLowerCase() || '';
+      isMarkdown = ext === 'md' || ext === 'markdown';
+      if (!isMarkdown) {
+        tocHeadings = [];
+        tocActiveLine = -1;
+      }
+      if (cached.mode !== 'global-normal') {
+        if (editorView) {
+          editorView.destroy();
+          editorView = undefined;
+        }
+      }
+      mode = cached.mode;
+      if (!content && !binaryContent && mode === 'global-normal') {
+        renderPreview();
+      }
+      startWatching(path);
+      // Validate mtime in background — if file changed on disk, reload
+      invoke<{ size: number; modified: number }>('get_file_metadata', { path })
+        .then(meta => {
+          if (meta.modified !== cached.fileMtime) {
+            tabEditorCache.delete(currentTabId);
+            loadFile(path);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    pendingRestoreScrollTop = -1;
+    isModified = false;
 
     // Track markdown state for TOC
     const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -426,6 +606,7 @@
       }
       mode = 'global-normal';
       renderDirectoryPreview();
+      stopWatching();
       return;
     } catch {
       // Not a directory, continue
@@ -614,6 +795,12 @@
       }
     }
     mode = 'global-normal';
+    // Save mtime for cache validation and start file watching
+    try {
+      const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
+      currentFileMtime = meta.modified;
+    } catch { /* ignore if file doesn't exist */ }
+    startWatching(path);
     // Empty files: content is '' (falsy), effect won't trigger, render directly
     if (!content && !binaryContent) renderPreview();
   }
@@ -642,6 +829,30 @@
     const previewContent: string | ArrayBuffer = binaryContent ?? content;
     await getPreviewRouter().preview(filePath, previewContent, previewContainer);
     if (requestId !== renderRequestId) return;
+
+    // Apply pending scroll restoration from tab cache
+    if (pendingRestoreScrollTop >= 0) {
+      previewContainer.scrollTop = pendingRestoreScrollTop;
+      pendingRestoreScrollTop = -1;
+    }
+
+    // Restore TOC heading expand state from cache
+    if (pendingTocExpanded && tocHeadings.length > 0) {
+      restoreExpandedLines(tocHeadings, pendingTocExpanded);
+      pendingTocExpanded = null;
+      tocHeadings = [...tocHeadings];
+    }
+
+    // Restore TOC focus and selection from cache (defer to let Svelte update DOM)
+    if (tocFocused && tocOpen) {
+      requestAnimationFrame(() => {
+        if (pendingTocSelectedIndex >= 0) {
+          tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex);
+          pendingTocSelectedIndex = -1;
+        }
+        tocSidebar?.focus();
+      });
+    }
 
     // Add PDF info bar
     if (isPdfFile(filePath) && pdfPageCount > 0) {
@@ -1340,13 +1551,24 @@
         </svg>
       {/if}
     </button>
+    {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal'}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <button
+        class="toc-toggle"
+        class:closed={!tocOpen}
+        onclick={() => { tocOpen = !tocOpen; console.log('[PreviewEditor] TOC toggle ->', tocOpen); }}
+        title={tocOpen ? 'Hide outline' : 'Show outline'}
+      >
+        ☰
+      </button>
+    {/if}
   </div>
 
   <div class="panel-content">
     {#if filePath}
       <div class="preview-with-toc">
         <div class="preview-area" bind:this={previewContainer}></div>
-        {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal'}
+        {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
           <TocSidebar
             bind:this={tocSidebar}
             headings={tocHeadings}
@@ -1457,6 +1679,32 @@
 
   .mode-indicator.toc {
     background-color: var(--success);
+  }
+
+  .toc-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 1px 6px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    margin-left: 2px;
+  }
+
+  .toc-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  .toc-toggle:not(.closed) {
+    color: var(--bg-primary);
+    background-color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .toc-toggle.closed {
+    color: var(--text-muted);
   }
 
   .layout-toggle {

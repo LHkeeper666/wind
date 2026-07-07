@@ -14,6 +14,12 @@ export interface TabState {
   terminalHeight: number;
   fullscreenTerminalOpen: boolean;
   shellType: string;
+  editorMode: 'global-normal' | 'editor-normal' | 'editor-insert';
+  previewScrollTop: number;
+  isModified: boolean;
+  pdfCurrentPage: number;
+  activeColumn: 'parent' | 'current' | 'preview' | 'terminal';
+  tocOpen: boolean;
 }
 
 interface TabsState {
@@ -36,6 +42,12 @@ function getDefaultTab(id: number): TabState {
     terminalHeight: 300,
     fullscreenTerminalOpen: false,
     shellType: 'git-bash',
+    editorMode: 'global-normal',
+    previewScrollTop: 0,
+    isModified: false,
+    pdfCurrentPage: 0,
+    activeColumn: 'current',
+    tocOpen: true,
   };
 }
 
@@ -148,7 +160,15 @@ function createTabsStore() {
       });
     },
 
-    saveActiveTabState(extra?: { cursorIndex?: number; scrollOffset?: number }) {
+    saveActiveTabState(extra?: {
+      cursorIndex?: number;
+      scrollOffset?: number;
+      editorMode?: 'global-normal' | 'editor-normal' | 'editor-insert';
+      previewScrollTop?: number;
+      isModified?: boolean;
+      pdfCurrentPage?: number;
+      tocOpen?: boolean;
+    }) {
       update(state => {
         const idx = state.tabs.findIndex(t => t.id === state.activeTabId);
         if (idx === -1) return state;
@@ -165,6 +185,12 @@ function createTabsStore() {
           terminalMode: layoutState.terminalMode,
           terminalHeight: layoutState.terminalHeight,
           fullscreenTerminalOpen: layoutState.fullscreenTerminalOpen,
+          editorMode: extra?.editorMode ?? newTabs[idx].editorMode,
+          previewScrollTop: extra?.previewScrollTop ?? newTabs[idx].previewScrollTop,
+          isModified: extra?.isModified ?? newTabs[idx].isModified,
+          pdfCurrentPage: extra?.pdfCurrentPage ?? newTabs[idx].pdfCurrentPage,
+          activeColumn: layoutState.activeColumn,
+          tocOpen: extra?.tocOpen ?? newTabs[idx].tocOpen,
         };
         // Update tab name from current path
         if (layoutState.currentPath) {
