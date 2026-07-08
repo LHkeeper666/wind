@@ -226,18 +226,23 @@ export class MarkdownPreviewer implements Previewer {
         imageTasks.push(this.loadLocalImage(img, resolvedPath));
       }
 
-      // Run all post-processing in parallel (KaTeX async after first paint)
+      // Run all post-processing in parallel.
+      // Math rendering is fire-and-forget so the outer await chain
+      // returns quickly — the browser paints the raw LaTeX immediately,
+      // then formulas appear progressively in the background.
       const mathCount = container.querySelectorAll('.math-placeholder').length;
-      const mathTask = this.renderMathAsync(container);
+      if (mathCount > 0) {
+        this.renderMathAsync(container); // fire-and-forget, no await
+      }
       const tPost = performance.now();
-      await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks, mathTask]);
+      await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
       const postMs = (performance.now() - tPost).toFixed(0);
       const totalMs = (performance.now() - tMd).toFixed(0);
       const stats = [`md:${mdMs}ms`];
       if (highlightTasks.length) stats.push(`code:${highlightTasks.length}`);
       if (mermaidTasks.length) stats.push(`mermaid:${mermaidTasks.length}`);
       if (imageTasks.length) stats.push(`img:${imageTasks.length}`);
-      if (mathCount) stats.push(`math:${mathCount}`);
+      if (mathCount) stats.push(`math:${mathCount}(bg)`);
       console.log(`[md-render] ${fileName} total:${totalMs}ms md:${mdMs}ms post:${postMs}ms ${stats.join(' ')}`);
     } catch (err) {
       console.error('[MarkdownPreviewer] render failed:', err);
@@ -318,25 +323,42 @@ export class MarkdownPreviewer implements Previewer {
   }
 
   private async renderMathAsync(container: HTMLElement): Promise<void> {
-    const placeholders = container.querySelectorAll<HTMLElement>('.math-placeholder');
+    const placeholders = Array.from(container.querySelectorAll<HTMLElement>('.math-placeholder'));
     if (placeholders.length === 0) return;
 
-    // Yield one frame so the browser paints raw LaTeX first,
-    // then render all formulas synchronously for speed.
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    // Yield so the browser paints raw LaTeX before we start replacing
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
 
-    for (let i = 0; i < placeholders.length; i++) {
-      const ph = placeholders[i];
-      if (!ph.parentNode) continue;
-      const latex = ph.getAttribute('data-latex') || '';
-      const displayMode = ph.getAttribute('data-display') === 'true';
-      try {
-        const html = katex.renderToString(latex, { displayMode, throwOnError: false });
-        const span = document.createElement('span');
-        span.innerHTML = html;
-        ph.replaceWith(span);
-      } catch {
-        // Keep placeholder text on error
+    // Batch-render formulas: up to 30 per frame or 35ms time budget,
+    // yielding via setTimeout between batches to keep the UI responsive.
+    const BATCH_SIZE = 30;
+    const TIME_BUDGET = 35;
+
+    let i = 0;
+    while (i < placeholders.length) {
+      const frameStart = performance.now();
+      let count = 0;
+
+      while (i < placeholders.length && count < BATCH_SIZE && (performance.now() - frameStart) < TIME_BUDGET) {
+        const ph = placeholders[i];
+        i++;
+        count++;
+
+        if (!ph.parentNode) continue;
+        const latex = ph.getAttribute('data-latex') || '';
+        const displayMode = ph.getAttribute('data-display') === 'true';
+        try {
+          const html = katex.renderToString(latex, { displayMode, throwOnError: false });
+          const span = document.createElement('span');
+          span.innerHTML = html;
+          ph.replaceWith(span);
+        } catch {
+          // Keep placeholder text on error
+        }
+      }
+
+      if (i < placeholders.length) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
     }
   }
