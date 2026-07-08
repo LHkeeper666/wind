@@ -4,6 +4,7 @@ import MarkdownIt from 'markdown-it';
 // @ts-ignore - markdown-it-texmath has no bundled types
 import texmath from 'markdown-it-texmath';
 import katex from 'katex';
+import 'katex/contrib/copy-tex';
 import { createHighlighter, type Highlighter } from 'shiki';
 import { invoke } from '@tauri-apps/api/core';
 import 'katex/dist/katex.min.css';
