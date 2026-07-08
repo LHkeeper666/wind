@@ -32,9 +32,17 @@ export class MarkdownPreviewer implements Previewer {
       typographer: true,
     });
 
-    // LaTeX math support via texmath + katex
+    // LaTeX math support via texmath with async KaTeX rendering.
+    // Use a placeholder engine that outputs raw LaTeX text synchronously,
+    // then replace with rendered KaTeX async after first paint.
+    // texmath calls engine.renderToString(), so both names are required.
+    const placeholderRender = (latex: string, options: { displayMode: boolean }) =>
+      `<span class="math-placeholder" data-latex="${this.escapeAttr(latex)}" data-display="${options.displayMode}">${this.escapeHtml(latex)}</span>`;
     this.md.use(texmath, {
-      engine: katex,
+      engine: {
+        render: placeholderRender,
+        renderToString: placeholderRender,
+      } as any,
       delimiters: ['dollars', 'brackets'],
       katexOptions: {
         throwOnError: false,
@@ -162,6 +170,9 @@ export class MarkdownPreviewer implements Previewer {
     const filePath = container.dataset.filePath || '';
 
     try {
+      const fileName = filePath.split(/[/\\]/).pop() || filePath;
+      const tMd = performance.now();
+
       // Parse headings and emit
       if (this.onHeadings) {
         this.onHeadings(this.parseHeadings(text));
@@ -170,6 +181,7 @@ export class MarkdownPreviewer implements Previewer {
       // Render markdown synchronously (no async highlight dependency)
       const html = this.md.render(text);
       container.innerHTML = `<div class="preview-markdown">${html}</div>`;
+      const mdMs = (performance.now() - tMd).toFixed(0);
 
       // Collect code blocks and images for parallel processing
       const codeBlocks = container.querySelectorAll('pre > code');
@@ -214,8 +226,19 @@ export class MarkdownPreviewer implements Previewer {
         imageTasks.push(this.loadLocalImage(img, resolvedPath));
       }
 
-      // Run all post-processing in parallel
-      await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
+      // Run all post-processing in parallel (KaTeX async after first paint)
+      const mathCount = container.querySelectorAll('.math-placeholder').length;
+      const mathTask = this.renderMathAsync(container);
+      const tPost = performance.now();
+      await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks, mathTask]);
+      const postMs = (performance.now() - tPost).toFixed(0);
+      const totalMs = (performance.now() - tMd).toFixed(0);
+      const stats = [`md:${mdMs}ms`];
+      if (highlightTasks.length) stats.push(`code:${highlightTasks.length}`);
+      if (mermaidTasks.length) stats.push(`mermaid:${mermaidTasks.length}`);
+      if (imageTasks.length) stats.push(`img:${imageTasks.length}`);
+      if (mathCount) stats.push(`math:${mathCount}`);
+      console.log(`[md-render] ${fileName} total:${totalMs}ms md:${mdMs}ms post:${postMs}ms ${stats.join(' ')}`);
     } catch (err) {
       console.error('[MarkdownPreviewer] render failed:', err);
       container.innerHTML = `<pre class="preview-plain"><code>${this.escapeHtml(text)}</code></pre>`;
@@ -292,6 +315,38 @@ export class MarkdownPreviewer implements Previewer {
     } catch (err) {
       console.warn('[MarkdownPreviewer] Failed to load image:', resolvedPath, err);
     }
+  }
+
+  private async renderMathAsync(container: HTMLElement): Promise<void> {
+    const placeholders = container.querySelectorAll<HTMLElement>('.math-placeholder');
+    if (placeholders.length === 0) return;
+
+    // Yield one frame so the browser paints raw LaTeX first,
+    // then render all formulas synchronously for speed.
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+    for (let i = 0; i < placeholders.length; i++) {
+      const ph = placeholders[i];
+      if (!ph.parentNode) continue;
+      const latex = ph.getAttribute('data-latex') || '';
+      const displayMode = ph.getAttribute('data-display') === 'true';
+      try {
+        const html = katex.renderToString(latex, { displayMode, throwOnError: false });
+        const span = document.createElement('span');
+        span.innerHTML = html;
+        ph.replaceWith(span);
+      } catch {
+        // Keep placeholder text on error
+      }
+    }
+  }
+
+  private escapeAttr(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   private escapeHtml(text: string): string {

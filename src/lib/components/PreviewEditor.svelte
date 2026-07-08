@@ -180,6 +180,37 @@
   let currentFileMtime: number = 0;
   let fileChangedUnlisten: (() => void) | null = null;
 
+  // Per-filePath preview DOM cache (LRU, max 5 entries)
+  interface CachedPreviewDom {
+    dom: Node;
+    scrollTop: number;
+    tocHeadings: TocHeading[];
+    tocExpandedLines: number[];
+    fileMtime: number;
+    lastAccess: number;
+  }
+  const previewDomCache = new Map<string, CachedPreviewDom>();
+  const MAX_DOM_CACHE = 5;
+  let lastRenderedPath: string = '';
+  let isRendering: boolean = false;
+
+  function normalizedPath(p: string): string {
+    return p.replace(/\//g, '\\').toLowerCase();
+  }
+
+  function evictDomCache() {
+    if (previewDomCache.size <= MAX_DOM_CACHE) return;
+    let oldestKey = '';
+    let oldestTime = Infinity;
+    for (const [key, entry] of previewDomCache) {
+      if (entry.lastAccess < oldestTime) {
+        oldestTime = entry.lastAccess;
+        oldestKey = key;
+      }
+    }
+    previewDomCache.delete(oldestKey);
+  }
+
   export function clearTabCache(tabId: number) {
     tabEditorCache.delete(tabId);
   }
@@ -203,6 +234,25 @@
       tocFocused,
       tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
     });
+
+    // Cache rendered DOM so tab switch back is instant
+    if (mode === 'global-normal' && currentFileMtime > 0 && previewContainer?.firstChild && (content || binaryContent)) {
+      const normPath = normalizedPath(filePath);
+      // Avoid double-caching if already in cache with same mtime
+      if (previewDomCache.get(normPath)?.fileMtime !== currentFileMtime) {
+        const savedScrollTop = previewContainer.scrollTop;
+        const dom = previewContainer.removeChild(previewContainer.firstChild);
+        evictDomCache();
+        previewDomCache.set(normPath, {
+          dom,
+          scrollTop: savedScrollTop,
+          tocHeadings: [...tocHeadings],
+          tocExpandedLines: collectExpandedLines(tocHeadings),
+          fileMtime: currentFileMtime,
+          lastAccess: Date.now(),
+        });
+      }
+    }
   }
 
   export function getEditorStateSnapshot(): {
@@ -243,6 +293,7 @@
     if (a !== b) return;
     console.log('[PreviewEditor] Reloading due to external change');
     tabEditorCache.delete(currentTabId);
+    previewDomCache.delete(a); // clear stale DOM cache
     await loadFile(filePath);
   }
 
@@ -535,7 +586,9 @@
   let pdfRenderScale: number = 1.5;
 
   async function loadFile(path: string) {
+    const t0 = performance.now();
     const gen = ++loadGeneration;
+    const fileName = path.split(/[/\\]/).pop() || path;
 
     // Check per-tab cache during tab switch
     const cached = tabEditorCache.get(currentTabId);
@@ -556,6 +609,7 @@
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
       isMarkdown = ext === 'md' || ext === 'markdown';
+      console.log(`[load] ${fileName} tab-cache-hit ${(performance.now() - t0).toFixed(0)}ms`);
       if (!isMarkdown) {
         tocHeadings = [];
         tocActiveLine = -1;
@@ -748,14 +802,18 @@
       return;
     }
 
-    // Check file size — use partial read for large files
+    // Get file metadata (size + mtime) before reading content.
+    // currentFileMtime must be set before content triggers the $effect,
+    // otherwise renderPreview won't cache the DOM.
     const MAX_PREVIEW_SIZE = 200 * 1024; // 200KB
     originalFileSize = 0;
     try {
-      originalFileSize = await invoke<number>('get_file_size', { path });
+      const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
       if (gen !== loadGeneration) return;
+      originalFileSize = meta.size;
+      currentFileMtime = meta.modified;
     } catch {
-      // Can't get size, try loading anyway
+      // Can't get metadata, try loading anyway
     }
 
     const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
@@ -795,18 +853,79 @@
       }
     }
     mode = 'global-normal';
-    // Save mtime for cache validation and start file watching
-    try {
-      const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
-      currentFileMtime = meta.modified;
-    } catch { /* ignore if file doesn't exist */ }
     startWatching(path);
+    console.log(`[load] ${fileName} fresh ${(performance.now() - t0).toFixed(0)}ms (${(content?.length || (binaryContent as ArrayBuffer | null)?.byteLength || 0)} bytes)`);
     // Empty files: content is '' (falsy), effect won't trigger, render directly
     if (!content && !binaryContent) renderPreview();
   }
 
   async function renderPreview() {
     if (!previewContainer || !filePath) return;
+    if (isRendering) { console.log(`[render] ${filePath.split(/[/\\]/).pop()} skipped (concurrent)`); return; }
+    isRendering = true;
+    const tRender = performance.now();
+    try {
+
+    // Cache previous file's DOM when switching to a different file.
+    // lastRenderedPath must be set (skip initial load where it's empty).
+    if (filePath !== lastRenderedPath && lastRenderedPath && currentFileMtime > 0 && previewContainer.firstChild && (content || binaryContent)) {
+      const prevNormPath = normalizedPath(lastRenderedPath);
+      const dom = previewContainer.firstChild;
+      previewContainer.removeChild(dom);
+      evictDomCache();
+      previewDomCache.set(prevNormPath, {
+        dom,
+        scrollTop: previewContainer.scrollTop,
+        tocHeadings: [...tocHeadings],
+        tocExpandedLines: collectExpandedLines(tocHeadings),
+        fileMtime: currentFileMtime,
+        lastAccess: Date.now(),
+      });
+    }
+
+    // Check DOM cache for instant restore (only if mtime is known)
+    const normPath = normalizedPath(filePath);
+    const cachedDom = previewDomCache.get(normPath);
+    if (cachedDom && currentFileMtime > 0 && cachedDom.fileMtime === currentFileMtime) {
+      cachedDom.lastAccess = Date.now();
+      previewContainer.innerHTML = '';
+      previewContainer.appendChild(cachedDom.dom);
+      lastRenderedPath = filePath;
+
+      // Restore TOC state: TocSidebar was overwritten by the previous file's headings.
+      // pendingTocExpanded (from tabEditorCache) takes priority over cachedDom.tocExpandedLines.
+      const expandSet = pendingTocExpanded ?? new Set(cachedDom.tocExpandedLines);
+      if (cachedDom.tocHeadings.length > 0) {
+        if (expandSet.size > 0) {
+          restoreExpandedLines(cachedDom.tocHeadings, expandSet);
+        }
+        tocHeadings = cachedDom.tocHeadings;
+      }
+      pendingTocExpanded = null;
+
+      console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} dom-cache-hit ${(performance.now() - tRender).toFixed(0)}ms mtime:${cachedDom.fileMtime}`);
+
+      // Defer layout-dependent operations to avoid sync reflow on huge DOM
+      const savedScrollTop = cachedDom.scrollTop;
+      const restoreTocFocus = tocFocused && tocOpen;
+      const restoreTocIdx = pendingTocSelectedIndex;
+      requestAnimationFrame(() => {
+        previewContainer!.scrollTop = savedScrollTop;
+        if (isMarkdown) setupScrollObserver();
+        if (restoreTocFocus) {
+          if (restoreTocIdx >= 0) {
+            tocSidebar?.setSelectedTocIndex(restoreTocIdx);
+            pendingTocSelectedIndex = -1;
+          }
+          tocSidebar?.focus();
+        }
+      });
+      return;
+    }
+
+    // Remove stale cache entry for same file (e.g. content changed externally)
+    previewDomCache.delete(normPath);
+
     const requestId = ++renderRequestId;
     // Pass thumbnail metadata via dataset
     if (thumbnailMeta) {
@@ -862,6 +981,12 @@
     // Set up scroll observer for markdown TOC sync
     if (isMarkdown) {
       setupScrollObserver();
+    }
+
+    lastRenderedPath = filePath;
+    console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} full ${(performance.now() - tRender).toFixed(0)}ms`);
+    } finally {
+      isRendering = false;
     }
   }
 
@@ -1470,6 +1595,8 @@
       await invoke('write_file', { path: filePath, content });
       savedContent = content;
       isModified = false;
+      // Clear cached DOM since file content changed
+      previewDomCache.delete(normalizedPath(filePath));
       // Refresh preview so it's up-to-date when user goes back to global-normal
       if (mode === 'editor-normal' || mode === 'editor-insert') {
         // Preview will be refreshed when switching to global-normal via $effect
@@ -2322,6 +2449,16 @@
   }
 
   /* ── LaTeX / KaTeX ── */
+
+  :global(.preview-markdown .math-placeholder) {
+    font-family: var(--font-mono);
+    font-style: italic;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    border: 1px dashed var(--border);
+  }
 
   :global(.preview-markdown .katex-display) {
     margin: 1em 0;

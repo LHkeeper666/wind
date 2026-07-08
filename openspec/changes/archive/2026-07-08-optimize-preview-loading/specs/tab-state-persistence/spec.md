@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Preserve and restore tab state (selected file, cursor, scroll, terminal mode, preview DOM) across tab switches.
-## Requirements
 ### Requirement: Tab 切换时保存当前状态
 切换 tab 前，系统 SHALL 保存当前 tab 的 selectedFile、cursorIndex、scrollOffset、terminal 状态和预览 DOM 缓存到 TabState。
 
@@ -75,4 +73,3 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **WHEN** 用户切换到 tab A
 - **AND** `foo.md` 的 DOM 缓存命中但文件 mtime 已变更
 - **THEN** 丢弃缓存，重新读取文件并渲染
-
