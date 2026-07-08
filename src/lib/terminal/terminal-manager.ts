@@ -123,6 +123,29 @@ export class TerminalManager {
 
     terminal.open(container);
 
+    // Ctrl+C/V clipboard integration
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+        if (event.key === 'c' || event.key === 'C') {
+          const selection = terminal.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection).catch(() => {});
+            terminal.clearSelection();
+            return false;
+          }
+          // No selection: let xterm send SIGINT
+          return true;
+        }
+        if (event.key === 'v' || event.key === 'V') {
+          navigator.clipboard.readText().then(text => {
+            if (text) terminal.paste(text);
+          }).catch(() => {});
+          return false;
+        }
+      }
+      return true;
+    });
+
     const shellIntegration = new ShellIntegration();
     let shellState: ShellState = shellIntegration.getState();
 
