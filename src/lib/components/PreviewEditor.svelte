@@ -2462,7 +2462,7 @@
 
   :global(.preview-markdown .katex-display) {
     margin: 1em 0;
-    overflow-x: auto;
+    overflow-x: visible;
     text-align: center;
   }
 
