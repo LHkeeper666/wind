@@ -1694,7 +1694,7 @@
   <div class="panel-content">
     {#if filePath}
       <div class="preview-with-toc">
-        <div class="preview-area" bind:this={previewContainer}></div>
+        <div class="preview-area" bind:this={previewContainer} aria-hidden="true"></div>
         {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
           <TocSidebar
             bind:this={tocSidebar}

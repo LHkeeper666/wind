@@ -1149,7 +1149,10 @@
 
   function focusPanel(panel: 'parent' | 'current' | 'preview' | 'terminal') {
     layout.setActiveColumn(panel);
-    setTimeout(() => {
+    // Use rAF instead of setTimeout so the browser finishes async layout
+    // before we call focus(). This avoids a synchronous forced layout on
+    // massive DOM (e.g. markdown with thousands of KaTeX formulas).
+    requestAnimationFrame(() => {
       if (panel === 'terminal' && floatingTerminal) {
         floatingTerminal.focus();
       } else if (panel === 'parent' && parentDirectoryPanel) {
@@ -1161,10 +1164,10 @@
           previewEditor.focusToc();
         } else {
           const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
-          if (element) element.focus();
+          if (element) element.focus({ preventScroll: true });
         }
       }
-    }, 0);
+    });
   }
 
   function isPanelFocused(): boolean {
