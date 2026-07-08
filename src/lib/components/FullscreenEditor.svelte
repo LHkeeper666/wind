@@ -7,6 +7,7 @@
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
+  import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
 
   let {
     filePath = null,
@@ -29,6 +30,7 @@
   let overlayCmdActive: boolean = $state(false);
   let overlayCmdBuf: string = $state('');
   let isModified: boolean = $state(false);
+  let clipboardBridge: ClipboardBridge | null = null;
   let savedContent: string = content;
 
   // --- overlay: IME fix (same as PreviewEditor) ---
@@ -129,6 +131,12 @@
     const vimKey = codeToVimKey(event);
     if (!vimKey) return;
     if (!editorView) return;
+
+    // Inject system clipboard before put
+    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) {
+      clipboardBridge.injectClipboard();
+    }
+
     const cm = getCM(editorView);
     if (!cm) return;
     (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
@@ -268,6 +276,9 @@
         });
       });
     }
+
+    // Bridge vim clipboard with system clipboard
+    clipboardBridge = initClipboardBridge(editorView, overlayElement);
 
     // Focus overlay first (editor starts in normal mode)
     if (overlayElement) overlayElement.focus();

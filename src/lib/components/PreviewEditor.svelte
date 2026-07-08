@@ -15,6 +15,7 @@
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
+  import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -1221,6 +1222,9 @@
       scrollEditorToPos(editorView, editorView.state.selection.main.head);
     }
 
+    // Bridge vim clipboard with system clipboard
+    clipboardBridge = initClipboardBridge(editorView, overlayElement);
+
     // Intercept Enter on list lines before CodeMirror/markdown extension handles it
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || !editorView) return;
@@ -1300,6 +1304,7 @@
 
   let overlayCmdBuf = $state('');
   let overlayCmdActive = $state(false);
+  let clipboardBridge: ClipboardBridge | null = null;
 
   let searchActive: boolean = $state(false);
   let searchBuf: string = $state('');
@@ -1478,6 +1483,12 @@
     const vimKey = codeToVimKey(event);
     if (!vimKey) return;
     if (!editorView) return;
+
+    // Inject system clipboard before put
+    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) {
+      clipboardBridge.injectClipboard();
+    }
+
     const cm = getCM(editorView);
     if (!cm) return;
     (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
