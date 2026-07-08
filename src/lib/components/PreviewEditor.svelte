@@ -381,6 +381,20 @@
     return mode;
   }
 
+  export function getIsModified(): boolean {
+    return isModified;
+  }
+
+  // Focus forwarding: when panelElement gets focus, route to the correct inner element
+  function handlePanelFocus() {
+    if (mode === 'editor-normal' && overlayElement) {
+      overlayElement.focus();
+    } else if (mode === 'editor-insert' && editorView) {
+      editorView.focus();
+    }
+    // global-normal: keep focus on panelElement for j/k preview scrolling
+  }
+
   // Enter vim normal mode (used by batch rename)
   export function enterEditorMode() {
     mode = 'editor-normal';
@@ -1652,6 +1666,7 @@
   class="preview-editor"
   bind:this={panelElement}
   onkeydown={handleKeydown}
+  onfocus={handlePanelFocus}
   role="region"
   aria-label="Preview/Editor"
   tabindex="0"

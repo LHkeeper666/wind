@@ -1,6 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: 窗口重获焦点时自动恢复面板焦点
+
 当 Tauri 窗口从后台切回前台且无面板持有 DOM 焦点时，系统 SHALL 自动将焦点恢复到 `layout.activeColumn` 对应的面板，并显示 toast 提示。
 
 #### Scenario: 从其他应用切回，无面板有焦点
@@ -19,6 +20,7 @@
 - **THEN** 系统不触发自动焦点恢复
 
 ### Requirement: Ctrl+L 手动恢复焦点
+
 用户按 Ctrl+L 时，系统 SHALL 将焦点恢复到 `layout.activeColumn` 对应的面板，并显示 toast 提示。
 
 #### Scenario: 正常面板状态下按 Ctrl+L
@@ -44,9 +46,8 @@
 - **WHEN** 全屏编辑器/图片查看器/PDF 查看器/视频播放器任一打开
 - **THEN** 系统不拦截 Ctrl+L，不触发焦点恢复
 
-## ADDED Requirements
-
 ### Requirement: Tab 切换后焦点与 store 状态一致
+
 切换 tab 后，系统 SHALL 确保 DOM 焦点实际位于 `layout.activeColumn` 对应的面板上，且状态栏显示与实际焦点一致。
 
 #### Scenario: 切换到有 terminal 的 tab，terminal 可见但焦点在 current
@@ -67,6 +68,8 @@
 - **THEN** terminal 被隐藏
 - **AND** 焦点在 current directory panel
 - **AND** 状态栏显示 `CURRENT`
+
+## ADDED Requirements
 
 ### Requirement: 编辑器模式下焦点转发
 

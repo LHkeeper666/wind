@@ -46,6 +46,11 @@
   let confirmFileName: string = $state('');
   let pasteResolve: ((choice: 'overwrite' | 'skip' | 'abort') => void) | null = null;
 
+  // Unsaved changes confirm state
+  let showUnsavedConfirm: boolean = $state(false);
+  let pendingActionPath: string = $state('');
+  let pendingAction: 'navigate' | 'activate' = $state('activate');
+
   // Ctrl+W prefix state for vim-style window navigation
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -339,6 +344,12 @@
   });
 
   function handleNavigate(path: string) {
+    if (previewEditor?.getIsModified()) {
+      pendingActionPath = path;
+      pendingAction = 'navigate';
+      showUnsavedConfirm = true;
+      return;
+    }
     layout.setCurrentPath(path);
     currentPath = path;
   }
@@ -456,6 +467,13 @@
   }
 
   function handleActivate(filePath: string) {
+    // Check for unsaved changes before switching files
+    if (previewEditor?.getIsModified()) {
+      pendingActionPath = filePath;
+      pendingAction = 'activate';
+      showUnsavedConfirm = true;
+      return;
+    }
     layout.setSelectedFile(filePath);
     selectedFile = filePath;
     if (!$layout.previewExpanded) {
@@ -488,6 +506,53 @@
     showConfirmModal = false;
     pasteResolve?.('abort');
     pasteResolve = null;
+  }
+
+  async function handleUnsavedSave() {
+    showUnsavedConfirm = false;
+    const targetPath = pendingActionPath;
+    const action = pendingAction;
+    pendingActionPath = '';
+    const filePath = selectedFile;
+    const content = previewEditor?.getContent();
+    if (filePath && content !== undefined) {
+      try {
+        await invoke('write_file', { path: filePath, content });
+        previewEditor?.setContent(content);
+      } catch (e) {
+        showToast(`Failed to save: ${e}`);
+        return;
+      }
+    }
+    dispatchPendingAction(targetPath, action);
+  }
+
+  function handleUnsavedDiscard() {
+    showUnsavedConfirm = false;
+    const targetPath = pendingActionPath;
+    const action = pendingAction;
+    pendingActionPath = '';
+    dispatchPendingAction(targetPath, action);
+  }
+
+  function handleUnsavedCancel() {
+    showUnsavedConfirm = false;
+    pendingActionPath = '';
+    focusPanel('preview');
+  }
+
+  function dispatchPendingAction(path: string, action: 'navigate' | 'activate') {
+    if (action === 'navigate') {
+      layout.setCurrentPath(path);
+      currentPath = path;
+    } else {
+      layout.setSelectedFile(path);
+      selectedFile = path;
+      if (!$layout.previewExpanded) {
+        layout.expandPreview();
+      }
+      focusPanel('preview');
+    }
   }
 
   async function handlePaste(force: boolean = false) {
@@ -1437,6 +1502,18 @@
 
   <!-- Help Overlay -->
   <HelpOverlay bind:visible={showHelp} />
+
+  <!-- Unsaved Changes Confirm Modal -->
+  <ConfirmModal
+    visible={showUnsavedConfirm}
+    title="Unsaved changes"
+    fileName={selectedFile?.split(/[/\\]/).pop() || ''}
+    buttons={[
+      { key: 'w', label: 'rite', action: handleUnsavedSave, style: 'primary' },
+      { key: 'q!', label: 'uit', action: handleUnsavedDiscard, style: 'danger' },
+      { key: 'C', label: 'ancel', action: handleUnsavedCancel },
+    ]}
+  />
 
   <!-- Paste Conflict Confirm Modal -->
   <ConfirmModal

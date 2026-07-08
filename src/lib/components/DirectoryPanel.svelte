@@ -898,6 +898,8 @@
   function handleItemDblClick(entry: FileEntry) {
     if (entry.is_dir) {
       onNavigate(entry.path);
+    } else {
+      onActivate(entry.path);
     }
   }
 </script>
