@@ -346,7 +346,6 @@
   $effect(() => {
     const m = mode;
     const changed = m !== prevMode;
-    console.log('[mode-effect] mode:', m, 'changed:', changed, 'tocFocused:', tocFocused, 'scrollTop:', previewContainer?.scrollTop);
     prevMode = m;
     if (m === 'editor-normal' || m === 'editor-insert') {
       // Show editor, hide preview
@@ -653,7 +652,11 @@
         }
       }
       mode = cached.mode;
-      if (!content && !binaryContent && mode === 'global-normal') {
+      // Use cached.content/cached.mode instead of reactive $state to avoid
+      // establishing unwanted reactive dependencies in the filePath $effect.
+      // Otherwise any edit (e.g. 'o') that changes content would re-trigger
+      // loadFile, which hits the tab cache and restores stale mode.
+      if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
       startWatching(path);
