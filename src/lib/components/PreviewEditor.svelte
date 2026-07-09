@@ -118,7 +118,6 @@
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
-  // t prefix state for tab operations
   let waitingForTabKey: boolean = false;
 
   // TOC state
@@ -177,15 +176,15 @@
     tocSelectedIndex: number;
   }
   const tabEditorCache = new Map<number, TabEditorCache>();
-  // Snapshot captured before render to avoid reading stale reactive state
-  let pendingRenderContent: string = '';
-  let pendingRenderBinary: ArrayBuffer | null = null;
   let pendingRestoreScrollTop: number = -1;
   let pendingTocSelectedIndex: number = -1;
   let currentFileMtime: number = 0;
   let fileChangedUnlisten: (() => void) | null = null;
 
-  // Per-tab persistent preview slots — DOM stays in document, tab switch only toggles display
+  // Per-tab persistent preview slots.
+  // Each tabId gets its own DOM container; slots stay in the document.
+  // Switching tabs only detaches/attaches slots — no DOM tree is moved,
+  // so the browser does not re-layout on every tab switch.
   const tabSlots = new Map<number, HTMLDivElement>();
 
   function getActiveSlot(): HTMLDivElement | undefined {
@@ -204,13 +203,11 @@
 
   function showTabSlot(tabId: number) {
     if (!previewArea) return;
-    // Detach all slots from the DOM — only one should be attached at a time
     for (const [id, slot] of tabSlots) {
       if (slot.parentNode === previewArea) {
         previewArea.removeChild(slot);
       }
     }
-    // Attach only the requested slot
     const activeSlot = tabSlots.get(tabId);
     if (activeSlot && activeSlot.parentNode !== previewArea) {
       previewArea.appendChild(activeSlot);
@@ -230,33 +227,19 @@
 
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
-    // Save editor state with its current mode
     const savedMode = mode;
     tabEditorCache.set(tabId, {
-      filePath,
-      content,
-      savedContent,
-      binaryContent,
+      filePath, content, savedContent, binaryContent,
       mode: savedMode,
       previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
-      isModified,
-      pdfCurrentPage,
-      pdfPageCount,
-      fileMtime: currentFileMtime,
-      tocOpen,
-      tocHeadings: [...tocHeadings],
+      isModified, pdfCurrentPage, pdfPageCount, fileMtime: currentFileMtime,
+      tocOpen, tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
-      tocFocused,
-      tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
+      tocFocused, tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
     });
-    // Switch to preview mode so the editor is hidden after tab switch.
-    // The next tab will restore its own mode from its cached state.
     if (savedMode !== 'global-normal') {
       mode = 'global-normal';
-      if (editorView) {
-        editorView.destroy();
-        editorView = undefined;
-      }
+      if (editorView) { editorView.destroy(); editorView = undefined; }
     }
   }
 
@@ -268,21 +251,16 @@
     tocOpen: boolean;
     tocExpandedLines: number[];
   } {
-    const s = {
+    return {
       mode,
       previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
-      isModified,
-      pdfCurrentPage,
-      tocOpen,
-      tocExpandedLines: collectExpandedLines(tocHeadings),
+      isModified, pdfCurrentPage,
+      tocOpen, tocExpandedLines: collectExpandedLines(tocHeadings),
     };
-    return s;
   }
 
-  // File watching for real-time preview updates
   function startWatching(path: string) {
     stopWatching();
-    console.log('[PreviewEditor] start_watch_file:', path);
     invoke('start_watch_file', { path }).catch(e => console.error('[PreviewEditor] start_watch_file error:', e));
   }
 
@@ -291,163 +269,106 @@
   }
 
   async function handleFileChanged(eventPath: string) {
-    console.log('[PreviewEditor] handleFileChanged:', eventPath, 'current:', filePath);
     if (!filePath) return;
     const a = eventPath.replace(/\//g, '\\').toLowerCase();
     const b = filePath.replace(/\//g, '\\').toLowerCase();
     if (a !== b) return;
-    // Don't reload if we're in editor mode — we triggered this change ourselves
-    // (e.g. via :w). Reload would reset mode to global-normal and discard editor state.
     if (mode !== 'global-normal') return;
-    console.log('[PreviewEditor] Reloading due to external change');
     tabEditorCache.delete(currentTabId);
-    // Invalidate the tab slot so next render re-creates content
     const slot = tabSlots.get(currentTabId);
-    if (slot) {
-      slot.innerHTML = '';
-      delete slot.dataset.rendered;
-    }
+    if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
     await loadFile(filePath);
   }
 
   // When tab changes, ensure only the active tab's slot is visible
   $effect(() => {
-    console.log(`[tabId-effect] currentTabId:${currentTabId} filePath:${filePath?.split(/[/\\]/).pop() || 'null'} slots:${tabSlots.size}`);
     showTabSlot(currentTabId);
   });
 
   // Load file when filePath changes
   $effect(() => {
     if (filePath) {
-      // Immediately attach the current tab's slot so that when previewArea
-      // becomes visible (CSS class:hidden removed), the correct content is
-      // shown — not a stale slot from a previous tab.
       getOrCreateSlot(currentTabId);
       showTabSlot(currentTabId);
-      // Force hide editor synchronously. If the new file was left in editor
-      // mode, loadFile will restore mode and the mode $effect will re-show it.
       if (editorContainer) editorContainer.style.display = 'none';
-      console.log(`[filePath-effect] tabId:${currentTabId} filePath:${filePath.split(/[/\\]/).pop()} slots:${tabSlots.size}`);
       loadFile(filePath);
     }
   });
 
   onDestroy(() => {
     previewRouter?.dispose();
-    if (editorView) {
-      editorView.destroy();
-    }
+    if (editorView) { editorView.destroy(); }
     scrollObserver?.disconnect();
     stopWatching();
-    if (fileChangedUnlisten) {
-      fileChangedUnlisten();
-      fileChangedUnlisten = null;
-    }
+    if (fileChangedUnlisten) { fileChangedUnlisten(); fileChangedUnlisten = null; }
   });
 
-  // Set up file-changed listener for real-time preview updates
   listen('file-changed', (event: any) => {
-    console.log('[PreviewEditor] file-changed event:', event.payload);
     const changedPath = typeof event.payload === 'string' ? event.payload : String(event.payload ?? '');
     handleFileChanged(changedPath);
-  }).then(unlisten => {
-    fileChangedUnlisten = unlisten;
-    console.log('[PreviewEditor] file-changed listener registered');
-  });
+  }).then(unlisten => { fileChangedUnlisten = unlisten; });
 
-  // Handle mode transitions (display toggling + focus)
   let prevMode: string = mode;
   $effect(() => {
     const m = mode;
     const changed = m !== prevMode;
     prevMode = m;
     if (m === 'editor-normal' || m === 'editor-insert') {
-      // Show editor, hide preview
       if (editorContainer) editorContainer.style.display = 'block';
       if (previewArea) previewArea.style.display = 'none';
-      // Initialize editor if needed
       if (!editorView && editorContainer && filePath) {
         initEditor();
       } else if (editorView && editorTargetLine >= 0 && changed) {
         moveCursorToLine(editorTargetLine);
       }
-      // Focus overlay in normal mode (IME won't activate on it),
-      // or CodeMirror editor in insert mode.
       if (m === 'editor-normal') {
         if (overlayElement) overlayElement.focus();
       } else if (editorView) {
         editorView.focus();
       }
     } else {
-      // global-normal: show preview, hide editor
       if (previewArea) previewArea.style.display = '';
       if (editorContainer) editorContainer.style.display = 'none';
-      // Close search panel when leaving editor mode
       if (editorView) closeSearchPanel(editorView);
-      // Return focus to the panel (only on mode transition, not initial mount)
-      // Skip if TOC was focused before the switch (focus will be restored by renderPreview)
       if (changed && panelElement && !tocFocused) {
         panelElement.focus();
       }
     }
   });
 
-  // Render preview when content is ready and in preview mode
+  // Render preview when content is ready and in preview mode.
+  // For fresh loads, loadFile calls renderPreview() directly with the correct
+  // content — this effect handles re-renders triggered by mode transitions
+  // (e.g. leaving editor mode) and file-changed events.
   $effect(() => {
-    // These reads register as reactive dependencies
-    console.log('[render-effect] mode:', mode, 'filePath:', filePath?.split(/[/\\]/).pop(), 'hasContent:', !!(content || binaryContent));
     if (mode !== 'global-normal') return;
     if (!previewArea || !filePath) return;
-
-    // Snapshot content so renderPreview uses the value from this specific
-    // effect invocation — not whatever content happens to be when async ops resolve.
-    const snapContent = content;
-    const snapBinary = binaryContent;
-    if (snapContent || snapBinary) {
-      renderPreview(snapContent, snapBinary);
+    if (content || binaryContent) {
+      renderPreview();
     }
   });
 
-  // Sync mode to layout store
-  export function getMode(): string {
-    return mode;
-  }
+  export function getMode(): string { return mode; }
+  export function getIsModified(): boolean { return isModified; }
 
-  export function getIsModified(): boolean {
-    return isModified;
-  }
-
-  // Focus forwarding: when panelElement gets focus, route to the correct inner element
   function handlePanelFocus() {
-    console.log('[handlePanelFocus] mode:', mode, 'scrollTop:', getActiveSlot()?.scrollTop, 'trigger:', document.activeElement?.className);
-    if (mode === 'editor-normal' && overlayElement) {
-      overlayElement.focus();
-    } else if (mode === 'editor-insert' && editorView) {
-      editorView.focus();
-    }
-    // global-normal: keep focus on panelElement for j/k preview scrolling
+    if (mode === 'editor-normal' && overlayElement) { overlayElement.focus(); }
+    else if (mode === 'editor-insert' && editorView) { editorView.focus(); }
   }
 
-  // Enter vim normal mode (used by batch rename)
   export function enterEditorMode() {
     mode = 'editor-normal';
-    setTimeout(() => {
-      if (overlayElement) overlayElement.focus();
-    }, 50);
+    setTimeout(() => { if (overlayElement) overlayElement.focus(); }, 50);
   }
 
-  // Tab: indent line when after list marker, insert spaces otherwise (called from global Tab handler)
   export function pressTab() {
     if (!editorView || mode !== 'editor-insert') return;
     const { state } = editorView;
     const { from, to } = state.selection.main;
     const line = state.doc.lineAt(from);
     const col = from - line.from;
-    // Match list markers: "- ", "* ", "+ ", "1. ", "- [ ] ", etc.
     const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-
     if (markerMatch && col <= markerMatch[1].length || !state.selection.main.empty) {
-      // After list marker or has selection: indent line(s)
       const lineFrom = state.doc.lineAt(from);
       const lineTo = state.doc.lineAt(to);
       const changes = [];
@@ -456,24 +377,18 @@
       }
       editorView.dispatch({ changes });
     } else {
-      // In content: insert 4 spaces at cursor
       editorView.dispatch(state.replaceSelection('    '));
     }
   }
 
-
-  // Shift+Tab: un-indent line or remove list marker (called from global Tab handler)
   export function pressShiftTab() {
-
     if (!editorView || mode !== 'editor-insert') return;
     const { state } = editorView;
     const line = state.doc.lineAt(state.selection.main.from);
     const indentMatch = line.text.match(/^(\s{1,4})/);
     if (indentMatch) {
-      // Remove up to 4 leading spaces
       editorView.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length } });
     } else {
-      // Remove list marker: "- ", "* ", "1. ", "- [ ] ", etc.
       const markerMatch = line.text.match(/^((?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
       if (markerMatch) {
         editorView.dispatch({ changes: { from: line.from, to: line.from + markerMatch[1].length } });
@@ -484,38 +399,25 @@
   function getPreviewRouter(): PreviewRouter {
     if (!previewRouter) {
       previewRouter = new PreviewRouter();
-      previewRouter.onHeadings = (headings: TocHeading[]) => {
-        tocHeadings = headings;
-        tocActiveLine = -1;
-      };
+      previewRouter.onHeadings = (headings: TocHeading[]) => { tocHeadings = headings; tocActiveLine = -1; };
     }
     return previewRouter;
   }
 
   function getDirectoryPreviewer(): DirectoryPreviewer {
-    if (!directoryPreviewer) {
-      directoryPreviewer = new DirectoryPreviewer();
-    }
+    if (!directoryPreviewer) { directoryPreviewer = new DirectoryPreviewer(); }
     return directoryPreviewer;
   }
 
-  // TOC: set up IntersectionObserver for scroll sync
   function setupScrollObserver() {
     scrollObserver?.disconnect();
     const slot = getActiveSlot();
     if (!slot || !isMarkdown) return;
-
     const headings = slot.querySelectorAll('h1, h2, h3, h4, h5, h6');
     if (headings.length === 0) return;
-
-    // Add ids to headings for reference
-    headings.forEach((el, i) => {
-      if (!el.id) el.id = `heading-${i}`;
-    });
-
+    headings.forEach((el, i) => { if (!el.id) el.id = `heading-${i}`; });
     scrollObserver = new IntersectionObserver(
       (entries) => {
-        // Find the topmost visible heading
         let topEntry: IntersectionObserverEntry | null = null;
         for (const entry of entries) {
           if (entry.isIntersecting) {
@@ -526,108 +428,56 @@
         }
         if (topEntry) {
           const line = parseInt((topEntry.target as HTMLElement).dataset.line || '-1');
-          if (line >= 0) {
-            tocActiveLine = line;
-          }
+          if (line >= 0) { tocActiveLine = line; }
         }
       },
       { root: slot, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
     );
-
-    headings.forEach((el) => {
-      scrollObserver!.observe(el);
-    });
+    headings.forEach((el) => { scrollObserver!.observe(el); });
   }
 
-  // TOC: jump to heading by scrolling preview
   function handleTocJump(line: number) {
     const slot = getActiveSlot();
     if (!slot) return;
     const heading = slot.querySelector(`[data-line="${line}"]`);
-    if (heading) {
-      heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      tocActiveLine = line;
-    }
-    // Keep focus in TOC
+    if (heading) { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); tocActiveLine = line; }
   }
 
-  // TOC: check if TOC should be visible
   export function isTocVisible(): boolean {
     return isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen;
   }
 
-  // TOC: focus management
-  export function focusToc() {
-    tocFocused = true;
-    tocSidebar?.focus();
-  }
-
-  export function focusContent() {
-    console.log('[focusContent] scrollTop before:', getActiveSlot()?.scrollTop);
-    tocFocused = false;
-    if (panelElement) panelElement.focus({ preventScroll: true });
-  }
-
-  export function isTocFocused(): boolean {
-    return tocFocused;
-  }
+  export function focusToc() { tocFocused = true; tocSidebar?.focus(); }
+  export function focusContent() { tocFocused = false; if (panelElement) panelElement.focus({ preventScroll: true }); }
+  export function isTocFocused(): boolean { return tocFocused; }
 
   function handleTocFocusChange(focused: boolean) {
     tocFocused = focused;
-    if (!focused && panelElement) {
-      // Ctrl+W h from TOC: return focus to preview content
-      panelElement.focus();
-    }
+    if (!focused && panelElement) { panelElement.focus(); }
   }
 
   function isTextFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
-    // Known binary formats that should NOT be treated as text
     const binaryExtensions = new Set([
-      // Executables & libraries
-      'exe', 'dll', 'so', 'dylib', 'bin', 'obj', 'o', 'a', 'lib', 'sys', 'drv',
-      // Archives (zip handled separately)
-      'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst', 'lz4', 'cab',
-      // Media - audio
-      'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'mid', 'midi',
-      // Media - video
-      'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', 'ts',
-      // Media - image (binary ones, SVG is text)
-      'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'psd', 'raw', 'cr2', 'nef',
-      // Documents
-      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
-      // Fonts
-      'ttf', 'otf', 'woff', 'woff2', 'eot',
-      // Databases & compiled
-      'db', 'sqlite', 'sqlite3', 'mdb', 'accdb', 'class', 'pyc', 'pyo',
-      // Other binary
-      'iso', 'img', 'vhd', 'vhdx', 'qcow2',
+      'exe','dll','so','dylib','bin','obj','o','a','lib','sys','drv',
+      'rar','7z','tar','gz','bz2','xz','zst','lz4','cab',
+      'mp3','wav','flac','aac','ogg','wma','m4a','opus','mid','midi',
+      'mp4','mkv','avi','mov','wmv','flv','webm','m4v','mpg','mpeg','ts',
+      'png','jpg','jpeg','gif','webp','bmp','ico','tiff','tif','psd','raw','cr2','nef',
+      'pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp',
+      'ttf','otf','woff','woff2','eot',
+      'db','sqlite','sqlite3','mdb','accdb','class','pyc','pyo',
+      'iso','img','vhd','vhdx','qcow2',
     ]);
     return !binaryExtensions.has(ext);
   }
 
-  const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg']);
-
-  function isImageFile(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    return IMAGE_EXTENSIONS.has(ext);
-  }
-
-  function isPdfFile(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    return ext === 'pdf';
-  }
-
-  function isVideoFile(path: string): boolean {
-    return isVideoFileExt(path);
-  }
-
+  const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','svg']);
+  function isImageFile(path: string): boolean { return IMAGE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
+  function isPdfFile(path: string): boolean { return (path.split('.').pop()?.toLowerCase() || '') === 'pdf'; }
+  function isVideoFile(path: string): boolean { return isVideoFileExt(path); }
   const ARCHIVE_EXTENSIONS = new Set(['zip']);
-
-  function isArchiveFile(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    return ARCHIVE_EXTENSIONS.has(ext);
-  }
+  function isArchiveFile(path: string): boolean { return ARCHIVE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
 
   // PDF state
   let pdfPageCount: number = $state(0);
@@ -641,11 +491,9 @@
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
-    // Check per-tab cache during tab switch
     const cached = tabEditorCache.get(currentTabId);
     if (cached && cached.filePath === path) {
       if (gen !== loadGeneration) return;
-      // Restore from cache immediately (no async gap = no flicker)
       content = cached.content;
       savedContent = cached.savedContent;
       binaryContent = cached.binaryContent;
@@ -660,40 +508,23 @@
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
       isMarkdown = ext === 'md' || ext === 'markdown';
-      console.log(`[load] ${fileName} tab-cache-hit ${(performance.now() - t0).toFixed(0)}ms`);
-      if (!isMarkdown) {
-        tocHeadings = [];
-        tocActiveLine = -1;
-      } else if (cached.tocHeadings && cached.tocHeadings.length > 0) {
-        // Restore TOC tree from cache so sidebar renders before slot re-attach
+      if (!isMarkdown) { tocHeadings = []; tocActiveLine = -1; }
+      else if (cached.tocHeadings && cached.tocHeadings.length > 0) {
         if (pendingTocExpanded && pendingTocExpanded.size > 0) {
           restoreExpandedLines(cached.tocHeadings, pendingTocExpanded);
         }
         tocHeadings = cached.tocHeadings;
       }
       if (cached.mode !== 'global-normal') {
-        if (editorView) {
-          editorView.destroy();
-          editorView = undefined;
-        }
+        if (editorView) { editorView.destroy(); editorView = undefined; }
       }
       mode = cached.mode;
-      // Use cached.content/cached.mode instead of reactive $state to avoid
-      // establishing unwanted reactive dependencies in the filePath $effect.
-      // Otherwise any edit (e.g. 'o') that changes content would re-trigger
-      // loadFile, which hits the tab cache and restores stale mode.
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
-        renderPreview(cached.content, cached.binaryContent);
+        renderPreview();
       }
       startWatching(path);
-      // Validate mtime in background — if file changed on disk, reload
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => {
-          if (meta.modified !== cached.fileMtime) {
-            tabEditorCache.delete(currentTabId);
-            loadFile(path);
-          }
-        })
+        .then(meta => { if (meta.modified !== cached.fileMtime) { tabEditorCache.delete(currentTabId); loadFile(path); } })
         .catch(() => {});
       return;
     }
@@ -701,355 +532,192 @@
     pendingRestoreScrollTop = -1;
     isModified = false;
 
-    // Track markdown state for TOC
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
-    if (!isMarkdown) {
-      tocHeadings = [];
-      tocActiveLine = -1;
-    }
+    if (!isMarkdown) { tocHeadings = []; tocActiveLine = -1; }
 
-    // Directory: list contents
+    // Directory
     try {
       await invoke<FileEntry[]>('read_directory', { path });
       if (gen !== loadGeneration) return;
-      content = '';
-      binaryContent = null;
-      if (editorView) {
-        editorView.destroy();
-        editorView = undefined;
-      }
+      content = ''; binaryContent = null;
+      if (editorView) { editorView.destroy(); editorView = undefined; }
       mode = 'global-normal';
       renderDirectoryPreview();
       stopWatching();
       return;
-    } catch {
-      // Not a directory, continue
-    }
+    } catch { /* not a directory */ }
 
-    // Binary image files (SVG is text, handled below)
+    // Binary image
     if (isImageFile(path) && !path.toLowerCase().endsWith('.svg')) {
-      const fileName = path.split(/[/\\]/).pop() || path;
-      const isGif = path.toLowerCase().endsWith('.gif');
       try {
-        if (isGif) {
-          // GIF: load original to preserve animation
-          const t0 = performance.now();
+        if (path.toLowerCase().endsWith('.gif')) {
           const base64 = await invoke<string>('read_binary_file', { path });
-          console.log(`[image] ${fileName} gif loaded in ${(performance.now() - t0).toFixed(0)}ms, raw ${base64.length} chars`);
           if (gen !== loadGeneration) return;
-          const binary = atob(base64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          binaryContent = bytes.buffer;
-          thumbnailMeta = null;
+          const binary = atob(base64); const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          binaryContent = bytes.buffer; thumbnailMeta = null;
         } else {
-          // Other images: use thumbnail for large, binary for small
-          const t0 = performance.now();
           const result = await invoke<{ data: string; width: number; height: number; original_size: number; is_thumbnail: boolean }>('read_image_thumbnail', { path });
-          const loadMs = (performance.now() - t0).toFixed(0);
           if (gen !== loadGeneration) return;
           if (result.data) {
-            // Large image: use compressed thumbnail
-            console.log(`[image] ${fileName} thumbnail loaded in ${loadMs}ms, original ${(result.original_size / 1024 / 1024).toFixed(1)}MB → ${result.width}x${result.height}, data ${result.data.length} chars`);
-            const binary = atob(result.data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              bytes[i] = binary.charCodeAt(i);
-            }
+            const binary = atob(result.data); const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             binaryContent = bytes.buffer;
-            thumbnailMeta = {
-              width: result.width,
-              height: result.height,
-              originalSize: result.original_size,
-              isThumbnail: result.is_thumbnail,
-            };
+            thumbnailMeta = { width: result.width, height: result.height, originalSize: result.original_size, isThumbnail: result.is_thumbnail };
           } else {
-            // Small image: load original directly
-            const t1 = performance.now();
             const base64 = await invoke<string>('read_binary_file', { path });
-            console.log(`[image] ${fileName} original loaded in ${(performance.now() - t1).toFixed(0)}ms, ${result.width}x${result.height}, data ${base64.length} chars`);
             if (gen !== loadGeneration) return;
-            const binary = atob(base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              bytes[i] = binary.charCodeAt(i);
-            }
+            const binary = atob(base64); const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
             binaryContent = bytes.buffer;
-            thumbnailMeta = {
-              width: result.width,
-              height: result.height,
-              originalSize: result.original_size,
-              isThumbnail: false,
-            };
+            thumbnailMeta = { width: result.width, height: result.height, originalSize: result.original_size, isThumbnail: false };
           }
         }
         content = '[Binary Image]';
       } catch (error) {
         if (gen !== loadGeneration) return;
         console.error('Failed to load image:', error);
-        binaryContent = null;
-        thumbnailMeta = null;
-        content = '';
+        binaryContent = null; thumbnailMeta = null; content = '';
       }
       mode = 'global-normal';
-      renderPreview(content, binaryContent);
+      renderPreview();
       return;
     }
 
-    // PDF files
+    // PDF
     if (isPdfFile(path)) {
-      const fileName = path.split(/[/\\]/).pop() || path;
       try {
-        const t0 = performance.now();
         const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number }>('get_pdf_info', { path });
-        console.log(`[pdf] ${fileName} info loaded in ${(performance.now() - t0).toFixed(0)}ms, ${info.page_count} pages`);
         if (gen !== loadGeneration) return;
-
-        pdfPageCount = info.page_count;
-        pdfCurrentPage = 0;
-        pdfFileSize = info.file_size;
-        pdfTitle = info.title;
-
-        // Render first page
+        pdfPageCount = info.page_count; pdfCurrentPage = 0; pdfFileSize = info.file_size; pdfTitle = info.title;
         await loadPdfPage(path, 0, gen);
         if (gen !== loadGeneration) return;
-
-        content = '[PDF]';
-        mode = 'global-normal';
-        renderPreview(content, binaryContent);
+        content = '[PDF]'; mode = 'global-normal'; renderPreview();
       } catch (error) {
         if (gen !== loadGeneration) return;
         console.error('Failed to load PDF:', error);
-        pdfPageCount = 0;
-        pdfCurrentPage = 0;
-        content = '';
-        binaryContent = null;
+        pdfPageCount = 0; pdfCurrentPage = 0; content = ''; binaryContent = null;
       }
       return;
     }
 
+    // Archive
     if (isArchiveFile(path)) {
-      content = '';
-      binaryContent = null;
-      if (editorView) {
-        editorView.destroy();
-        editorView = undefined;
-      }
+      content = ''; binaryContent = null;
+      if (editorView) { editorView.destroy(); editorView = undefined; }
       mode = 'global-normal';
       renderArchivePreview(path);
       return;
     }
 
-    // Video files: get thumbnail via ffmpeg
+    // Video
     if (isVideoFile(path)) {
-      const fileName = path.split(/[/\\]/).pop() || path;
       try {
-        const t0 = performance.now();
         const result = await invoke<VideoMeta>('get_video_thumbnail', { path });
-        console.log(`[video] ${fileName} thumbnail loaded in ${(performance.now() - t0).toFixed(0)}ms, ${result.width}x${result.height}, duration=${result.duration_seconds}s`);
         if (gen !== loadGeneration) return;
-        videoMeta = result;
-        binaryContent = null;
-        content = JSON.stringify(result);
+        videoMeta = result; binaryContent = null; content = JSON.stringify(result);
       } catch (error) {
         if (gen !== loadGeneration) return;
         console.error('Failed to load video thumbnail:', error);
-        videoMeta = null;
-        binaryContent = null;
-        content = String(error);
+        videoMeta = null; binaryContent = null; content = String(error);
       }
-      mode = 'global-normal';
-      renderPreview(content, binaryContent);
+      mode = 'global-normal'; renderPreview();
       return;
     }
 
-    // Get file metadata (size + mtime) before reading content.
-    // currentFileMtime must be set before content triggers the $effect,
-    // otherwise renderPreview won't cache the DOM.
-    const MAX_PREVIEW_SIZE = 200 * 1024; // 200KB
+    // Text / binary
+    const MAX_PREVIEW_SIZE = 200 * 1024;
     originalFileSize = 0;
     try {
       const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
       if (gen !== loadGeneration) return;
-      originalFileSize = meta.size;
-      currentFileMtime = meta.modified;
-    } catch {
-      // Can't get metadata, try loading anyway
-    }
+      originalFileSize = meta.size; currentFileMtime = meta.modified;
+    } catch { /* ignore */ }
 
     const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
-
-    // Try reading as text first
     try {
       const newContent = usePartial
         ? await invoke<string>('read_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
         : await invoke<string>('read_file', { path });
       if (gen !== loadGeneration) return;
-      content = newContent;
-      binaryContent = null;
-      savedContent = newContent;
-      if (editorView) {
-        editorView.destroy();
-        editorView = undefined;
-      }
+      content = newContent; binaryContent = null; savedContent = newContent;
+      if (editorView) { editorView.destroy(); editorView = undefined; }
     } catch {
       if (gen !== loadGeneration) return;
-      // Text read failed — likely binary, read raw bytes for hex dump
       try {
         const base64 = usePartial
           ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
           : await invoke<string>('read_binary_file', { path });
         if (gen !== loadGeneration) return;
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        content = '';
-        binaryContent = bytes.buffer;
+        const binary = atob(base64); const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        content = ''; binaryContent = bytes.buffer;
       } catch {
         if (gen !== loadGeneration) return;
-        content = '';
-        binaryContent = null;
+        content = ''; binaryContent = null;
       }
     }
     mode = 'global-normal';
     startWatching(path);
-    console.log(`[load] ${fileName} fresh ${(performance.now() - t0).toFixed(0)}ms (${(content?.length || (binaryContent as ArrayBuffer | null)?.byteLength || 0)} bytes)`);
-    // Call renderPreview directly with the content we just loaded.
-    // This bypasses the reactive $effect chain which may fire with stale
-    // content when multiple loadFile calls race (e.g. expandPreview() causing
-    // a second layout update that re-triggers the filePath $effect).
-    //
-    // The render $effect will be blocked by isRendering=true during the async
-    // render, so no double-render occurs.
-    const rpContent = content;
-    const rpBinary = binaryContent;
-    console.log(`[load] about to renderPreview - rpContent head:"${String(rpContent).substring(0, 40)}"`);
-    renderPreview(rpContent, rpBinary);
+    renderPreview();
   }
 
-  async function renderPreview(snapContent?: string, snapBinary?: ArrayBuffer | null) {
+  async function renderPreview() {
     if (!previewArea || !filePath) return;
-    if (isRendering) { console.log(`[render] ${filePath.split(/[/\\]/).pop()} skipped (concurrent)`); return; }
+    if (isRendering) return;
     isRendering = true;
-    const tRender = performance.now();
-    // Use snapshot if provided, otherwise fall back to reactive state
-    const previewContent: string | ArrayBuffer = snapBinary ?? snapContent ?? binaryContent ?? content;
-    console.log(`[render] RP-ENTER snapContent head:"${String(snapContent ?? 'UNDEF').substring(0, 40)}" content head:"${String(content).substring(0, 40)}"`);
     try {
+      const slot = getOrCreateSlot(currentTabId);
+      showTabSlot(currentTabId);
 
-    const logSlots = () => {
-      const states: string[] = [];
-      for (const [id, s] of tabSlots) {
-        const inDom = s.parentNode === previewArea;
-        states.push(`tab${id}(inDOM:${inDom}, rendered:${s.dataset.rendered}, fp:${(s.dataset.filePath || '').split(/[/\\]/).pop()})`);
+      // Skip if slot already holds fresh render of the same file
+      if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
+          && slot.dataset.fileMtime === String(currentFileMtime)) {
+        if (pendingRestoreScrollTop >= 0) { slot.scrollTop = pendingRestoreScrollTop; pendingRestoreScrollTop = -1; }
+        if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
+        if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
+          requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
+        }
+        return;
       }
-      return states.join(' ');
-    };
-    console.log(`[render] START currentTabId:${currentTabId} filePath:${filePath?.split(/[/\\]/).pop()} mode:${mode} slots:[${logSlots()}]`);
-    console.log(`[render] previewArea children: ${previewArea.children.length} [${Array.from(previewArea.children).map(c => `cls:${c.className} fp:${(c as HTMLElement).dataset?.filePath?.split(/[/\\]/).pop() || '-'}`).join(', ')}]`);
 
-    const slot = getOrCreateSlot(currentTabId);
-    console.log(`[render] slot for tab${currentTabId} created:${slot.dataset.rendered === undefined} rendered:${slot.dataset.rendered} fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotEl:${slot.className}`);
-    showTabSlot(currentTabId);
-    console.log(`[render] after showTabSlot(${currentTabId}) slots:[${logSlots()}]`);
-    console.log(`[render] previewArea after show: children: ${previewArea.children.length} [${Array.from(previewArea.children).map(c => `cls:${c.className} fp:${(c as HTMLElement).dataset?.filePath?.split(/[/\\]/).pop() || '-'}`).join(', ')}]`);
+      slot.innerHTML = '';
+      slot.dataset.filePath = filePath;
 
-    // If slot already rendered for same file with current mtime, skip re-render
-    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
-        && slot.dataset.fileMtime === String(currentFileMtime)) {
-      console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} slot-hit (already rendered) ${(performance.now() - tRender).toFixed(0)}ms`);
-      // Restore scroll + TOC state from tab cache
-      if (pendingRestoreScrollTop >= 0) {
-        slot.scrollTop = pendingRestoreScrollTop;
-        pendingRestoreScrollTop = -1;
+      const requestId = ++renderRequestId;
+      if (thumbnailMeta) {
+        slot.dataset.thumbWidth = String(thumbnailMeta.width);
+        slot.dataset.thumbHeight = String(thumbnailMeta.height);
+        slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
+        slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
+      } else {
+        delete slot.dataset.thumbWidth; delete slot.dataset.thumbHeight;
+        delete slot.dataset.thumbOriginalSize; delete slot.dataset.thumbIsThumbnail;
       }
-      // Update TOC headings from the rendered DOM (they were reset during tab switch)
-      if (isMarkdown && tocHeadings.length === 0) {
-        // Headings will be populated by previewRouter.onHeadings callback during render;
-        // for slot hits we need to re-parse. Defer to rAF.
-        requestAnimationFrame(() => setupScrollObserver());
+      if (originalFileSize > 0) { slot.dataset.originalFileSize = String(originalFileSize); }
+      else { delete slot.dataset.originalFileSize; }
+
+      const previewContent: string | ArrayBuffer = binaryContent ?? content;
+      await getPreviewRouter().preview(filePath, previewContent, slot);
+      if (requestId !== renderRequestId) return;
+
+      slot.dataset.rendered = 'true';
+      slot.dataset.fileMtime = String(currentFileMtime);
+
+      if (pendingRestoreScrollTop >= 0) { slot.scrollTop = pendingRestoreScrollTop; pendingRestoreScrollTop = -1; }
+      if (pendingTocExpanded && tocHeadings.length > 0) {
+        restoreExpandedLines(tocHeadings, pendingTocExpanded);
+        pendingTocExpanded = null; tocHeadings = [...tocHeadings];
       }
-      const restoreTocFocus = tocFocused && tocOpen;
-      if (restoreTocFocus && pendingTocSelectedIndex >= 0) {
+      if (tocFocused && tocOpen) {
         requestAnimationFrame(() => {
-          tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex);
-          pendingTocSelectedIndex = -1;
+          if (pendingTocSelectedIndex >= 0) { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; }
           tocSidebar?.focus();
         });
       }
-      return;
-    }
-
-    slot.innerHTML = '';
-    slot.dataset.filePath = filePath;
-
-    const requestId = ++renderRequestId;
-    // Pass thumbnail metadata via dataset
-    if (thumbnailMeta) {
-      slot.dataset.thumbWidth = String(thumbnailMeta.width);
-      slot.dataset.thumbHeight = String(thumbnailMeta.height);
-      slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
-      slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
-    } else {
-      delete slot.dataset.thumbWidth;
-      delete slot.dataset.thumbHeight;
-      delete slot.dataset.thumbOriginalSize;
-      delete slot.dataset.thumbIsThumbnail;
-    }
-    // Pass original file size for truncation notice
-    if (originalFileSize > 0) {
-      slot.dataset.originalFileSize = String(originalFileSize);
-    } else {
-      delete slot.dataset.originalFileSize;
-    }
-    console.log(`[render] PRE-RENDER slot fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotInnerLen:${slot.innerHTML.length} contentHead:"${String(previewContent).substring(0, 80).replace(/\n/g, '\\n')}" snap:${snapContent !== undefined}`);
-    await getPreviewRouter().preview(filePath, previewContent, slot);
-    if (requestId !== renderRequestId) return;
-    console.log(`[render] POST-RENDER slot fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotInnerLen:${slot.innerHTML.length} hasChild:${!!slot.firstChild} previewAreaChildren:${previewArea.children.length}`);
-
-    slot.dataset.rendered = 'true';
-    slot.dataset.fileMtime = String(currentFileMtime);
-
-    // Apply pending scroll restoration from tab cache
-    if (pendingRestoreScrollTop >= 0) {
-      slot.scrollTop = pendingRestoreScrollTop;
-      pendingRestoreScrollTop = -1;
-    }
-
-    // Restore TOC heading expand state from cache
-    if (pendingTocExpanded && tocHeadings.length > 0) {
-      restoreExpandedLines(tocHeadings, pendingTocExpanded);
-      pendingTocExpanded = null;
-      tocHeadings = [...tocHeadings];
-    }
-
-    // Restore TOC focus and selection from cache (defer to let Svelte update DOM)
-    if (tocFocused && tocOpen) {
-      requestAnimationFrame(() => {
-        if (pendingTocSelectedIndex >= 0) {
-          tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex);
-          pendingTocSelectedIndex = -1;
-        }
-        tocSidebar?.focus();
-      });
-    }
-
-    // Add PDF info bar
-    if (isPdfFile(filePath) && pdfPageCount > 0) {
-      addPdfInfoBar(slot);
-    }
-
-    // Set up scroll observer for markdown TOC sync
-    if (isMarkdown) {
-      setupScrollObserver();
-    }
-
-    console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} full ${(performance.now() - tRender).toFixed(0)}ms`);
+      if (isPdfFile(filePath) && pdfPageCount > 0) { addPdfInfoBar(slot); }
+      if (isMarkdown) { setupScrollObserver(); }
     } finally {
       isRendering = false;
     }
@@ -1057,36 +725,26 @@
 
   function scrollPreview(deltaY: number, deltaX: number = 0) {
     const slot = getActiveSlot();
-    if (slot) {
-      slot.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
-    }
+    if (slot) slot.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
   }
 
   export function getVisibleLine(): number {
     const slot = getActiveSlot();
     if (!slot || !content) return 0;
-    // Use data-line attributes if available (markdown with block-level annotations)
     const rect = slot.getBoundingClientRect();
     const el = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     if (el) {
       const lined = el.closest('[data-line]');
-      if (lined) {
-        const line = parseInt(lined.getAttribute('data-line')!);
-        if (!isNaN(line)) return line;
-      }
+      if (lined) { const line = parseInt(lined.getAttribute('data-line')!); if (!isNaN(line)) return line; }
     }
-    // Fallback: scroll ratio (code files with uniform line height)
     const maxScroll = slot.scrollHeight - slot.clientHeight;
     if (maxScroll <= 0) return 0;
-    const ratio = slot.scrollTop / maxScroll;
-    const totalLines = content.split('\n').length;
-    return Math.round(ratio * (totalLines - 1));
+    return Math.round((slot.scrollTop / maxScroll) * (content.split('\n').length - 1));
   }
 
   function getPosAtLine(text: string, lineNumber: number): number {
     let pos = 0;
-    let line = 0;
-    for (let i = 0; i < text.length && line < lineNumber; i++) {
+    for (let i = 0, line = 0; i < text.length && line < lineNumber; i++) {
       if (text[i] === '\n') line++;
       if (line < lineNumber) pos = i + 1;
     }
@@ -1096,9 +754,8 @@
   function moveCursorToLine(lineNumber: number) {
     if (!editorView) return;
     const targetLine = Math.min(lineNumber + 1, editorView.state.doc.lines);
-    const pos = editorView.state.doc.line(targetLine).from;
-    editorView.dispatch({ selection: { anchor: pos } });
-    scrollEditorToPos(editorView, pos);
+    editorView.dispatch({ selection: { anchor: editorView.state.doc.line(targetLine).from } });
+    scrollEditorToPos(editorView, editorView.state.selection.main.head);
     editorTargetLine = -1;
   }
 
@@ -1119,29 +776,19 @@
   }
 
   function addPdfInfoBar(container: HTMLElement) {
-    // Remove existing info bar
     container.querySelector('.pdf-info-bar')?.remove();
-
     const bar = document.createElement('div');
     bar.className = 'pdf-info-bar image-info-bar';
-
     const info = document.createElement('span');
     info.textContent = `${pdfCurrentPage + 1}/${pdfPageCount}`;
-    if (pdfFileSize > 0) {
-      info.textContent += ` · ${formatSize(pdfFileSize)}`;
-    }
-    if (pdfTitle) {
-      info.textContent += ` · ${pdfTitle}`;
-    }
+    if (pdfFileSize > 0) info.textContent += ` · ${formatSize(pdfFileSize)}`;
+    if (pdfTitle) info.textContent += ` · ${pdfTitle}`;
     bar.appendChild(info);
-
     const hints = document.createElement('span');
     hints.className = 'pdf-hints';
     hints.textContent = 'J/K:翻页 E:全屏';
-    hints.style.color = '#666';
-    hints.style.fontSize = '11px';
+    hints.style.color = '#666'; hints.style.fontSize = '11px';
     bar.appendChild(hints);
-
     container.appendChild(bar);
   }
 
@@ -1168,23 +815,11 @@
   async function loadPdfPage(path: string, page: number, gen?: number) {
     const g = gen ?? loadGeneration;
     try {
-      const t0 = performance.now();
-      const result = await invoke<{ data: string; width: number; height: number }>('render_pdf_page', {
-        path,
-        page,
-        scale: pdfRenderScale,
-      });
-      console.log(`[pdf] page ${page} rendered in ${(performance.now() - t0).toFixed(0)}ms, ${result.width}x${result.height}`);
+      const result = await invoke<{ data: string; width: number; height: number }>('render_pdf_page', { path, page, scale: pdfRenderScale });
       if (g !== loadGeneration) return;
-
-      // Convert base64 to ArrayBuffer
-      const binary = atob(result.data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      binaryContent = bytes.buffer;
-      pdfCurrentPage = page;
+      const binary = atob(result.data); const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      binaryContent = bytes.buffer; pdfCurrentPage = page;
     } catch (error) {
       if (g !== loadGeneration) return;
       console.error(`Failed to render PDF page ${page}:`, error);
@@ -1193,28 +828,20 @@
 
   function initEditor() {
     if (!editorContainer || !filePath) return;
-
     const language = getLanguage(filePath);
     const extensions = [
-      basicSetup,
-      search({ top: true }),
-      sMatchField,
-      EditorView.lineWrapping,
+      basicSetup, search({ top: true }), sMatchField, EditorView.lineWrapping,
       keymap.of([{
         key: 'Tab',
         run: (view) => {
           const { state } = view;
-          if (state.selection.main.empty) {
-            view.dispatch(state.replaceSelection('    '));
-          } else {
-            // Indent selected lines
+          if (state.selection.main.empty) { view.dispatch(state.replaceSelection('    ')); }
+          else {
             const { from, to } = state.selection.main;
             const lineFrom = state.doc.lineAt(from);
             const lineTo = state.doc.lineAt(to);
             const changes = [];
-            for (let i = lineFrom.number; i <= lineTo.number; i++) {
-              changes.push({ from: state.doc.line(i).from, insert: '    ' });
-            }
+            for (let i = lineFrom.number; i <= lineTo.number; i++) { changes.push({ from: state.doc.line(i).from, insert: '    ' }); }
             view.dispatch({ changes });
           }
           return true;
@@ -1223,162 +850,83 @@
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
-          save: async () => {
-            if (batchRenameTempPath) {
-              onBatchRenameSave(content);
-            } else {
-              await saveFile();
-            }
-          },
-          quit: () => {
-            if (batchRenameTempPath) {
-              onBatchRenameCancel();
-            } else {
-              mode = 'global-normal';
-            }
-          },
-          forceQuit: () => {
-            if (batchRenameTempPath) {
-              onBatchRenameCancel();
-            } else {
-              content = savedContent;
-              isModified = false;
-              mode = 'global-normal';
-            }
-          },
+          save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else await saveFile(); },
+          quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else mode = 'global-normal'; },
+          forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else { content = savedContent; isModified = false; mode = 'global-normal'; } },
           isModified: () => isModified,
         }),
         (msg) => onToast(msg)
       ),
       oneDark,
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          content = update.state.doc.toString();
-          isModified = content !== savedContent;
-        }
-        // Sync PreviewEditor mode with vim state.
-        // When vim switches between insert/normal, update the overlay.
+        if (update.docChanged) { content = update.state.doc.toString(); isModified = content !== savedContent; }
         const cm = (update.view as any).cm;
         const vimState = cm?.state?.vim;
         if (vimState) {
-          if (vimState.insertMode && mode === 'editor-normal') {
-            mode = 'editor-insert';
-          } else if (!vimState.insertMode && !vimState.visualMode && mode === 'editor-insert') {
-            mode = 'editor-normal';
-          }
+          if (vimState.insertMode && mode === 'editor-normal') mode = 'editor-insert';
+          else if (!vimState.insertMode && !vimState.visualMode && mode === 'editor-insert') mode = 'editor-normal';
         }
       }),
     ];
-
-    if (language) {
-      extensions.push(language);
-    }
-
+    if (language) extensions.push(language);
     const state = EditorState.create({
-      doc: content,
-      extensions,
+      doc: content, extensions,
       selection: editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) } : undefined,
     });
     const needsScroll = editorTargetLine >= 0;
     editorTargetLine = -1;
-
-    editorView = new EditorView({
-      state,
-      parent: editorContainer,
-    });
-
-    if (needsScroll && editorView) {
-      scrollEditorToPos(editorView, editorView.state.selection.main.head);
-    }
-
-    // Bridge vim clipboard with system clipboard
+    editorView = new EditorView({ state, parent: editorContainer });
+    if (needsScroll && editorView) scrollEditorToPos(editorView, editorView.state.selection.main.head);
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
-
-    // Intercept Enter on list lines before CodeMirror/markdown extension handles it
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || !editorView) return;
       const { state } = editorView;
       const line = state.doc.lineAt(state.selection.main.head);
       const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
       if (!markerMatch) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
+      e.preventDefault(); e.stopPropagation();
       const marker = markerMatch[1];
       const contentAfter = line.text.slice(marker.length).trim();
       const pos = state.selection.main.head;
-
       if (!contentAfter) {
         const indentMatch = line.text.match(/^(\s{1,4})/);
-        if (indentMatch) {
-          // Has leading whitespace: remove one level, cursor after marker
-          editorView.dispatch({
-            changes: { from: line.from, to: line.from + indentMatch[1].length },
-            selection: { anchor: line.from + marker.length - indentMatch[1].length },
-          });
-        } else {
-          // No indentation: remove marker, cursor at line start
-          editorView.dispatch({
-            changes: { from: line.from, to: line.from + marker.length },
-            selection: { anchor: line.from },
-          });
-        }
-      } else {
-        editorView.dispatch({
-          changes: { from: pos, insert: '\n' + marker },
-          selection: { anchor: pos + 1 + marker.length },
-        });
-      }
-    }, true); // capture phase
-
-    // Block IME composition on the overlay div (defense-in-depth).
-    // Some Windows IME versions may still try to compose when they
-    // detect contentEditable in the DOM tree, even if it's not focused.
+        if (indentMatch) { editorView.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length }, selection: { anchor: line.from + marker.length - indentMatch[1].length } }); }
+        else { editorView.dispatch({ changes: { from: line.from, to: line.from + marker.length }, selection: { anchor: line.from } }); }
+      } else { editorView.dispatch({ changes: { from: pos, insert: '\n' + marker }, selection: { anchor: pos + 1 + marker.length } }); }
+    }, true);
     if (overlayElement) {
-      overlayElement.addEventListener('compositionstart', (e: CompositionEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }, true);
-      overlayElement.addEventListener('compositionend', (e: CompositionEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }, true);
+      overlayElement.addEventListener('compositionstart', (e: CompositionEvent) => { e.preventDefault(); e.stopPropagation(); }, true);
+      overlayElement.addEventListener('compositionend', (e: CompositionEvent) => { e.preventDefault(); e.stopPropagation(); }, true);
     }
   }
 
-  // Overlay keydown handler for editor normal mode.
-  // The overlay is a plain <div tabindex=0> (NOT contentEditable),
-  // so the Chinese IME won't activate on it. We capture physical keys
-  // and forward them to the vim engine via the Vim API directly.
   function codeToVimKey(event: KeyboardEvent): string | null {
     const code = event.code;
     let key = '';
     if (event.ctrlKey) key += 'C-';
     if (event.altKey) key += 'A-';
     if (event.metaKey) key += 'M-';
-    if (code.startsWith('Key') && code.length === 4) {
-      key += event.shiftKey ? code[3] : code[3].toLowerCase();
-    } else if (code === 'Enter') { key += 'Enter'; }
-    else if (code === 'Space') { key += 'Space'; }
-    else if (code === 'Escape') { key = 'Esc'; }
-    else if (code === 'Backspace') { key += 'BS'; }
-    else if (code === 'Tab') { key += 'Tab'; }
-    else if (code === 'Delete') { key += 'Del'; }
-    else if (code.startsWith('Digit')) { key += code[5]; }
-    else if (code.startsWith('Arrow')) { key += code.slice(5); }
-    else if (code === 'BracketLeft') { key += event.shiftKey ? '{' : '['; }
-    else if (code === 'BracketRight') { key += event.shiftKey ? '}' : ']'; }
-    else if (code === 'Semicolon') { key += event.shiftKey ? ':' : ';'; }
-    else if (code === 'Quote') { key += event.shiftKey ? '"' : "'"; }
-    else if (code === 'Comma') { key += event.shiftKey ? '<' : ','; }
-    else if (code === 'Period') { key += event.shiftKey ? '>' : '.'; }
-    else if (code === 'Slash') { key += event.shiftKey ? '?' : '/'; }
-    else if (code === 'Backslash') { key += '\\'; }
-    else if (code === 'Minus') { key += event.shiftKey ? '_' : '-'; }
-    else if (code === 'Equal') { key += event.shiftKey ? '+' : '='; }
-    else if (code === 'Backquote') { key += event.shiftKey ? '~' : '`'; }
-    else { return null; }
+    if (code.startsWith('Key') && code.length === 4) key += event.shiftKey ? code[3] : code[3].toLowerCase();
+    else if (code === 'Enter') key += 'Enter';
+    else if (code === 'Space') key += 'Space';
+    else if (code === 'Escape') key = 'Esc';
+    else if (code === 'Backspace') key += 'BS';
+    else if (code === 'Tab') key += 'Tab';
+    else if (code === 'Delete') key += 'Del';
+    else if (code.startsWith('Digit')) key += code[5];
+    else if (code.startsWith('Arrow')) key += code.slice(5);
+    else if (code === 'BracketLeft') key += event.shiftKey ? '{' : '[';
+    else if (code === 'BracketRight') key += event.shiftKey ? '}' : ']';
+    else if (code === 'Semicolon') key += event.shiftKey ? ':' : ';';
+    else if (code === 'Quote') key += event.shiftKey ? '"' : "'";
+    else if (code === 'Comma') key += event.shiftKey ? '<' : ',';
+    else if (code === 'Period') key += event.shiftKey ? '>' : '.';
+    else if (code === 'Slash') key += event.shiftKey ? '?' : '/';
+    else if (code === 'Backslash') key += '\\';
+    else if (code === 'Minus') key += event.shiftKey ? '_' : '-';
+    else if (code === 'Equal') key += event.shiftKey ? '+' : '=';
+    else if (code === 'Backquote') key += event.shiftKey ? '~' : '`';
+    else return null;
     if (key.length > 1) key = '<' + key + '>';
     return key;
   }
@@ -1386,25 +934,19 @@
   let overlayCmdBuf = $state('');
   let overlayCmdActive = $state(false);
   let clipboardBridge: ClipboardBridge | null = null;
-
   let searchActive: boolean = $state(false);
   let searchBuf: string = $state('');
 
   function executeSearch() {
     if (!editorView || !searchBuf) return;
-    // Open search panel so the highlighter activates (panel is hidden by CSS)
     openSearchPanel(editorView);
-    // Set our query
     const query = new SearchQuery({ search: searchBuf, caseSensitive: false });
     editorView.dispatch({ effects: setSearchQuery.of(query) });
-    // Select first match
     findNext(editorView);
   }
 
-  // Live-highlight :s matches as user types (nvim inccommand style)
   function highlightSMatches() {
     if (!editorView) return;
-    // Parse :s command to extract replacement for CSS variable
     const cmd = overlayCmdBuf;
     const delimMatch = cmd.match(/^(['<,'>]*)([%]?)s(.)/);
     if (delimMatch) {
@@ -1412,325 +954,114 @@
       const esc = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`s${esc}([^${esc}]*)(?:${esc}([^${esc}]*))?(?:${esc}([ggiI]*))?`);
       const pm = cmd.match(re);
-      if (pm && pm[2] !== undefined) {
-        editorView.dom.style.setProperty('--s-replacement', JSON.stringify(pm[2]));
-      } else {
-        editorView.dom.style.removeProperty('--s-replacement');
-      }
-    } else {
-      editorView.dom.style.removeProperty('--s-replacement');
-    }
+      if (pm && pm[2] !== undefined) { editorView.dom.style.setProperty('--s-replacement', JSON.stringify(pm[2])); }
+      else { editorView.dom.style.removeProperty('--s-replacement'); }
+    } else { editorView.dom.style.removeProperty('--s-replacement'); }
     editorView.dispatch({ effects: triggerSMatchUpdate.of() });
   }
 
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
     if (trimmed === 'w' || trimmed === 'write') {
-      if (batchRenameTempPath) {
-        onBatchRenameSave(content);
-      } else {
-        saveFile();
-      }
+      if (batchRenameTempPath) onBatchRenameSave(content); else saveFile();
     } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
-      if (batchRenameTempPath) {
-        onBatchRenameCancel();
-      } else {
-        content = savedContent;
-        isModified = false;
-        mode = 'global-normal';
-      }
+      if (batchRenameTempPath) onBatchRenameCancel();
+      else { content = savedContent; isModified = false; mode = 'global-normal'; }
     } else if (trimmed === 'q' || trimmed === 'quit') {
-      if (batchRenameTempPath) {
-        onBatchRenameCancel();
-      } else if (isModified) {
-        onToast('E37: No write since last change (add ! to override)');
-      } else {
-        mode = 'global-normal';
-      }
+      if (batchRenameTempPath) onBatchRenameCancel();
+      else if (isModified) onToast('E37: No write since last change (add ! to override)');
+      else mode = 'global-normal';
     } else if (trimmed === 'wq' || trimmed === 'x') {
-      if (batchRenameTempPath) {
-        onBatchRenameSave(content);
-      } else {
-        saveFile().then(() => { mode = 'global-normal'; });
-      }
+      if (batchRenameTempPath) onBatchRenameSave(content);
+      else saveFile().then(() => { mode = 'global-normal'; });
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
-      if (batchRenameTempPath) {
-        onBatchRenameSave(content);
-      } else {
-        saveFile().then(() => { mode = 'global-normal'; });
-      }
+      if (batchRenameTempPath) onBatchRenameSave(content);
+      else saveFile().then(() => { mode = 'global-normal'; });
     } else if (editorView) {
       const cm = getCM(editorView);
-      if (cm) {
-        Vim.handleEx(cm as any, trimmed);
-        // Clear :s highlights after ex command completes
-        editorView.dispatch({ effects: clearSMatch.of() });
-        editorView.dom.style.removeProperty('--s-replacement');
-      }
+      if (cm) { Vim.handleEx(cm as any, trimmed); editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); }
     }
   }
 
   function handleOverlayKeydown(event: KeyboardEvent) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    // Custom command mode (triggered by ':')
+    event.preventDefault(); event.stopPropagation();
     if (overlayCmdActive) {
-      if (event.key === 'Enter') {
-        overlayCmdActive = false;
-        processOverlayCommand(overlayCmdBuf);
-        overlayCmdBuf = '';
-        return;
-      }
-      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') {
-        overlayCmdActive = false;
-        overlayCmdBuf = '';
-        onToast('');
-        if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); }
-        return;
-      }
-      if (event.key === 'Backspace') {
-        if (overlayCmdBuf.length > 0) {
-          overlayCmdBuf = overlayCmdBuf.slice(0, -1);
-        } else {
-          overlayCmdActive = false;
-        }
-        highlightSMatches();
-        return;
-      }
-      if (event.key.length === 1) {
-        overlayCmdBuf += event.key;
-        highlightSMatches();
-      }
+      if (event.key === 'Enter') { overlayCmdActive = false; processOverlayCommand(overlayCmdBuf); overlayCmdBuf = ''; return; }
+      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { overlayCmdActive = false; overlayCmdBuf = ''; onToast(''); if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); } return; }
+      if (event.key === 'Backspace') { if (overlayCmdBuf.length > 0) overlayCmdBuf = overlayCmdBuf.slice(0, -1); else overlayCmdActive = false; highlightSMatches(); return; }
+      if (event.key.length === 1) { overlayCmdBuf += event.key; highlightSMatches(); }
       return;
     }
-
-    // Search mode (triggered by '/' or '?')
     if (searchActive) {
-      if (event.key === 'Enter') {
-        searchActive = false;
-        executeSearch();
-        return;
-      }
-      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') {
-        searchActive = false;
-        searchBuf = '';
-        return;
-      }
-      if (event.key === 'Backspace') {
-        if (searchBuf.length > 0) {
-          searchBuf = searchBuf.slice(0, -1);
-        } else {
-          searchActive = false;
-        }
-        return;
-      }
-      if (event.key.length === 1) {
-        searchBuf += event.key;
-      }
+      if (event.key === 'Enter') { searchActive = false; executeSearch(); return; }
+      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { searchActive = false; searchBuf = ''; return; }
+      if (event.key === 'Backspace') { if (searchBuf.length > 0) searchBuf = searchBuf.slice(0, -1); else searchActive = false; return; }
+      if (event.key.length === 1) searchBuf += event.key;
       return;
     }
-
-    if (event.key === ':') {
-      overlayCmdActive = true;
-      overlayCmdBuf = '';
-      return;
-    }
-
-    if (event.key === '/' || event.key === '?') {
-      searchActive = true;
-      searchBuf = '';
-      return;
-    }
-
-    // n/N: repeat last search
+    if (event.key === ':') { overlayCmdActive = true; overlayCmdBuf = ''; return; }
+    if (event.key === '/' || event.key === '?') { searchActive = true; searchBuf = ''; return; }
     if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      if (editorView) {
-        if (event.shiftKey) {
-          findPrevious(editorView);
-        } else {
-          findNext(editorView);
-        }
-      }
+      if (editorView) { if (event.shiftKey) findPrevious(editorView); else findNext(editorView); }
       return;
     }
-
-    // Escape: close search panel if open
-    if (event.key === 'Escape' && editorView) {
-      closeSearchPanel(editorView);
-    }
-
-    // Normal vim key handling
+    if (event.key === 'Escape' && editorView) { closeSearchPanel(editorView); }
     const vimKey = codeToVimKey(event);
-    if (!vimKey) return;
-    if (!editorView) return;
-
-    // Inject system clipboard before put
-    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) {
-      clipboardBridge.injectClipboard();
-    }
-
+    if (!vimKey || !editorView) return;
+    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) { clipboardBridge.injectClipboard(); }
     const cm = getCM(editorView);
     if (!cm) return;
     (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
-
-    // If vim entered insert mode (e.g. user pressed i/a/o),
-    // switch to editor-insert so the overlay hides.
     const vimState = cm.state?.vim;
-    if (vimState?.insertMode) {
-      mode = 'editor-insert';
-    }
+    if (vimState?.insertMode) { mode = 'editor-insert'; }
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    // Only handle keys in global-normal mode
-    // editor-normal and editor-insert are handled by CodeMirror vim
     if (mode !== 'global-normal') return;
-
-    // Ctrl+W l: switch focus from preview to TOC (when TOC is visible)
-    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) {
-      event.preventDefault();
-      event.stopPropagation();
-      focusToc();
-      return;
-    }
-
-    // t prefix for tab operations
+    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
     if (waitingForTabKey) {
-      waitingForTabKey = false;
-      layout.clearKeyPrefix();
-      const code = event.code;
-      const key = event.key;
-      event.preventDefault();
-      if (code === 'KeyT') {
-        onTabCommand('new');
-      } else if (code === 'KeyC') {
-        onTabCommand('close');
-      } else if (code === 'KeyR') {
-        onTabCommand('rename-hint');
-      } else if (code === 'KeyN' || code === 'BracketRight') {
-        onTabCommand('next');
-      } else if (code === 'KeyP' || code === 'BracketLeft') {
-        onTabCommand('prev');
-      } else if (code === 'Comma') {
-        onTabCommand('swap-prev');
-      } else if (code === 'Period') {
-        onTabCommand('swap-next');
-      } else if (key >= '1' && key <= '9') {
-        onTabCommand('switch-' + key);
-      }
+      waitingForTabKey = false; layout.clearKeyPrefix();
+      const code = event.code; const key = event.key; event.preventDefault();
+      if (code === 'KeyT') onTabCommand('new');
+      else if (code === 'KeyC') onTabCommand('close');
+      else if (code === 'KeyR') onTabCommand('rename-hint');
+      else if (code === 'KeyN' || code === 'BracketRight') onTabCommand('next');
+      else if (code === 'KeyP' || code === 'BracketLeft') onTabCommand('prev');
+      else if (code === 'Comma') onTabCommand('swap-prev');
+      else if (code === 'Period') onTabCommand('swap-next');
+      else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
       return;
     }
-
-    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      waitingForTabKey = true;
-      layout.setKeyPrefix('t');
-      setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
-      return;
-    }
-
-    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      if (!filePath || !isTextFile(filePath)) {
-        onToast('此文件类型不支持编辑');
-        return;
-      }
-      editorTargetLine = getVisibleLine();
-      mode = 'editor-normal';
-    } else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      if (!filePath) {
-        onToast('此文件类型不支持全屏查看');
-        return;
-      }
-      onFullscreen();
-    } else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      scrollPreview(40);
-    } else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      scrollPreview(-40);
-    } else if (event.code === 'KeyH' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      scrollPreview(0, -40);
-    } else if (event.code === 'KeyL' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      scrollPreview(0, 40);
-    } else if (event.code === 'KeyJ' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      // PDF: next page
-      if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) {
-        event.preventDefault();
-        loadPdfPage(filePath, pdfCurrentPage + 1);
-      }
-    } else if (event.code === 'KeyK' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      // PDF: previous page
-      if (filePath && isPdfFile(filePath) && pdfCurrentPage > 0) {
-        event.preventDefault();
-        loadPdfPage(filePath, pdfCurrentPage - 1);
-      }
-    } else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      const ggSlot = getActiveSlot();
-      if (ggSlot) ggSlot.scrollTop = 0;
-    } else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      const gSlot = getActiveSlot();
-      if (gSlot) gSlot.scrollTop = gSlot.scrollHeight;
-    } else if (event.ctrlKey && event.code === 'KeyS') {
-      event.preventDefault();
-      saveFile();
-    }
+    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); waitingForTabKey = true; layout.setKeyPrefix('t'); setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000); return; }
+    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
+    else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
+    else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }
+    else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(-40); }
+    else if (event.code === 'KeyH' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, -40); }
+    else if (event.code === 'KeyL' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, 40); }
+    else if (event.code === 'KeyJ' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) { event.preventDefault(); loadPdfPage(filePath, pdfCurrentPage + 1); } }
+    else if (event.code === 'KeyK' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { if (filePath && isPdfFile(filePath) && pdfCurrentPage > 0) { event.preventDefault(); loadPdfPage(filePath, pdfCurrentPage - 1); } }
+    else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const ggSlot = getActiveSlot(); if (ggSlot) ggSlot.scrollTop = 0; }
+    else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const gSlot = getActiveSlot(); if (gSlot) gSlot.scrollTop = gSlot.scrollHeight; }
+    else if (event.ctrlKey && event.code === 'KeyS') { event.preventDefault(); saveFile(); }
   }
 
   async function saveFile() {
     if (!filePath || !isModified) return;
     try {
       await invoke('write_file', { path: filePath, content });
-      savedContent = content;
-      isModified = false;
-      // Invalidate tab slot so next preview re-renders with saved content
+      savedContent = content; isModified = false;
       const saveSlot = getActiveSlot();
-      if (saveSlot) {
-        delete saveSlot.dataset.rendered;
-      }
-      // Refresh preview so it's up-to-date when user goes back to global-normal
-      if (mode === 'editor-normal' || mode === 'editor-insert') {
-        // Preview will be refreshed when switching to global-normal via $effect
-      }
-    } catch (error) {
-      console.error('Failed to save file:', error);
-    }
+      if (saveSlot) { delete saveSlot.dataset.rendered; }
+    } catch (error) { console.error('Failed to save file:', error); }
   }
 
-  function getFileName(): string {
-    if (!filePath) return '';
-    return filePath.split('\\').pop() || filePath.split('/').pop() || '';
-  }
-
-  export function setContent(newContent: string) {
-    content = newContent;
-    savedContent = newContent;
-    isModified = false;
-  }
-
-  export function getContent(): string {
-    return content;
-  }
-
-  export function getFile(): string | null {
-    return filePath;
-  }
-
-  export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } {
-    return { currentPage: pdfCurrentPage, pageCount: pdfPageCount, filePath };
-  }
-
-  export function setPdfPage(page: number) {
-    if (filePath && isPdfFile(filePath) && page >= 0 && page < pdfPageCount) {
-      loadPdfPage(filePath, page);
-    }
-  }
+  function getFileName(): string { if (!filePath) return ''; return filePath.split('\\').pop() || filePath.split('/').pop() || ''; }
+  export function setContent(newContent: string) { content = newContent; savedContent = newContent; isModified = false; }
+  export function getContent(): string { return content; }
+  export function getFile(): string | null { return filePath; }
+  export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } { return { currentPage: pdfCurrentPage, pageCount: pdfPageCount, filePath }; }
+  export function setPdfPage(page: number) { if (filePath && isPdfFile(filePath) && page >= 0 && page < pdfPageCount) { loadPdfPage(filePath, page); } }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1878,10 +1209,7 @@
     white-space: nowrap;
   }
 
-  .modified-indicator {
-    color: var(--warning);
-    font-size: 12px;
-  }
+  .modified-indicator { color: var(--warning); font-size: 12px; }
 
   .mode-indicator {
     font-size: 10px;
@@ -1890,723 +1218,162 @@
     color: var(--bg-primary);
     margin-left: auto;
   }
-
-  .mode-indicator.normal {
-    background-color: var(--success);
-  }
-
-  .mode-indicator.insert {
-    background-color: var(--warning);
-    color: var(--bg-primary);
-  }
-
-  .mode-indicator.toc {
-    background-color: var(--success);
-  }
+  .mode-indicator.normal { background-color: var(--success); }
+  .mode-indicator.insert { background-color: var(--warning); color: var(--bg-primary); }
+  .mode-indicator.toc { background-color: var(--success); }
 
   .toc-toggle {
-    background: none;
-    border: 1px solid var(--border);
-    cursor: pointer;
-    font-size: 10px;
-    padding: 1px 6px;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    margin-left: 2px;
+    background: none; border: 1px solid var(--border); cursor: pointer;
+    font-size: 10px; padding: 1px 6px; color: var(--text-muted);
+    font-family: var(--font-mono); margin-left: 2px;
   }
-
-  .toc-toggle:hover {
-    color: var(--text-primary);
-    border-color: var(--text-muted);
-  }
-
-  .toc-toggle:not(.closed) {
-    color: var(--bg-primary);
-    background-color: var(--accent);
-    border-color: var(--accent);
-  }
-
-  .toc-toggle.closed {
-    color: var(--text-muted);
-  }
+  .toc-toggle:hover { color: var(--text-primary); border-color: var(--text-muted); }
+  .toc-toggle:not(.closed) { color: var(--bg-primary); background-color: var(--accent); border-color: var(--accent); }
+  .toc-toggle.closed { color: var(--text-muted); }
 
   .layout-toggle {
-    background: none;
-    border: 1px solid var(--border);
-    cursor: pointer;
-    padding: 2px 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    margin-left: auto;
+    background: none; border: 1px solid var(--border); cursor: pointer;
+    padding: 2px 4px; display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted); margin-left: auto;
     transition: color 0.15s ease, border-color 0.15s ease;
   }
+  .layout-toggle:hover { color: var(--text-primary); border-color: var(--accent); }
+  .layout-toggle.expanded { color: var(--accent); border-color: var(--accent); }
 
-  .layout-toggle:hover {
-    color: var(--text-primary);
-    border-color: var(--accent);
-  }
+  .panel-content { flex: 1; overflow: hidden; position: relative; }
 
-  .layout-toggle.expanded {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
+  .preview-with-toc { display: flex; width: 100%; height: 100%; }
+  .preview-with-toc.hidden { display: none; }
 
-  .panel-content {
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .preview-with-toc {
-    display: flex;
-    width: 100%;
-    height: 100%;
-  }
-
-  .preview-with-toc.hidden {
-    display: none;
-  }
-
-  .preview-area {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    overflow: hidden;
-    position: relative;
-  }
+  .preview-area { flex: 1; min-width: 0; height: 100%; overflow: hidden; position: relative; }
 
   :global(.tab-preview-slot) {
-    position: absolute;
-    inset: 0;
-    overflow: auto;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
+    position: absolute; inset: 0; overflow: auto;
+    padding: 12px; display: flex; flex-direction: column; box-sizing: border-box;
   }
 
-  .editor-area {
-    width: 100%;
-    height: 100%;
-    display: none;
-    position: relative;
-  }
-
-  .editor-area.hidden {
-    display: none;
-  }
+  .editor-area { width: 100%; height: 100%; display: none; position: relative; }
+  .editor-area.hidden { display: none; }
 
   .editor-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 10;
-    background: transparent;
-    outline: none;
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 10; background: transparent; outline: none;
   }
-
-  .editor-overlay.overlay-hidden {
-    display: none;
-  }
+  .editor-overlay.overlay-hidden { display: none; }
 
   .panel-cmdline {
-    padding: 4px 12px;
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--text-primary);
+    padding: 4px 12px; background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border); font-family: var(--font-mono);
+    font-size: 13px; color: var(--text-primary);
   }
 
   .welcome {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    text-align: center;
-    color: var(--text-muted);
-    max-width: 400px;
-    margin: 0 auto;
-    font-family: var(--font-mono);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; text-align: center; color: var(--text-muted);
+    max-width: 400px; margin: 0 auto; font-family: var(--font-mono);
   }
+  .welcome h2 { color: var(--text-primary); margin-bottom: 8px; }
+  .welcome p { margin-bottom: 24px; }
+  .shortcuts { text-align: left; background-color: var(--bg-secondary); padding: 16px; width: 100%; border: 1px solid var(--border); }
+  .shortcuts h3 { color: var(--text-primary); margin-bottom: 12px; font-size: 13px; }
+  .shortcuts ul { list-style: none; padding: 0; }
+  .shortcuts li { padding: 3px 0; font-size: 12px; color: var(--text-secondary); }
+  .shortcuts kbd { background-color: var(--bg-tertiary); padding: 1px 4px; font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--border); }
 
-  .welcome h2 {
-    color: var(--text-primary);
-    margin-bottom: 8px;
+  :global(.cm-editor) { height: 100%; }
+  :global(.cm-panel) { display: none !important; }
+  :global(.cm-searchMatch) { background-color: #fabd2f55; outline: 1px solid #fabd2f88; border-radius: 2px; }
+  :global(.cm-searchMatch-selected) { background-color: #fabd2faa; outline: 1px solid #fabd2fcc; border-radius: 2px; }
+  :global(.cm-sMatch) { background-color: #b8bb2644; outline: 1px solid #b8bb2688; border-radius: 2px; }
+  :global(.cm-sMatch-replace) { background-color: #b8bb2644; outline: 1px solid #b8bb2688; border-radius: 2px; font-size: 0; color: transparent; }
+  :global(.cm-sMatch-replace::after) { content: var(--s-replacement, ''); font-size: initial; color: #83a598; font-style: italic; }
+
+  :global(.dir-list) { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 13px; min-width: 0; }
+  :global(.dir-entry) { display: flex; align-items: center; padding: 2px 0; gap: 6px; min-width: 0; }
+  :global(.entry-name) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--file-color); }
+  :global(.entry-name.is-dir) { color: var(--dir-color); font-weight: 500; }
+  :global(.entry-size) { flex-shrink: 0; color: var(--text-muted); font-size: 12px; min-width: 60px; text-align: right; }
+  :global(.entry-size.dir) { visibility: hidden; }
+
+  :global(.archive-header) { display: flex; align-items: center; gap: 8px; padding: 8px 0 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  :global(.archive-icon) { font-size: 16px; }
+  :global(.archive-name) { font-weight: 600; color: var(--text-primary); font-size: 14px; }
+  :global(.archive-meta) { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+
+  :global(.preview-empty) { color: var(--text-muted); text-align: center; padding: 24px; font-size: 13px; }
+  :global(.preview-unsupported) { color: var(--text-muted); text-align: center; padding: 24px; font-size: 13px; }
+  :global(.preview-code) { white-space: pre-wrap; word-break: break-all; }
+  :global(.preview-code pre) { white-space: pre-wrap; word-break: break-all; }
+  :global(.preview-plain) { white-space: pre-wrap; word-break: break-all; }
+  :global(.preview-hex) { font-family: var(--font-mono); font-size: 13px; }
+  :global(.hex-notice) { padding: 8px 12px; background: #3c3836; color: #d79921; font-size: 12px; margin-bottom: 8px; border-radius: 4px; }
+  :global(.hex-dump) { margin: 0; line-height: 1.5; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
+  :global(.hex-dump code) { font-family: var(--font-mono); font-size: 12px; }
+
+  :global(.preview-image) { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; }
+  :global(.image-info-bar) { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background-color: var(--bg-secondary); border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
+  :global(.image-view-original) { background: none; border: 1px solid var(--border); color: var(--text-primary); padding: 1px 6px; cursor: pointer; font-size: 11px; font-family: var(--font-mono); }
+  :global(.image-view-original:hover) { background-color: var(--bg-hover); }
+  :global(.image-view-original:disabled) { opacity: 0.5; cursor: default; }
+
+  :global(.preview-pdf-page) { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; }
+  :global(.pdf-info-bar) { display: flex; align-items: center; justify-content: space-between; }
+
+  /* Markdown Preview — Terminal style */
+  :global(.preview-markdown) { font-family: var(--font-mono); font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+
+  :global(.preview-markdown h1), :global(.preview-markdown h2), :global(.preview-markdown h3),
+  :global(.preview-markdown h4), :global(.preview-markdown h5), :global(.preview-markdown h6) {
+    font-family: var(--font-mono); font-weight: 700; line-height: 1.3;
+    margin-top: 1.6em; margin-bottom: 0.6em; color: var(--accent);
   }
-
-  .welcome p {
-    margin-bottom: 24px;
-  }
-
-  .shortcuts {
-    text-align: left;
-    background-color: var(--bg-secondary);
-    padding: 16px;
-    width: 100%;
-    border: 1px solid var(--border);
-  }
-
-  .shortcuts h3 {
-    color: var(--text-primary);
-    margin-bottom: 12px;
-    font-size: 13px;
-  }
-
-  .shortcuts ul {
-    list-style: none;
-    padding: 0;
-  }
-
-  .shortcuts li {
-    padding: 3px 0;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .shortcuts kbd {
-    background-color: var(--bg-tertiary);
-    padding: 1px 4px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    border: 1px solid var(--border);
-  }
-
-  :global(.cm-editor) {
-    height: 100%;
-  }
-
-  /* Hide CodeMirror search panel (we use our own overlay input) */
-  :global(.cm-panel) {
-    display: none !important;
-  }
-
-  /* Search match highlights */
-  :global(.cm-searchMatch) {
-    background-color: #fabd2f55;
-    outline: 1px solid #fabd2f88;
-    border-radius: 2px;
-  }
-
-  :global(.cm-searchMatch-selected) {
-    background-color: #fabd2faa;
-    outline: 1px solid #fabd2fcc;
-    border-radius: 2px;
-  }
-
-  :global(.cm-sMatch) {
-    background-color: #b8bb2644;
-    outline: 1px solid #b8bb2688;
-    border-radius: 2px;
-  }
-
-  :global(.cm-sMatch-replace) {
-    background-color: #b8bb2644;
-    outline: 1px solid #b8bb2688;
-    border-radius: 2px;
-    font-size: 0;
-    color: transparent;
-  }
-
-  :global(.cm-sMatch-replace::after) {
-    content: var(--s-replacement, '');
-    font-size: initial;
-    color: #83a598;
-    font-style: italic;
-  }
-
-  :global(.dir-list) {
-    font-family: 'Cascadia Code', 'Consolas', monospace;
-    font-size: 13px;
-    min-width: 0;
-  }
-
-  :global(.dir-entry) {
-    display: flex;
-    align-items: center;
-    padding: 2px 0;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  :global(.entry-name) {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--file-color);
-  }
-
-  :global(.entry-name.is-dir) {
-    color: var(--dir-color);
-    font-weight: 500;
-  }
-
-  :global(.entry-size) {
-    flex-shrink: 0;
-    color: var(--text-muted);
-    font-size: 12px;
-    min-width: 60px;
-    text-align: right;
-  }
-
-  :global(.entry-size.dir) {
-    visibility: hidden;
-  }
-
-  :global(.archive-header) {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 0 12px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 8px;
-  }
-
-  :global(.archive-icon) {
-    font-size: 16px;
-  }
-
-  :global(.archive-name) {
-    font-weight: 600;
-    color: var(--text-primary);
-    font-size: 14px;
-  }
-
-  :global(.archive-meta) {
-    color: var(--text-muted);
-    font-size: 12px;
-    margin-left: auto;
-  }
-
-  :global(.preview-empty) {
-    color: var(--text-muted);
-    text-align: center;
-    padding: 24px;
-    font-size: 13px;
-  }
-
-  :global(.preview-unsupported) {
-    color: var(--text-muted);
-    text-align: center;
-    padding: 24px;
-    font-size: 13px;
-  }
-
-  :global(.preview-code) {
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  :global(.preview-code pre) {
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  :global(.preview-plain) {
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  :global(.preview-hex) {
-    font-family: var(--font-mono);
-    font-size: 13px;
-  }
-
-  :global(.hex-notice) {
-    padding: 8px 12px;
-    background: #3c3836;
-    color: #d79921;
-    font-size: 12px;
-    margin-bottom: 8px;
-    border-radius: 4px;
-  }
-
-  :global(.hex-dump) {
-    margin: 0;
-    line-height: 1.5;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  :global(.hex-dump code) {
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  :global(.preview-image) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    min-height: 0;
-  }
-
-  :global(.image-info-bar) {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 12px;
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 11px;
-    flex-shrink: 0;
-  }
-
-  :global(.image-view-original) {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--text-primary);
-    padding: 1px 6px;
-    cursor: pointer;
-    font-size: 11px;
-    font-family: var(--font-mono);
-  }
-
-  :global(.image-view-original:hover) {
-    background-color: var(--bg-hover);
-  }
-
-  :global(.image-view-original:disabled) {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  :global(.preview-pdf-page) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    min-height: 0;
-  }
-
-  :global(.pdf-info-bar) {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  /* ═══════════════════════════════════════════════════════
-     Markdown Preview — Terminal style (Obsidian-inspired)
-     ═══════════════════════════════════════════════════════ */
-
-  :global(.preview-markdown) {
-    font-family: var(--font-mono);
-    font-size: 14px;
-    line-height: 1.7;
-    color: var(--text-primary);
-  }
-
-  /* ── Headings ── */
-
-  :global(.preview-markdown h1),
-  :global(.preview-markdown h2),
-  :global(.preview-markdown h3),
-  :global(.preview-markdown h4),
-  :global(.preview-markdown h5),
-  :global(.preview-markdown h6) {
-    font-family: var(--font-mono);
-    font-weight: 700;
-    line-height: 1.3;
-    margin-top: 1.6em;
-    margin-bottom: 0.6em;
-    color: var(--accent);
-  }
-
-  :global(.preview-markdown h1) {
-    font-size: 1.8em;
-    padding-bottom: 0.3em;
-    border-bottom: 2px solid var(--border);
-  }
-
-  :global(.preview-markdown h2) {
-    font-size: 1.5em;
-    padding-bottom: 0.25em;
-    border-bottom: 1px solid var(--border);
-  }
-
-  :global(.preview-markdown h3) {
-    font-size: 1.25em;
-  }
-
-  :global(.preview-markdown h4) {
-    font-size: 1.1em;
-    color: var(--text-secondary);
-  }
-
-  :global(.preview-markdown h5) {
-    font-size: 1em;
-    color: var(--text-secondary);
-  }
-
-  :global(.preview-markdown h6) {
-    font-size: 0.9em;
-    color: var(--text-muted);
-  }
-
-  :global(.preview-markdown h1:first-child),
-  :global(.preview-markdown h2:first-child),
-  :global(.preview-markdown h3:first-child) {
-    margin-top: 0;
-  }
-
-  /* ── Paragraphs & Text ── */
-
-  :global(.preview-markdown p) {
-    margin-top: 0;
-    margin-bottom: 1em;
-  }
-
-  :global(.preview-markdown strong) {
-    font-weight: 700;
-    color: var(--text-primary);
-  }
-
-  :global(.preview-markdown em) {
-    font-style: italic;
-    color: var(--text-primary);
-  }
-
-  :global(.preview-markdown del) {
-    text-decoration: line-through;
-    color: var(--text-muted);
-  }
-
-  /* ── Links ── */
-
-  :global(.preview-markdown a) {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 1px dashed var(--accent);
-    transition: border-bottom-style 0.15s;
-  }
-
-  :global(.preview-markdown a:hover) {
-    border-bottom-style: solid;
-  }
-
-  /* ── Horizontal Rule ── */
-
-  :global(.preview-markdown hr) {
-    border: none;
-    border-top: 1px dashed var(--border);
-    margin: 2em 0;
-  }
-
-  /* ── Lists ── */
-
-  :global(.preview-markdown ul),
-  :global(.preview-markdown ol) {
-    padding-left: 2em;
-    margin-bottom: 1em;
-  }
-
-  :global(.preview-markdown li) {
-    margin-bottom: 0.3em;
-  }
-
-  :global(.preview-markdown li > p) {
-    margin-bottom: 0.3em;
-  }
-
-  :global(.preview-markdown ul.contains-task-list) {
-    list-style: none;
-    padding-left: 0.5em;
-  }
-
-  :global(.preview-markdown .task-list-item) {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5em;
-  }
-
+  :global(.preview-markdown h1) { font-size: 1.8em; padding-bottom: 0.3em; border-bottom: 2px solid var(--border); }
+  :global(.preview-markdown h2) { font-size: 1.5em; padding-bottom: 0.25em; border-bottom: 1px solid var(--border); }
+  :global(.preview-markdown h3) { font-size: 1.25em; }
+  :global(.preview-markdown h4) { font-size: 1.1em; color: var(--text-secondary); }
+  :global(.preview-markdown h5) { font-size: 1em; color: var(--text-secondary); }
+  :global(.preview-markdown h6) { font-size: 0.9em; color: var(--text-muted); }
+  :global(.preview-markdown h1:first-child), :global(.preview-markdown h2:first-child),
+  :global(.preview-markdown h3:first-child) { margin-top: 0; }
+
+  :global(.preview-markdown p) { margin-top: 0; margin-bottom: 1em; }
+  :global(.preview-markdown strong) { font-weight: 700; color: var(--text-primary); }
+  :global(.preview-markdown em) { font-style: italic; color: var(--text-primary); }
+  :global(.preview-markdown del) { text-decoration: line-through; color: var(--text-muted); }
+  :global(.preview-markdown a) { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); transition: border-bottom-style 0.15s; }
+  :global(.preview-markdown a:hover) { border-bottom-style: solid; }
+  :global(.preview-markdown hr) { border: none; border-top: 1px dashed var(--border); margin: 2em 0; }
+  :global(.preview-markdown ul), :global(.preview-markdown ol) { padding-left: 2em; margin-bottom: 1em; }
+  :global(.preview-markdown li) { margin-bottom: 0.3em; }
+  :global(.preview-markdown li > p) { margin-bottom: 0.3em; }
+  :global(.preview-markdown ul.contains-task-list) { list-style: none; padding-left: 0.5em; }
+  :global(.preview-markdown .task-list-item) { display: flex; align-items: baseline; gap: 0.5em; }
   :global(.preview-markdown .task-list-item input[type="checkbox"]) {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border: 1px solid var(--border);
-    background: var(--bg-primary);
-    cursor: default;
-    flex-shrink: 0;
-    position: relative;
-    top: 2px;
+    appearance: none; -webkit-appearance: none; width: 14px; height: 14px;
+    border: 1px solid var(--border); background: var(--bg-primary);
+    cursor: default; flex-shrink: 0; position: relative; top: 2px;
   }
-
-  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked) {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-
-  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked::after) {
-    content: '✓';
-    position: absolute;
-    top: -2px;
-    left: 1px;
-    font-size: 11px;
-    color: var(--bg-primary);
-    font-weight: bold;
-  }
-
-  /* ── Blockquotes ── */
-
-  :global(.preview-markdown blockquote) {
-    margin: 1em 0;
-    padding: 0.5em 1em;
-    border-left: 3px solid var(--accent);
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-  }
-
-  :global(.preview-markdown blockquote p:last-child) {
-    margin-bottom: 0;
-  }
-
-  /* ── Inline Code ── */
-
-  :global(.preview-markdown code) {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    padding: 0.15em 0.4em;
-    background: var(--bg-tertiary);
-    border-radius: 3px;
-    color: var(--warning);
-  }
-
-  /* ── Fenced Code Blocks (Shiki) ── */
-
-  :global(.preview-markdown pre) {
-    margin: 1em 0;
-    border-radius: 4px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    border: 1px solid var(--border);
-  }
-
-  :global(.preview-markdown pre code) {
-    display: block;
-    padding: 1em;
-    font-size: 0.85em;
-    line-height: 1.6;
-    background: none;
-    color: inherit;
-    border-radius: 0;
-  }
-
-  /* Reset Shiki's inline styles so our theme takes over */
-  :global(.preview-markdown pre code) {
-    background-color: transparent !important;
-  }
-
-  :global(.preview-markdown pre code span) {
-    /* Preserve Shiki token colors */
-  }
-
-  /* ── Tables ── */
-
-  :global(.preview-markdown table) {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 1em 0;
-    font-size: 0.9em;
-  }
-
-  :global(.preview-markdown thead th) {
-    background: var(--bg-secondary);
-    font-weight: 600;
-    text-align: left;
-    padding: 0.6em 0.8em;
-    border: 1px solid var(--border);
-  }
-
-  :global(.preview-markdown tbody td) {
-    padding: 0.5em 0.8em;
-    border: 1px solid var(--border);
-  }
-
-  :global(.preview-markdown tbody tr:nth-child(even)) {
-    background: var(--bg-secondary);
-  }
-
-  :global(.preview-markdown tbody tr:hover) {
-    background: var(--bg-hover);
-  }
-
-  /* ── Images ── */
-
-  :global(.preview-markdown img) {
-    max-width: 100%;
-    border-radius: 4px;
-    margin: 0.5em 0;
-  }
-
-  /* ── Definition Lists ── */
-
-  :global(.preview-markdown dl) {
-    margin: 1em 0;
-  }
-
-  :global(.preview-markdown dt) {
-    font-weight: 700;
-    margin-top: 0.5em;
-  }
-
-  :global(.preview-markdown dd) {
-    margin-left: 2em;
-    color: var(--text-secondary);
-  }
-
-  /* ── LaTeX / KaTeX ── */
-
-  :global(.preview-markdown .math-placeholder) {
-    font-family: var(--font-mono);
-    font-style: italic;
-    color: var(--text-muted);
-    background: var(--bg-tertiary);
-    padding: 0.1em 0.3em;
-    border-radius: 3px;
-    border: 1px dashed var(--border);
-  }
-
-  :global(.preview-markdown .katex-display) {
-    margin: 1em 0;
-    overflow-x: visible;
-    text-align: center;
-  }
-
-  :global(.preview-markdown eq),
-  :global(.preview-markdown eqn) {
-    display: inline;
-  }
-
-  :global(.preview-markdown section.eqno),
-  :global(.preview-markdown section:not(.eqno)) {
-    display: block;
-    text-align: center;
-    margin: 1em 0;
-  }
-
-  /* ── Mermaid ── */
-
-  :global(.preview-markdown .mermaid-container) {
-    margin: 1em 0;
-    text-align: center;
-    overflow-x: auto;
-  }
-
-  :global(.preview-markdown .mermaid-container svg) {
-    max-width: 100%;
-    height: auto;
-  }
-
-  :global(.preview-markdown pre.mermaid-error) {
-    border-left: 3px solid var(--error, #e74c3c);
-  }
+  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked) { background: var(--accent); border-color: var(--accent); }
+  :global(.preview-markdown .task-list-item input[type="checkbox"]:checked::after) { content: '✓'; position: absolute; top: -2px; left: 1px; font-size: 11px; color: var(--bg-primary); font-weight: bold; }
+  :global(.preview-markdown blockquote) { margin: 1em 0; padding: 0.5em 1em; border-left: 3px solid var(--accent); background: var(--bg-secondary); color: var(--text-secondary); }
+  :global(.preview-markdown blockquote p:last-child) { margin-bottom: 0; }
+  :global(.preview-markdown code) { font-family: var(--font-mono); font-size: 0.9em; padding: 0.15em 0.4em; background: var(--bg-tertiary); border-radius: 3px; color: var(--warning); }
+  :global(.preview-markdown pre) { margin: 1em 0; border-radius: 4px; white-space: pre-wrap; word-break: break-all; border: 1px solid var(--border); }
+  :global(.preview-markdown pre code) { display: block; padding: 1em; font-size: 0.85em; line-height: 1.6; background: none; color: inherit; border-radius: 0; background-color: transparent !important; }
+  :global(.preview-markdown table) { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.9em; }
+  :global(.preview-markdown thead th) { background: var(--bg-secondary); font-weight: 600; text-align: left; padding: 0.6em 0.8em; border: 1px solid var(--border); }
+  :global(.preview-markdown tbody td) { padding: 0.5em 0.8em; border: 1px solid var(--border); }
+  :global(.preview-markdown tbody tr:nth-child(even)) { background: var(--bg-secondary); }
+  :global(.preview-markdown tbody tr:hover) { background: var(--bg-hover); }
+  :global(.preview-markdown img) { max-width: 100%; border-radius: 4px; margin: 0.5em 0; }
+  :global(.preview-markdown dl) { margin: 1em 0; }
+  :global(.preview-markdown dt) { font-weight: 700; margin-top: 0.5em; }
+  :global(.preview-markdown dd) { margin-left: 2em; color: var(--text-secondary); }
+  :global(.preview-markdown .math-placeholder) { font-family: var(--font-mono); font-style: italic; color: var(--text-muted); background: var(--bg-tertiary); padding: 0.1em 0.3em; border-radius: 3px; border: 1px dashed var(--border); }
+  :global(.preview-markdown .katex-display) { margin: 1em 0; overflow-x: visible; text-align: center; }
+  :global(.preview-markdown eq), :global(.preview-markdown eqn) { display: inline; }
+  :global(.preview-markdown section.eqno), :global(.preview-markdown section:not(.eqno)) { display: block; text-align: center; margin: 1em 0; }
+  :global(.preview-markdown .mermaid-container) { margin: 1em 0; text-align: center; overflow-x: auto; }
+  :global(.preview-markdown .mermaid-container svg) { max-width: 100%; height: auto; }
+  :global(.preview-markdown pre.mermaid-error) { border-left: 3px solid var(--error, #e74c3c); }
 </style>

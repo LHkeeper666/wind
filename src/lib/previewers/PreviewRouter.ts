@@ -31,8 +31,6 @@ export class PreviewRouter {
 
   async preview(filePath: string, content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
     const oldPreviewer = this.currentPreviewer;
-    const containerFp = (container as HTMLElement).dataset?.filePath || '-';
-    console.log(`[PreviewRouter] container.fp:${containerFp.split(/[/\\]/).pop()} container.cls:${container.className} filePath:${filePath.split(/[/\\]/).pop()}`);
 
     // Find matching previewer
     const previewer = this.match(filePath);
