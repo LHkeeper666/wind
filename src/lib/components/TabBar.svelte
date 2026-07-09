@@ -1,13 +1,28 @@
 <script lang="ts">
   import { tabs, activeTab } from '$lib/stores/tabs';
 
+  let { onSwitchTab, onRenameTab }: { onSwitchTab?: (tabId: number) => void; onRenameTab?: (tabId: number, name: string) => void } = $props();
+
   let renamingId: number | null = $state(null);
   let renameValue: string = $state('');
   let renameInput: HTMLInputElement | undefined = $state(undefined);
 
+  export function triggerRename(tabId: number) {
+    const tabsList = getTabs();
+    const tab = tabsList.find(t => t.id === tabId);
+    if (!tab) return;
+    renamingId = tabId;
+    renameValue = tab.name;
+    setTimeout(() => renameInput?.focus(), 0);
+  }
+
   function handleTabClick(tabId: number) {
     if (renamingId !== null) return;
-    tabs.switchTab(tabId);
+    if (onSwitchTab) {
+      onSwitchTab(tabId);
+    } else {
+      tabs.switchTab(tabId);
+    }
   }
 
   function handleTabDblClick(tabId: number) {
@@ -22,7 +37,9 @@
   function handleRenameKeydown(event: KeyboardEvent, tabId: number) {
     if (event.key === 'Enter') {
       event.preventDefault();
-      tabs.renameTab(tabId, renameValue || 'untitled');
+      const name = renameValue || 'untitled';
+      tabs.renameTab(tabId, name);
+      onRenameTab?.(tabId, name);
       renamingId = null;
     } else if (event.key === 'Escape') {
       event.preventDefault();
@@ -31,7 +48,9 @@
   }
 
   function handleRenameBlur(tabId: number) {
-    tabs.renameTab(tabId, renameValue || 'untitled');
+    const name = renameValue || 'untitled';
+    tabs.renameTab(tabId, name);
+    onRenameTab?.(tabId, name);
     renamingId = null;
   }
 
@@ -96,7 +115,9 @@
     font-size: 12px;
     white-space: nowrap;
     border-right: 1px solid var(--border);
-    flex-shrink: 0;
+    flex: 1 1 0;
+    min-width: 80px;
+    max-width: 250px;
   }
 
   .tab-item:hover {
@@ -123,7 +144,7 @@
   .tab-name {
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 120px;
+    white-space: nowrap;
   }
 
   .tab-rename-input {

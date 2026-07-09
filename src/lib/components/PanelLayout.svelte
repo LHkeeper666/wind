@@ -37,6 +37,7 @@
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
+  let tabBar: TabBar | undefined = $state(undefined);
 
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
@@ -992,7 +993,8 @@
       } else if (code === 'KeyC') {
         handleTabClose();
       } else if (code === 'KeyR') {
-        showToast('Double-click tab name to rename');
+        const tabsState = getTabsState();
+        tabBar?.triggerRename(tabsState.activeTabId);
       } else if (code === 'KeyN' || code === 'BracketRight') {
         handleTabSwitchRelative(1);
       } else if (code === 'KeyP' || code === 'BracketLeft') {
@@ -1289,7 +1291,7 @@
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
 <div class="app-layout" role="application" aria-label="Wind Panel Layout">
 
-  <TabBar />
+  <TabBar bind:this={tabBar} onSwitchTab={handleTabSwitch} />
 
   <div class="panel-layout" style="
     grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
