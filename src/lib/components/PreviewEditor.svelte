@@ -109,7 +109,7 @@
   let originalFileSize: number = $state(0);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
-  let previewContainer: HTMLElement | undefined = $state(undefined);
+  let previewArea: HTMLElement | undefined = $state(undefined);
   let editorContainer: HTMLElement | undefined = $state(undefined);
   let panelElement: HTMLElement | undefined = $state(undefined);
   let previewRouter: PreviewRouter | undefined;
@@ -171,97 +171,91 @@
     pdfPageCount: number;
     fileMtime: number;
     tocOpen: boolean;
+    tocHeadings: TocHeading[];
     tocExpandedLines: number[];
     tocFocused: boolean;
     tocSelectedIndex: number;
   }
   const tabEditorCache = new Map<number, TabEditorCache>();
+  // Snapshot captured before render to avoid reading stale reactive state
+  let pendingRenderContent: string = '';
+  let pendingRenderBinary: ArrayBuffer | null = null;
   let pendingRestoreScrollTop: number = -1;
   let pendingTocSelectedIndex: number = -1;
   let currentFileMtime: number = 0;
-  let lastRenderedMtime: number = 0;
   let fileChangedUnlisten: (() => void) | null = null;
 
-  // Per-filePath preview DOM cache (LRU, max 5 entries)
-  interface CachedPreviewDom {
-    dom: Node;
-    scrollTop: number;
-    tocHeadings: TocHeading[];
-    tocExpandedLines: number[];
-    fileMtime: number;
-    lastAccess: number;
-    /** Content snapshot for incremental previewers — when present,
-     *  restore uses the snapshot to initialise prevLines state. */
-    content?: string;
-  }
-  const previewDomCache = new Map<string, CachedPreviewDom>();
-  const MAX_DOM_CACHE = 5;
-  let lastRenderedPath: string = '';
-  let isRendering: boolean = false;
+  // Per-tab persistent preview slots — DOM stays in document, tab switch only toggles display
+  const tabSlots = new Map<number, HTMLDivElement>();
 
-  function normalizedPath(p: string): string {
-    return p.replace(/\//g, '\\').toLowerCase();
+  function getActiveSlot(): HTMLDivElement | undefined {
+    return tabSlots.get(currentTabId);
   }
 
-  function evictDomCache() {
-    if (previewDomCache.size <= MAX_DOM_CACHE) return;
-    let oldestKey = '';
-    let oldestTime = Infinity;
-    for (const [key, entry] of previewDomCache) {
-      if (entry.lastAccess < oldestTime) {
-        oldestTime = entry.lastAccess;
-        oldestKey = key;
+  function getOrCreateSlot(tabId: number): HTMLDivElement {
+    let slot = tabSlots.get(tabId);
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'tab-preview-slot';
+      tabSlots.set(tabId, slot);
+    }
+    return slot;
+  }
+
+  function showTabSlot(tabId: number) {
+    if (!previewArea) return;
+    // Detach all slots from the DOM — only one should be attached at a time
+    for (const [id, slot] of tabSlots) {
+      if (slot.parentNode === previewArea) {
+        previewArea.removeChild(slot);
       }
     }
-    previewDomCache.delete(oldestKey);
+    // Attach only the requested slot
+    const activeSlot = tabSlots.get(tabId);
+    if (activeSlot && activeSlot.parentNode !== previewArea) {
+      previewArea.appendChild(activeSlot);
+    }
   }
+
+  let isRendering: boolean = false;
 
   export function clearTabCache(tabId: number) {
     tabEditorCache.delete(tabId);
+    const slot = tabSlots.get(tabId);
+    if (slot) {
+      slot.remove();
+      tabSlots.delete(tabId);
+    }
   }
 
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
-    console.log('[PreviewEditor] cacheTabState:', tabId, 'tocOpen:', tocOpen, 'mode:', mode);
+    // Save editor state with its current mode
+    const savedMode = mode;
     tabEditorCache.set(tabId, {
       filePath,
       content,
       savedContent,
       binaryContent,
-      mode,
-      previewScrollTop: previewContainer?.scrollTop ?? 0,
+      mode: savedMode,
+      previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
       isModified,
       pdfCurrentPage,
       pdfPageCount,
       fileMtime: currentFileMtime,
       tocOpen,
+      tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
       tocFocused,
       tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
     });
-
-    // Cache rendered DOM so tab switch back is instant.
-    // Skip DOM cache for incremental previewers (text files handled by TextPreviewer) —
-    // they re-render fast via codeToTokens and need prevLines state to be correct.
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
-    const skipDomCache = !isMarkdown && ext !== 'json' && !isImageFile(filePath)
-      && !isPdfFile(filePath) && !isArchiveFile(filePath) && !isVideoFile(filePath);
-    console.log('[cacheTabState]', filePath.split(/[/\\]/).pop(), 'isMarkdown:', isMarkdown, 'ext:', ext, 'skipDomCache:', skipDomCache, 'mode:', mode);
-    if (!skipDomCache && mode === 'global-normal' && currentFileMtime > 0 && previewContainer?.firstChild && (content || binaryContent)) {
-      const normPath = normalizedPath(filePath);
-      // Avoid double-caching if already in cache with same mtime
-      if (previewDomCache.get(normPath)?.fileMtime !== currentFileMtime) {
-        const savedScrollTop = previewContainer.scrollTop;
-        const dom = previewContainer.removeChild(previewContainer.firstChild);
-        evictDomCache();
-        previewDomCache.set(normPath, {
-          dom,
-          scrollTop: savedScrollTop,
-          tocHeadings: [...tocHeadings],
-          tocExpandedLines: collectExpandedLines(tocHeadings),
-          fileMtime: currentFileMtime,
-          lastAccess: Date.now(),
-        });
+    // Switch to preview mode so the editor is hidden after tab switch.
+    // The next tab will restore its own mode from its cached state.
+    if (savedMode !== 'global-normal') {
+      mode = 'global-normal';
+      if (editorView) {
+        editorView.destroy();
+        editorView = undefined;
       }
     }
   }
@@ -276,7 +270,7 @@
   } {
     const s = {
       mode,
-      previewScrollTop: previewContainer?.scrollTop ?? 0,
+      previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
       isModified,
       pdfCurrentPage,
       tocOpen,
@@ -307,13 +301,33 @@
     if (mode !== 'global-normal') return;
     console.log('[PreviewEditor] Reloading due to external change');
     tabEditorCache.delete(currentTabId);
-    previewDomCache.delete(a); // clear stale DOM cache
+    // Invalidate the tab slot so next render re-creates content
+    const slot = tabSlots.get(currentTabId);
+    if (slot) {
+      slot.innerHTML = '';
+      delete slot.dataset.rendered;
+    }
     await loadFile(filePath);
   }
+
+  // When tab changes, ensure only the active tab's slot is visible
+  $effect(() => {
+    console.log(`[tabId-effect] currentTabId:${currentTabId} filePath:${filePath?.split(/[/\\]/).pop() || 'null'} slots:${tabSlots.size}`);
+    showTabSlot(currentTabId);
+  });
 
   // Load file when filePath changes
   $effect(() => {
     if (filePath) {
+      // Immediately attach the current tab's slot so that when previewArea
+      // becomes visible (CSS class:hidden removed), the correct content is
+      // shown — not a stale slot from a previous tab.
+      getOrCreateSlot(currentTabId);
+      showTabSlot(currentTabId);
+      // Force hide editor synchronously. If the new file was left in editor
+      // mode, loadFile will restore mode and the mode $effect will re-show it.
+      if (editorContainer) editorContainer.style.display = 'none';
+      console.log(`[filePath-effect] tabId:${currentTabId} filePath:${filePath.split(/[/\\]/).pop()} slots:${tabSlots.size}`);
       loadFile(filePath);
     }
   });
@@ -350,7 +364,7 @@
     if (m === 'editor-normal' || m === 'editor-insert') {
       // Show editor, hide preview
       if (editorContainer) editorContainer.style.display = 'block';
-      if (previewContainer) previewContainer.style.display = 'none';
+      if (previewArea) previewArea.style.display = 'none';
       // Initialize editor if needed
       if (!editorView && editorContainer && filePath) {
         initEditor();
@@ -366,7 +380,7 @@
       }
     } else {
       // global-normal: show preview, hide editor
-      if (previewContainer) previewContainer.style.display = 'block';
+      if (previewArea) previewArea.style.display = '';
       if (editorContainer) editorContainer.style.display = 'none';
       // Close search panel when leaving editor mode
       if (editorView) closeSearchPanel(editorView);
@@ -383,10 +397,14 @@
     // These reads register as reactive dependencies
     console.log('[render-effect] mode:', mode, 'filePath:', filePath?.split(/[/\\]/).pop(), 'hasContent:', !!(content || binaryContent));
     if (mode !== 'global-normal') return;
-    if (!previewContainer || !filePath) return;
+    if (!previewArea || !filePath) return;
 
-    if (content || binaryContent) {
-      renderPreview();
+    // Snapshot content so renderPreview uses the value from this specific
+    // effect invocation — not whatever content happens to be when async ops resolve.
+    const snapContent = content;
+    const snapBinary = binaryContent;
+    if (snapContent || snapBinary) {
+      renderPreview(snapContent, snapBinary);
     }
   });
 
@@ -401,7 +419,7 @@
 
   // Focus forwarding: when panelElement gets focus, route to the correct inner element
   function handlePanelFocus() {
-    console.log('[handlePanelFocus] mode:', mode, 'scrollTop:', previewContainer?.scrollTop, 'trigger:', document.activeElement?.className);
+    console.log('[handlePanelFocus] mode:', mode, 'scrollTop:', getActiveSlot()?.scrollTop, 'trigger:', document.activeElement?.className);
     if (mode === 'editor-normal' && overlayElement) {
       overlayElement.focus();
     } else if (mode === 'editor-insert' && editorView) {
@@ -484,9 +502,10 @@
   // TOC: set up IntersectionObserver for scroll sync
   function setupScrollObserver() {
     scrollObserver?.disconnect();
-    if (!previewContainer || !isMarkdown) return;
+    const slot = getActiveSlot();
+    if (!slot || !isMarkdown) return;
 
-    const headings = previewContainer.querySelectorAll('h1, h2, h3, h4, h5, h6');
+    const headings = slot.querySelectorAll('h1, h2, h3, h4, h5, h6');
     if (headings.length === 0) return;
 
     // Add ids to headings for reference
@@ -512,7 +531,7 @@
           }
         }
       },
-      { root: previewContainer, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
+      { root: slot, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
     );
 
     headings.forEach((el) => {
@@ -522,8 +541,9 @@
 
   // TOC: jump to heading by scrolling preview
   function handleTocJump(line: number) {
-    if (!previewContainer) return;
-    const heading = previewContainer.querySelector(`[data-line="${line}"]`);
+    const slot = getActiveSlot();
+    if (!slot) return;
+    const heading = slot.querySelector(`[data-line="${line}"]`);
     if (heading) {
       heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
       tocActiveLine = line;
@@ -543,7 +563,7 @@
   }
 
   export function focusContent() {
-    console.log('[focusContent] scrollTop before:', previewContainer?.scrollTop);
+    console.log('[focusContent] scrollTop before:', getActiveSlot()?.scrollTop);
     tocFocused = false;
     if (panelElement) panelElement.focus({ preventScroll: true });
   }
@@ -644,6 +664,12 @@
       if (!isMarkdown) {
         tocHeadings = [];
         tocActiveLine = -1;
+      } else if (cached.tocHeadings && cached.tocHeadings.length > 0) {
+        // Restore TOC tree from cache so sidebar renders before slot re-attach
+        if (pendingTocExpanded && pendingTocExpanded.size > 0) {
+          restoreExpandedLines(cached.tocHeadings, pendingTocExpanded);
+        }
+        tocHeadings = cached.tocHeadings;
       }
       if (cached.mode !== 'global-normal') {
         if (editorView) {
@@ -657,7 +683,7 @@
       // Otherwise any edit (e.g. 'o') that changes content would re-trigger
       // loadFile, which hits the tab cache and restores stale mode.
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
-        renderPreview();
+        renderPreview(cached.content, cached.binaryContent);
       }
       startWatching(path);
       // Validate mtime in background — if file changed on disk, reload
@@ -769,6 +795,7 @@
         content = '';
       }
       mode = 'global-normal';
+      renderPreview(content, binaryContent);
       return;
     }
 
@@ -792,6 +819,7 @@
 
         content = '[PDF]';
         mode = 'global-normal';
+        renderPreview(content, binaryContent);
       } catch (error) {
         if (gen !== loadGeneration) return;
         console.error('Failed to load PDF:', error);
@@ -834,6 +862,7 @@
         content = String(error);
       }
       mode = 'global-normal';
+      renderPreview(content, binaryContent);
       return;
     }
 
@@ -890,119 +919,105 @@
     mode = 'global-normal';
     startWatching(path);
     console.log(`[load] ${fileName} fresh ${(performance.now() - t0).toFixed(0)}ms (${(content?.length || (binaryContent as ArrayBuffer | null)?.byteLength || 0)} bytes)`);
-    // Empty files: content is '' (falsy), effect won't trigger, render directly
-    if (!content && !binaryContent) renderPreview();
+    // Call renderPreview directly with the content we just loaded.
+    // This bypasses the reactive $effect chain which may fire with stale
+    // content when multiple loadFile calls race (e.g. expandPreview() causing
+    // a second layout update that re-triggers the filePath $effect).
+    //
+    // The render $effect will be blocked by isRendering=true during the async
+    // render, so no double-render occurs.
+    const rpContent = content;
+    const rpBinary = binaryContent;
+    console.log(`[load] about to renderPreview - rpContent head:"${String(rpContent).substring(0, 40)}"`);
+    renderPreview(rpContent, rpBinary);
   }
 
-  async function renderPreview() {
-    if (!previewContainer || !filePath) return;
+  async function renderPreview(snapContent?: string, snapBinary?: ArrayBuffer | null) {
+    if (!previewArea || !filePath) return;
     if (isRendering) { console.log(`[render] ${filePath.split(/[/\\]/).pop()} skipped (concurrent)`); return; }
     isRendering = true;
     const tRender = performance.now();
+    // Use snapshot if provided, otherwise fall back to reactive state
+    const previewContent: string | ArrayBuffer = snapBinary ?? snapContent ?? binaryContent ?? content;
+    console.log(`[render] RP-ENTER snapContent head:"${String(snapContent ?? 'UNDEF').substring(0, 40)}" content head:"${String(content).substring(0, 40)}"`);
     try {
 
-    // Cache previous file's DOM when switching to a different file.
-    // lastRenderedPath must be set (skip initial load where it's empty).
-    // Skip DOM cache for incremental previewers (text files) — same reasoning as cacheTabState.
-    const prevExt = lastRenderedPath.split('.').pop()?.toLowerCase() || '';
-    const skipPrevDomCache = prevExt !== 'md' && prevExt !== 'markdown' && prevExt !== 'json'
-      && !isImageFile(lastRenderedPath) && !isPdfFile(lastRenderedPath)
-      && !isArchiveFile(lastRenderedPath) && !isVideoFile(lastRenderedPath);
-    if (!skipPrevDomCache && filePath !== lastRenderedPath && lastRenderedPath && currentFileMtime > 0 && previewContainer.firstChild && (content || binaryContent)) {
-      const prevNormPath = normalizedPath(lastRenderedPath);
-      const savedScrollTop = previewContainer.scrollTop;
-      const dom = previewContainer.firstChild;
-      previewContainer.removeChild(dom);
-      evictDomCache();
-      previewDomCache.set(prevNormPath, {
-        dom,
-        scrollTop: savedScrollTop,
-        tocHeadings: [...tocHeadings],
-        tocExpandedLines: collectExpandedLines(tocHeadings),
-        fileMtime: lastRenderedMtime,
-        lastAccess: Date.now(),
-      });
-    }
-
-    // Check DOM cache for instant restore (only if mtime is known)
-    const normPath = normalizedPath(filePath);
-    const cachedDom = previewDomCache.get(normPath);
-    console.log('[renderPreview] cache-check:', filePath.split(/[/\\]/).pop(), 'cached:', !!cachedDom,
-      'mtime:', currentFileMtime, 'cachedMtime:', cachedDom?.fileMtime,
-      'match:', !!(cachedDom && currentFileMtime > 0 && cachedDom.fileMtime === currentFileMtime));
-    if (cachedDom && currentFileMtime > 0 && cachedDom.fileMtime === currentFileMtime) {
-      // If preview already has content (spurious re-render from focus switch
-      // etc.), skip re-attach — the current DOM and scrollTop are correct.
-      if (previewContainer.firstChild) {
-        console.log('[renderPreview] dom-cache-hit skipped (already has content)');
-        return;
+    const logSlots = () => {
+      const states: string[] = [];
+      for (const [id, s] of tabSlots) {
+        const inDom = s.parentNode === previewArea;
+        states.push(`tab${id}(inDOM:${inDom}, rendered:${s.dataset.rendered}, fp:${(s.dataset.filePath || '').split(/[/\\]/).pop()})`);
       }
-      cachedDom.lastAccess = Date.now();
-      previewContainer.innerHTML = '';
-      previewContainer.appendChild(cachedDom.dom);
-      lastRenderedPath = filePath;
-      lastRenderedMtime = currentFileMtime;
+      return states.join(' ');
+    };
+    console.log(`[render] START currentTabId:${currentTabId} filePath:${filePath?.split(/[/\\]/).pop()} mode:${mode} slots:[${logSlots()}]`);
+    console.log(`[render] previewArea children: ${previewArea.children.length} [${Array.from(previewArea.children).map(c => `cls:${c.className} fp:${(c as HTMLElement).dataset?.filePath?.split(/[/\\]/).pop() || '-'}`).join(', ')}]`);
 
-      // Restore TOC state: TocSidebar was overwritten by the previous file's headings.
-      // pendingTocExpanded (from tabEditorCache) takes priority over cachedDom.tocExpandedLines.
-      const expandSet = pendingTocExpanded ?? new Set(cachedDom.tocExpandedLines);
-      if (cachedDom.tocHeadings.length > 0) {
-        if (expandSet.size > 0) {
-          restoreExpandedLines(cachedDom.tocHeadings, expandSet);
-        }
-        tocHeadings = cachedDom.tocHeadings;
+    const slot = getOrCreateSlot(currentTabId);
+    console.log(`[render] slot for tab${currentTabId} created:${slot.dataset.rendered === undefined} rendered:${slot.dataset.rendered} fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotEl:${slot.className}`);
+    showTabSlot(currentTabId);
+    console.log(`[render] after showTabSlot(${currentTabId}) slots:[${logSlots()}]`);
+    console.log(`[render] previewArea after show: children: ${previewArea.children.length} [${Array.from(previewArea.children).map(c => `cls:${c.className} fp:${(c as HTMLElement).dataset?.filePath?.split(/[/\\]/).pop() || '-'}`).join(', ')}]`);
+
+    // If slot already rendered for same file with current mtime, skip re-render
+    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
+        && slot.dataset.fileMtime === String(currentFileMtime)) {
+      console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} slot-hit (already rendered) ${(performance.now() - tRender).toFixed(0)}ms`);
+      // Restore scroll + TOC state from tab cache
+      if (pendingRestoreScrollTop >= 0) {
+        slot.scrollTop = pendingRestoreScrollTop;
+        pendingRestoreScrollTop = -1;
       }
-      pendingTocExpanded = null;
-
-      console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} dom-cache-hit ${(performance.now() - tRender).toFixed(0)}ms mtime:${cachedDom.fileMtime}`);
-
-      // Defer layout-dependent operations to avoid sync reflow on huge DOM
-      const savedScrollTop = cachedDom.scrollTop;
+      // Update TOC headings from the rendered DOM (they were reset during tab switch)
+      if (isMarkdown && tocHeadings.length === 0) {
+        // Headings will be populated by previewRouter.onHeadings callback during render;
+        // for slot hits we need to re-parse. Defer to rAF.
+        requestAnimationFrame(() => setupScrollObserver());
+      }
       const restoreTocFocus = tocFocused && tocOpen;
-      const restoreTocIdx = pendingTocSelectedIndex;
-      requestAnimationFrame(() => {
-        previewContainer!.scrollTop = savedScrollTop;
-        if (isMarkdown) setupScrollObserver();
-        if (restoreTocFocus) {
-          if (restoreTocIdx >= 0) {
-            tocSidebar?.setSelectedTocIndex(restoreTocIdx);
-            pendingTocSelectedIndex = -1;
-          }
+      if (restoreTocFocus && pendingTocSelectedIndex >= 0) {
+        requestAnimationFrame(() => {
+          tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex);
+          pendingTocSelectedIndex = -1;
           tocSidebar?.focus();
-        }
-      });
+        });
+      }
       return;
     }
 
-    // Remove stale cache entry for same file (e.g. content changed externally)
-    previewDomCache.delete(normPath);
+    slot.innerHTML = '';
+    slot.dataset.filePath = filePath;
 
     const requestId = ++renderRequestId;
     // Pass thumbnail metadata via dataset
     if (thumbnailMeta) {
-      previewContainer.dataset.thumbWidth = String(thumbnailMeta.width);
-      previewContainer.dataset.thumbHeight = String(thumbnailMeta.height);
-      previewContainer.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
-      previewContainer.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
+      slot.dataset.thumbWidth = String(thumbnailMeta.width);
+      slot.dataset.thumbHeight = String(thumbnailMeta.height);
+      slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
+      slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
     } else {
-      delete previewContainer.dataset.thumbWidth;
-      delete previewContainer.dataset.thumbHeight;
-      delete previewContainer.dataset.thumbOriginalSize;
-      delete previewContainer.dataset.thumbIsThumbnail;
+      delete slot.dataset.thumbWidth;
+      delete slot.dataset.thumbHeight;
+      delete slot.dataset.thumbOriginalSize;
+      delete slot.dataset.thumbIsThumbnail;
     }
     // Pass original file size for truncation notice
     if (originalFileSize > 0) {
-      previewContainer.dataset.originalFileSize = String(originalFileSize);
+      slot.dataset.originalFileSize = String(originalFileSize);
     } else {
-      delete previewContainer.dataset.originalFileSize;
+      delete slot.dataset.originalFileSize;
     }
-    const previewContent: string | ArrayBuffer = binaryContent ?? content;
-    await getPreviewRouter().preview(filePath, previewContent, previewContainer);
+    console.log(`[render] PRE-RENDER slot fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotInnerLen:${slot.innerHTML.length} contentHead:"${String(previewContent).substring(0, 80).replace(/\n/g, '\\n')}" snap:${snapContent !== undefined}`);
+    await getPreviewRouter().preview(filePath, previewContent, slot);
     if (requestId !== renderRequestId) return;
+    console.log(`[render] POST-RENDER slot fp:${(slot.dataset.filePath || '').split(/[/\\]/).pop()} slotInnerLen:${slot.innerHTML.length} hasChild:${!!slot.firstChild} previewAreaChildren:${previewArea.children.length}`);
+
+    slot.dataset.rendered = 'true';
+    slot.dataset.fileMtime = String(currentFileMtime);
 
     // Apply pending scroll restoration from tab cache
     if (pendingRestoreScrollTop >= 0) {
-      previewContainer.scrollTop = pendingRestoreScrollTop;
+      slot.scrollTop = pendingRestoreScrollTop;
       pendingRestoreScrollTop = -1;
     }
 
@@ -1026,7 +1041,7 @@
 
     // Add PDF info bar
     if (isPdfFile(filePath) && pdfPageCount > 0) {
-      addPdfInfoBar(previewContainer);
+      addPdfInfoBar(slot);
     }
 
     // Set up scroll observer for markdown TOC sync
@@ -1034,8 +1049,6 @@
       setupScrollObserver();
     }
 
-    lastRenderedPath = filePath;
-    lastRenderedMtime = currentFileMtime;
     console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} full ${(performance.now() - tRender).toFixed(0)}ms`);
     } finally {
       isRendering = false;
@@ -1043,15 +1056,17 @@
   }
 
   function scrollPreview(deltaY: number, deltaX: number = 0) {
-    if (previewContainer) {
-      previewContainer.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
+    const slot = getActiveSlot();
+    if (slot) {
+      slot.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
     }
   }
 
   export function getVisibleLine(): number {
-    if (!previewContainer || !content) return 0;
+    const slot = getActiveSlot();
+    if (!slot || !content) return 0;
     // Use data-line attributes if available (markdown with block-level annotations)
-    const rect = previewContainer.getBoundingClientRect();
+    const rect = slot.getBoundingClientRect();
     const el = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     if (el) {
       const lined = el.closest('[data-line]');
@@ -1061,9 +1076,9 @@
       }
     }
     // Fallback: scroll ratio (code files with uniform line height)
-    const maxScroll = previewContainer.scrollHeight - previewContainer.clientHeight;
+    const maxScroll = slot.scrollHeight - slot.clientHeight;
     if (maxScroll <= 0) return 0;
-    const ratio = previewContainer.scrollTop / maxScroll;
+    const ratio = slot.scrollTop / maxScroll;
     const totalLines = content.split('\n').length;
     return Math.round(ratio * (totalLines - 1));
   }
@@ -1131,19 +1146,22 @@
   }
 
   async function renderDirectoryPreview() {
-    if (!previewContainer || !filePath) return;
+    const slot = getOrCreateSlot(currentTabId);
+    showTabSlot(currentTabId);
+    if (!filePath) return;
     const requestId = ++renderRequestId;
     const previewer = getDirectoryPreviewer();
-    previewContainer.dataset.filePath = filePath;
-    await previewer.render('', previewContainer);
+    slot.dataset.filePath = filePath;
+    await previewer.render('', slot);
     if (requestId !== renderRequestId) return;
   }
 
   async function renderArchivePreview(path: string) {
-    if (!previewContainer) return;
+    const slot = getOrCreateSlot(currentTabId);
+    showTabSlot(currentTabId);
     const requestId = ++renderRequestId;
-    previewContainer.dataset.filePath = path;
-    await getPreviewRouter().preview(path, '', previewContainer);
+    slot.dataset.filePath = path;
+    await getPreviewRouter().preview(path, '', slot);
     if (requestId !== renderRequestId) return;
   }
 
@@ -1653,10 +1671,12 @@
       }
     } else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (previewContainer) previewContainer.scrollTop = 0;
+      const ggSlot = getActiveSlot();
+      if (ggSlot) ggSlot.scrollTop = 0;
     } else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      if (previewContainer) previewContainer.scrollTop = previewContainer.scrollHeight;
+      const gSlot = getActiveSlot();
+      if (gSlot) gSlot.scrollTop = gSlot.scrollHeight;
     } else if (event.ctrlKey && event.code === 'KeyS') {
       event.preventDefault();
       saveFile();
@@ -1669,8 +1689,11 @@
       await invoke('write_file', { path: filePath, content });
       savedContent = content;
       isModified = false;
-      // Clear cached DOM since file content changed
-      previewDomCache.delete(normalizedPath(filePath));
+      // Invalidate tab slot so next preview re-renders with saved content
+      const saveSlot = getActiveSlot();
+      if (saveSlot) {
+        delete saveSlot.dataset.rendered;
+      }
       // Refresh preview so it's up-to-date when user goes back to global-normal
       if (mode === 'editor-normal' || mode === 'editor-insert') {
         // Preview will be refreshed when switching to global-normal via $effect
@@ -1767,32 +1790,31 @@
   </div>
 
   <div class="panel-content">
-    {#if filePath}
-      <div class="preview-with-toc">
-        <div class="preview-area" bind:this={previewContainer} aria-hidden="true"></div>
-        {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
-          <TocSidebar
-            bind:this={tocSidebar}
-            headings={tocHeadings}
-            activeLine={tocActiveLine}
-            onJump={handleTocJump}
-            onFocusChange={handleTocFocusChange}
-          />
-        {/if}
-      </div>
-      <div class="editor-area" bind:this={editorContainer}>
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="editor-overlay"
-          class:overlay-hidden={mode !== 'editor-normal'}
-          bind:this={overlayElement}
-          onkeydown={handleOverlayKeydown}
-          tabindex={mode === 'editor-normal' ? 0 : -1}
-          role="region"
-          aria-label="Editor navigation"
-        ></div>
-      </div>
-    {:else}
+    <div class="preview-with-toc" class:hidden={!filePath && !batchRenameTempPath}>
+      <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
+      {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
+        <TocSidebar
+          bind:this={tocSidebar}
+          headings={tocHeadings}
+          activeLine={tocActiveLine}
+          onJump={handleTocJump}
+          onFocusChange={handleTocFocusChange}
+        />
+      {/if}
+    </div>
+    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath}>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="editor-overlay"
+        class:overlay-hidden={mode !== 'editor-normal'}
+        bind:this={overlayElement}
+        onkeydown={handleOverlayKeydown}
+        tabindex={mode === 'editor-normal' ? 0 : -1}
+        role="region"
+        aria-label="Editor navigation"
+      ></div>
+    </div>
+    {#if !filePath && !batchRenameTempPath}
       <div class="welcome">
         <h2>Welcome to Wind</h2>
         <p>Select a file to preview or edit</p>
@@ -1943,10 +1965,21 @@
     height: 100%;
   }
 
+  .preview-with-toc.hidden {
+    display: none;
+  }
+
   .preview-area {
     flex: 1;
     min-width: 0;
     height: 100%;
+    overflow: hidden;
+    position: relative;
+  }
+
+  :global(.tab-preview-slot) {
+    position: absolute;
+    inset: 0;
     overflow: auto;
     padding: 12px;
     display: flex;
@@ -1959,6 +1992,10 @@
     height: 100%;
     display: none;
     position: relative;
+  }
+
+  .editor-area.hidden {
+    display: none;
   }
 
   .editor-overlay {
