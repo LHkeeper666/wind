@@ -46,12 +46,18 @@ export class MarkdownPreviewer implements Previewer {
 		this.md = new MarkdownIt({
 			html: true,
 			linkify: true,
-			typographer: true,
+			typographer: false,
 		});
 
 		// LaTeX math support via texmath with async KaTeX rendering.
 		const placeholderRender = (latex: string, options: { displayMode: boolean }) =>
 			`<span class="math-placeholder" data-latex="${this.escapeAttr(latex)}" data-display="${options.displayMode}">${this.escapeHtml(latex)}</span>`;
+		// Remove math_block_eqno rule: it misinterprets (N) after $$...$$ as equation numbers,
+		// causing text like "(1) 证明..." to be consumed and dropped.
+		texmath.rules.dollars.block = texmath.rules.dollars.block.filter(
+			(rule: any) => rule.name !== 'math_block_eqno',
+		);
+
 		this.md.use(texmath, {
 			engine: {
 				render: placeholderRender,
