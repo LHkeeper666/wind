@@ -292,6 +292,9 @@
     const a = eventPath.replace(/\//g, '\\').toLowerCase();
     const b = filePath.replace(/\//g, '\\').toLowerCase();
     if (a !== b) return;
+    // Don't reload if we're in editor mode — we triggered this change ourselves
+    // (e.g. via :w). Reload would reset mode to global-normal and discard editor state.
+    if (mode !== 'global-normal') return;
     console.log('[PreviewEditor] Reloading due to external change');
     tabEditorCache.delete(currentTabId);
     previewDomCache.delete(a); // clear stale DOM cache
@@ -1277,7 +1280,19 @@
       }
     }, true); // capture phase
 
-    editorView.focus();
+    // Block IME composition on the overlay div (defense-in-depth).
+    // Some Windows IME versions may still try to compose when they
+    // detect contentEditable in the DOM tree, even if it's not focused.
+    if (overlayElement) {
+      overlayElement.addEventListener('compositionstart', (e: CompositionEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+      overlayElement.addEventListener('compositionend', (e: CompositionEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+    }
   }
 
   // Overlay keydown handler for editor normal mode.
@@ -1732,17 +1747,16 @@
         {/if}
       </div>
       <div class="editor-area" bind:this={editorContainer}>
-        {#if mode === 'editor-normal'}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            class="editor-overlay"
-            bind:this={overlayElement}
-            onkeydown={handleOverlayKeydown}
-            tabindex="0"
-            role="region"
-            aria-label="Editor navigation"
-          ></div>
-        {/if}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="editor-overlay"
+          class:overlay-hidden={mode !== 'editor-normal'}
+          bind:this={overlayElement}
+          onkeydown={handleOverlayKeydown}
+          tabindex={mode === 'editor-normal' ? 0 : -1}
+          role="region"
+          aria-label="Editor navigation"
+        ></div>
       </div>
     {:else}
       <div class="welcome">
@@ -1922,6 +1936,10 @@
     z-index: 10;
     background: transparent;
     outline: none;
+  }
+
+  .editor-overlay.overlay-hidden {
+    display: none;
   }
 
   .panel-cmdline {

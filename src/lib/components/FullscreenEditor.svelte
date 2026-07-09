@@ -280,8 +280,17 @@
     // Bridge vim clipboard with system clipboard
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
 
-    // Focus overlay first (editor starts in normal mode)
-    if (overlayElement) overlayElement.focus();
+    // Block IME composition on the overlay div (defense-in-depth)
+    if (overlayElement) {
+      overlayElement.addEventListener('compositionstart', (e: CompositionEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+      overlayElement.addEventListener('compositionend', (e: CompositionEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+    }
   }
 
   async function saveFile() {
@@ -322,17 +331,16 @@
     </div>
 
     <div class="editor-content" bind:this={editorContainer}>
-      {#if overlayVisible}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="editor-overlay"
-          bind:this={overlayElement}
-          onkeydown={handleOverlayKeydown}
-          tabindex="0"
-          role="region"
-          aria-label="Editor navigation"
-        ></div>
-      {/if}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="editor-overlay"
+        class:overlay-hidden={!overlayVisible}
+        bind:this={overlayElement}
+        onkeydown={handleOverlayKeydown}
+        tabindex={overlayVisible ? 0 : -1}
+        role="region"
+        aria-label="Editor navigation"
+      ></div>
     </div>
 
     <div class="editor-footer">
@@ -431,6 +439,10 @@
     z-index: 10;
     background: transparent;
     outline: none;
+  }
+
+  .editor-overlay.overlay-hidden {
+    display: none;
   }
 
   .editor-footer {
