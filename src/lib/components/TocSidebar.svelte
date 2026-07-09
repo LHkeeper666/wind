@@ -345,7 +345,7 @@
           role="treeitem"
           aria-selected={index === selectedIndex}
         >
-          <span class="expand-icon">{getExpandIcon(item)}</span>
+          <span class="expand-icon" class:clickable={item.heading.children.length > 0} role="button" tabindex="-1" onclick={(e) => { e.stopPropagation(); toggleExpand(index); }}>{getExpandIcon(item)}</span>
           <span class="toc-text" title={item.heading.text}>{item.heading.text}</span>
         </div>
       {/each}
@@ -450,6 +450,15 @@
     text-align: center;
     font-size: 10px;
     color: var(--text-muted);
+    user-select: none;
+  }
+
+  .expand-icon.clickable {
+    cursor: pointer;
+  }
+
+  .expand-icon.clickable:hover {
+    color: var(--text-primary);
   }
 
   .toc-text {
