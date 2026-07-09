@@ -179,6 +179,7 @@
   let pendingRestoreScrollTop: number = -1;
   let pendingTocSelectedIndex: number = -1;
   let currentFileMtime: number = 0;
+  let lastRenderedMtime: number = 0;
   let fileChangedUnlisten: (() => void) | null = null;
 
   // Per-filePath preview DOM cache (LRU, max 5 entries)
@@ -189,6 +190,9 @@
     tocExpandedLines: number[];
     fileMtime: number;
     lastAccess: number;
+    /** Content snapshot for incremental previewers — when present,
+     *  restore uses the snapshot to initialise prevLines state. */
+    content?: string;
   }
   const previewDomCache = new Map<string, CachedPreviewDom>();
   const MAX_DOM_CACHE = 5;
@@ -236,8 +240,14 @@
       tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
     });
 
-    // Cache rendered DOM so tab switch back is instant
-    if (mode === 'global-normal' && currentFileMtime > 0 && previewContainer?.firstChild && (content || binaryContent)) {
+    // Cache rendered DOM so tab switch back is instant.
+    // Skip DOM cache for incremental previewers (text files handled by TextPreviewer) —
+    // they re-render fast via codeToTokens and need prevLines state to be correct.
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const skipDomCache = !isMarkdown && ext !== 'json' && !isImageFile(filePath)
+      && !isPdfFile(filePath) && !isArchiveFile(filePath) && !isVideoFile(filePath);
+    console.log('[cacheTabState]', filePath.split(/[/\\]/).pop(), 'isMarkdown:', isMarkdown, 'ext:', ext, 'skipDomCache:', skipDomCache, 'mode:', mode);
+    if (!skipDomCache && mode === 'global-normal' && currentFileMtime > 0 && previewContainer?.firstChild && (content || binaryContent)) {
       const normPath = normalizedPath(filePath);
       // Avoid double-caching if already in cache with same mtime
       if (previewDomCache.get(normPath)?.fileMtime !== currentFileMtime) {
@@ -336,6 +346,7 @@
   $effect(() => {
     const m = mode;
     const changed = m !== prevMode;
+    console.log('[mode-effect] mode:', m, 'changed:', changed, 'tocFocused:', tocFocused, 'scrollTop:', previewContainer?.scrollTop);
     prevMode = m;
     if (m === 'editor-normal' || m === 'editor-insert') {
       // Show editor, hide preview
@@ -371,6 +382,7 @@
   // Render preview when content is ready and in preview mode
   $effect(() => {
     // These reads register as reactive dependencies
+    console.log('[render-effect] mode:', mode, 'filePath:', filePath?.split(/[/\\]/).pop(), 'hasContent:', !!(content || binaryContent));
     if (mode !== 'global-normal') return;
     if (!previewContainer || !filePath) return;
 
@@ -390,6 +402,7 @@
 
   // Focus forwarding: when panelElement gets focus, route to the correct inner element
   function handlePanelFocus() {
+    console.log('[handlePanelFocus] mode:', mode, 'scrollTop:', previewContainer?.scrollTop, 'trigger:', document.activeElement?.className);
     if (mode === 'editor-normal' && overlayElement) {
       overlayElement.focus();
     } else if (mode === 'editor-insert' && editorView) {
@@ -531,8 +544,9 @@
   }
 
   export function focusContent() {
+    console.log('[focusContent] scrollTop before:', previewContainer?.scrollTop);
     tocFocused = false;
-    if (panelElement) panelElement.focus();
+    if (panelElement) panelElement.focus({ preventScroll: true });
   }
 
   export function isTocFocused(): boolean {
@@ -886,17 +900,23 @@
 
     // Cache previous file's DOM when switching to a different file.
     // lastRenderedPath must be set (skip initial load where it's empty).
-    if (filePath !== lastRenderedPath && lastRenderedPath && currentFileMtime > 0 && previewContainer.firstChild && (content || binaryContent)) {
+    // Skip DOM cache for incremental previewers (text files) — same reasoning as cacheTabState.
+    const prevExt = lastRenderedPath.split('.').pop()?.toLowerCase() || '';
+    const skipPrevDomCache = prevExt !== 'md' && prevExt !== 'markdown' && prevExt !== 'json'
+      && !isImageFile(lastRenderedPath) && !isPdfFile(lastRenderedPath)
+      && !isArchiveFile(lastRenderedPath) && !isVideoFile(lastRenderedPath);
+    if (!skipPrevDomCache && filePath !== lastRenderedPath && lastRenderedPath && currentFileMtime > 0 && previewContainer.firstChild && (content || binaryContent)) {
       const prevNormPath = normalizedPath(lastRenderedPath);
+      const savedScrollTop = previewContainer.scrollTop;
       const dom = previewContainer.firstChild;
       previewContainer.removeChild(dom);
       evictDomCache();
       previewDomCache.set(prevNormPath, {
         dom,
-        scrollTop: previewContainer.scrollTop,
+        scrollTop: savedScrollTop,
         tocHeadings: [...tocHeadings],
         tocExpandedLines: collectExpandedLines(tocHeadings),
-        fileMtime: currentFileMtime,
+        fileMtime: lastRenderedMtime,
         lastAccess: Date.now(),
       });
     }
@@ -904,11 +924,21 @@
     // Check DOM cache for instant restore (only if mtime is known)
     const normPath = normalizedPath(filePath);
     const cachedDom = previewDomCache.get(normPath);
+    console.log('[renderPreview] cache-check:', filePath.split(/[/\\]/).pop(), 'cached:', !!cachedDom,
+      'mtime:', currentFileMtime, 'cachedMtime:', cachedDom?.fileMtime,
+      'match:', !!(cachedDom && currentFileMtime > 0 && cachedDom.fileMtime === currentFileMtime));
     if (cachedDom && currentFileMtime > 0 && cachedDom.fileMtime === currentFileMtime) {
+      // If preview already has content (spurious re-render from focus switch
+      // etc.), skip re-attach — the current DOM and scrollTop are correct.
+      if (previewContainer.firstChild) {
+        console.log('[renderPreview] dom-cache-hit skipped (already has content)');
+        return;
+      }
       cachedDom.lastAccess = Date.now();
       previewContainer.innerHTML = '';
       previewContainer.appendChild(cachedDom.dom);
       lastRenderedPath = filePath;
+      lastRenderedMtime = currentFileMtime;
 
       // Restore TOC state: TocSidebar was overwritten by the previous file's headings.
       // pendingTocExpanded (from tabEditorCache) takes priority over cachedDom.tocExpandedLines.
@@ -1002,6 +1032,7 @@
     }
 
     lastRenderedPath = filePath;
+    lastRenderedMtime = currentFileMtime;
     console.log(`[render] ${filePath.split(/[/\\]/).pop() || filePath} full ${(performance.now() - tRender).toFixed(0)}ms`);
     } finally {
       isRendering = false;

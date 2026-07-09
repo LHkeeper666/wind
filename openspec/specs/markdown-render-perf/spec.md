@@ -68,38 +68,29 @@ The system SHALL render markdown to HTML without blocking on KaTeX formula rende
 - **THEN** 通过 `renderRequestId` 检测到已过期，放弃当前渲染批次中的剩余公式
 
 ### Requirement: 预览 DOM 缓存
-The system SHALL cache fully rendered preview DOM nodes keyed by file path (normalized), including all post-processing results (KaTeX, Shiki highlighting, Mermaid diagrams, loaded images). Cache hit SHALL skip the entire markdown render pipeline.
+The system SHALL cache preview state keyed by file path (normalized) for instant tab-switch restoration. For previewers that support incremental updates (TextPreviewer), the cache SHALL store content snapshots rather than DOM nodes; restoration SHALL use incremental diff to rebuild the DOM. For previewers without incremental support (Markdown, Image, etc.), the cache SHALL continue storing rendered DOM nodes.
 
 #### Scenario: 首次渲染写入缓存
-- **WHEN** 用户首次打开 `foo.md` 并完成预览渲染（含所有异步后处理）
-- **THEN** `foo.md` 对应的预览 DOM 被存入缓存，包含 scrollTop、TOC 状态
+- **WHEN** 用户首次打开一个文件并完成预览渲染
+- **THEN** 该文件对应的预览状态（DOM node 或 content snapshot，取决于 previewer 类型）被存入缓存
 
-#### Scenario: Tab 切换命中缓存
-- **WHEN** 用户从 `foo.md` 切换到 `bar.md`，再切换回 `foo.md`
-- **AND** `foo.md` 的预览 DOM 在缓存中且文件未被外部修改
-- **THEN** 系统直接 attach 缓存的 DOM 节点，跳过 `read_file` 和 markdown 渲染管线
-- **AND** 预览内容在 1 帧内完成显示
+#### Scenario: Tab 切换命中 TextPreviewer 缓存
+- **WHEN** 用户从文本文件 A 切换到文本文件 B，再切换回 A
+- **AND** A 的预览缓存中存储了 content snapshot
+- **AND** 文件未被外部修改（mtime 匹配）
+- **THEN** 系统用缓存的 content snapshot 调用 `render()` 初始化
+- **AND** 由于内容未变，增量 diff 结果为空，无 DOM 操作
 
 #### Scenario: 缓存命中但文件已被外部修改
-- **WHEN** 用户切换回 `foo.md`
+- **WHEN** 用户切换回某个文件
 - **AND** 缓存命中但文件 mtime 与缓存时不同
 - **THEN** 丢弃缓存，重新读取文件并渲染
-
-#### Scenario: 同一文件被多个 tab 打开
-- **WHEN** tab A 和 tab B 都打开了 `foo.md`
-- **THEN** 系统只缓存一份 `foo.md` 的 DOM（key 为 filePath，非 tabId）
 
 #### Scenario: LRU 淘汰
 - **WHEN** 缓存已满（5 个条目）且需要缓存新文件
 - **THEN** 淘汰最久未被访问（lastAccess 最小）的条目
-- **AND** 被淘汰条目的 DOM 节点被丢弃
 
-#### Scenario: 编辑器模式切换不缓存 DOM
-- **WHEN** 用户按 `e` 进入编辑器模式修改了文件内容
-- **AND** 保存后切回预览模式
-- **THEN** 旧的 DOM 缓存被清除，重新渲染（因内容已变更）
-
-#### Scenario: 文件被外部修改时清除缓存
-- **WHEN** 系统收到 `file-changed` 事件且 eventPath 匹配某个缓存的 filePath
-- **THEN** 该 filePath 对应的 DOM 缓存被清除
+#### Scenario: 编辑器模式切换后缓存清除
+- **WHEN** 用户按 `e` 进入编辑器模式修改了文件内容并保存
+- **THEN** 该文件对应的缓存（无论 DOM 还是 content snapshot）被清除
 

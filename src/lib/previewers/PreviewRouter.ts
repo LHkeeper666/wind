@@ -10,6 +10,7 @@ import { VideoPreviewer } from './VideoPreviewer';
 export class PreviewRouter {
   private previewers: Previewer[] = [];
   private currentPreviewer: Previewer | null = null;
+  private lastFilePath: string = '';
   onHeadings?: (headings: TocHeading[]) => void;
 
   constructor() {
@@ -35,26 +36,34 @@ export class PreviewRouter {
     const previewer = this.match(filePath);
     if (!previewer) {
       this.onHeadings?.([]);
-
       oldPreviewer?.dispose();
       container.innerHTML = '<p class="preview-unsupported">Unsupported file type</p>';
       this.currentPreviewer = null;
+      this.lastFilePath = '';
       return;
     }
 
-    // Render into a temporary off-screen container (atomic swap)
+    // Incremental update path: same previewer instance + same file + supports update()
+    const normalizedPath = filePath.replace(/\//g, '\\').toLowerCase();
+    const lastNormalized = this.lastFilePath.replace(/\//g, '\\').toLowerCase();
+    if (previewer === oldPreviewer && normalizedPath === lastNormalized && previewer.update) {
+      previewer.onHeadings = this.onHeadings;
+      await previewer.update(content, container);
+      return;
+    }
+
+    // Full render path: staging atomic swap
+    this.lastFilePath = filePath;
     const staging = document.createElement('div');
     staging.style.cssText = 'position:absolute;visibility:hidden;width:100%;height:100%;';
     container.parentElement?.appendChild(staging);
     container.dataset.filePath = filePath;
     staging.dataset.filePath = filePath;
-    // Copy thumbnail metadata to staging
     for (const key of ['thumbWidth', 'thumbHeight', 'thumbOriginalSize', 'thumbIsThumbnail']) {
       if (container.dataset[key] !== undefined) {
         staging.dataset[key] = container.dataset[key];
       }
     }
-    // Pass onHeadings callback to previewer
     previewer.onHeadings = this.onHeadings;
     await previewer.render(content, staging);
 
