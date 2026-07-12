@@ -847,6 +847,7 @@
 
   function initEditor() {
     if (!editorContainer || !filePath) return;
+    if (editorView) { editorView.destroy(); editorView = undefined; }
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup, search({ top: true }), sMatchField, EditorView.lineWrapping,
