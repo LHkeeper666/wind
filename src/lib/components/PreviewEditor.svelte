@@ -666,20 +666,30 @@
     if (!previewArea || !filePath) return;
     if (isRendering) return;
     isRendering = true;
-    const tEntry = performance.now();
+    const t0 = performance.now();
     try {
+      const t1 = performance.now();
       const slot = getOrCreateSlot(currentTabId);
+      const t2 = performance.now();
       showTabSlot(currentTabId);
+      const t3 = performance.now();
 
       // Skip if slot already holds fresh render of the same file
       if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
           && slot.dataset.fileMtime === String(currentFileMtime)) {
-        if (pendingRestoreScrollTop >= 0) { slot.scrollTop = pendingRestoreScrollTop; pendingRestoreScrollTop = -1; }
+        // Defer scrollTop restoration — setting it synchronously forces the
+        // browser to compute the content's scrollHeight, which triggers a full
+        // layout on large DOM trees (~800ms for markdown with many KaTeX formulas).
+        const savedScroll = pendingRestoreScrollTop;
+        pendingRestoreScrollTop = -1;
+        if (savedScroll >= 0) {
+          requestAnimationFrame(() => { slot.scrollTop = savedScroll; });
+        }
         if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
         if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
           requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
         }
-        console.log(`[perf] renderPreview slot-hit ${(performance.now()-tEntry).toFixed(0)}ms`);
+        console.log(`[perf] renderPreview slot-hit ${(performance.now()-t0).toFixed(0)}ms`);
         return;
       }
 
@@ -706,7 +716,9 @@
       slot.dataset.rendered = 'true';
       slot.dataset.fileMtime = String(currentFileMtime);
 
-      if (pendingRestoreScrollTop >= 0) { slot.scrollTop = pendingRestoreScrollTop; pendingRestoreScrollTop = -1; }
+      const savedScroll2 = pendingRestoreScrollTop;
+      pendingRestoreScrollTop = -1;
+      if (savedScroll2 >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll2; }); }
       if (pendingTocExpanded && tocHeadings.length > 0) {
         restoreExpandedLines(tocHeadings, pendingTocExpanded);
         pendingTocExpanded = null; tocHeadings = [...tocHeadings];
@@ -719,7 +731,7 @@
       }
       if (isPdfFile(filePath) && pdfPageCount > 0) { addPdfInfoBar(slot); }
       if (isMarkdown) { setupScrollObserver(); }
-      console.log(`[perf] renderPreview full ${(performance.now()-tEntry).toFixed(0)}ms`);
+      console.log(`[perf] renderPreview full ${(performance.now()-t0).toFixed(0)}ms`);
     } finally {
       isRendering = false;
     }
