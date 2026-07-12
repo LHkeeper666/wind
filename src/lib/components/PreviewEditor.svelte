@@ -196,7 +196,7 @@
     if (!slot) {
       slot = document.createElement('div');
       slot.className = 'tab-preview-slot';
-      slot.style.display = 'none';
+      slot.style.visibility = 'hidden';
       previewArea?.appendChild(slot);
       tabSlots.set(tabId, slot);
     }
@@ -204,10 +204,11 @@
   }
 
   function showTabSlot(tabId: number) {
-    // All slots stay in the DOM — only display is toggled.
-    // This avoids browser layout on every tab switch.
+    // visibility toggling preserves browser layout — no re-layout on tab switch.
+    // display:none would discard layout data and force a full re-layout (~1s for
+    // large markdown with thousands of KaTeX elements).
     for (const [id, slot] of tabSlots) {
-      slot.style.display = id === tabId ? '' : 'none';
+      slot.style.visibility = id === tabId ? 'visible' : 'hidden';
     }
   }
 
