@@ -115,6 +115,7 @@
   let previewRouter: PreviewRouter | undefined;
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
+  let editorFilePath: string | null = null;
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
@@ -237,7 +238,7 @@
     });
     if (savedMode !== 'global-normal') {
       mode = 'global-normal';
-      if (editorView) { editorView.destroy(); editorView = undefined; }
+      if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
     }
   }
 
@@ -314,7 +315,7 @@
     if (m === 'editor-normal' || m === 'editor-insert') {
       if (editorContainer) editorContainer.style.display = 'block';
       if (previewArea) previewArea.style.display = 'none';
-      if (!editorView && editorContainer && filePath) {
+      if (editorContainer && filePath && (!editorView || editorFilePath !== filePath)) {
         initEditor();
       } else if (editorView && editorTargetLine >= 0 && changed) {
         moveCursorToLine(editorTargetLine);
@@ -514,7 +515,7 @@
         tocHeadings = cached.tocHeadings;
       }
       if (cached.mode !== 'global-normal') {
-        if (editorView) { editorView.destroy(); editorView = undefined; }
+        if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
       }
       mode = cached.mode;
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
@@ -848,6 +849,7 @@
   function initEditor() {
     if (!editorContainer || !filePath) return;
     if (editorView) { editorView.destroy(); editorView = undefined; }
+    editorFilePath = filePath;
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup, search({ top: true }), sMatchField, EditorView.lineWrapping,
