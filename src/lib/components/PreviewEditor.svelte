@@ -1269,6 +1269,7 @@
   :global(.tab-preview-slot) {
     position: absolute; inset: 0; overflow: auto;
     padding: 12px; display: flex; flex-direction: column; box-sizing: border-box;
+    background: var(--bg-primary);
   }
 
   .editor-area { width: 100%; height: 100%; display: none; position: relative; }
