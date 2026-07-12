@@ -196,21 +196,18 @@
     if (!slot) {
       slot = document.createElement('div');
       slot.className = 'tab-preview-slot';
+      slot.style.display = 'none';
+      previewArea?.appendChild(slot);
       tabSlots.set(tabId, slot);
     }
     return slot;
   }
 
   function showTabSlot(tabId: number) {
-    if (!previewArea) return;
+    // All slots stay in the DOM — only display is toggled.
+    // This avoids browser layout on every tab switch.
     for (const [id, slot] of tabSlots) {
-      if (slot.parentNode === previewArea) {
-        previewArea.removeChild(slot);
-      }
-    }
-    const activeSlot = tabSlots.get(tabId);
-    if (activeSlot && activeSlot.parentNode !== previewArea) {
-      previewArea.appendChild(activeSlot);
+      slot.style.display = id === tabId ? '' : 'none';
     }
   }
 
@@ -522,6 +519,7 @@
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
+      console.log(`[perf] loadFile cache-hit ${(performance.now()-t0).toFixed(0)}ms`);
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime) { tabEditorCache.delete(currentTabId); loadFile(path); } })
@@ -667,6 +665,7 @@
     if (!previewArea || !filePath) return;
     if (isRendering) return;
     isRendering = true;
+    const tEntry = performance.now();
     try {
       const slot = getOrCreateSlot(currentTabId);
       showTabSlot(currentTabId);
@@ -679,6 +678,7 @@
         if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
           requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
         }
+        console.log(`[perf] renderPreview slot-hit ${(performance.now()-tEntry).toFixed(0)}ms`);
         return;
       }
 
@@ -718,6 +718,7 @@
       }
       if (isPdfFile(filePath) && pdfPageCount > 0) { addPdfInfoBar(slot); }
       if (isMarkdown) { setupScrollObserver(); }
+      console.log(`[perf] renderPreview full ${(performance.now()-tEntry).toFixed(0)}ms`);
     } finally {
       isRendering = false;
     }

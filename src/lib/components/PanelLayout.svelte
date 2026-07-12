@@ -401,9 +401,14 @@
   }
 
   function handleTabSwitchRelative(delta: number) {
+    const tStart = performance.now();
     saveCurrentTabState();
+    const tSaved = performance.now();
     tabs.switchTabRelative(delta);
+    const tSwitched = performance.now();
     restoreTabAndFocus();
+    const tRestored = performance.now();
+    console.log(`[perf] tab-switch save:${(tSaved-tStart).toFixed(0)}ms switch:${(tSwitched-tSaved).toFixed(0)}ms restore:${(tRestored-tSwitched).toFixed(0)}ms total:${(tRestored-tStart).toFixed(0)}ms`);
   }
 
   function handleTabSwitchByIndex(index: number) {
