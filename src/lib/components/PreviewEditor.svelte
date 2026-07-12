@@ -529,6 +529,10 @@
       return;
     }
 
+    // Reset content immediately so the render $effect (which fires before
+    // async loadFile completes) does not render stale data from a previous file.
+    content = '';
+    binaryContent = null;
     pendingRestoreScrollTop = -1;
     isModified = false;
 
