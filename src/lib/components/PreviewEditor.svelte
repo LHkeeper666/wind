@@ -196,7 +196,7 @@
     if (!slot) {
       slot = document.createElement('div');
       slot.className = 'tab-preview-slot';
-      slot.style.visibility = 'hidden';
+      slot.style.zIndex = '0';
       previewArea?.appendChild(slot);
       tabSlots.set(tabId, slot);
     }
@@ -204,11 +204,11 @@
   }
 
   function showTabSlot(tabId: number) {
-    // visibility toggling preserves browser layout — no re-layout on tab switch.
-    // display:none would discard layout data and force a full re-layout (~1s for
-    // large markdown with thousands of KaTeX elements).
+    // All slots remain visible — only z-index is toggled.
+    // This avoids any layout invalidation (display/visibility changes
+    // may cause browsers to discard cached layout for hidden elements).
     for (const [id, slot] of tabSlots) {
-      slot.style.visibility = id === tabId ? 'visible' : 'hidden';
+      slot.style.zIndex = id === tabId ? '1' : '0';
     }
   }
 
@@ -689,7 +689,12 @@
         if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
           requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
         }
-        console.log(`[perf] renderPreview slot-hit ${(performance.now()-t0).toFixed(0)}ms`);
+        const tHit = performance.now();
+        console.log(`[perf] renderPreview slot-hit ${(tHit-t0).toFixed(0)}ms`);
+        // Measure when the browser actually renders the visibility change
+        requestAnimationFrame(() => {
+          console.log(`[perf] rAF after slot-hit ${(performance.now()-tHit).toFixed(0)}ms total:${(performance.now()-t0).toFixed(0)}ms`);
+        });
         return;
       }
 
