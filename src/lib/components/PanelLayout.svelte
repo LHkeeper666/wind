@@ -37,8 +37,6 @@
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
-  let tabBar: TabBar | undefined = $state(undefined);
-
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
 
@@ -335,11 +333,25 @@
     if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
   });
 
+  function getDirName(path: string): string {
+    if (!path || path === '/' || path === '\\') return 'root';
+    const normalized = path.replace(/\//g, '\\');
+    const parts = normalized.split('\\').filter(Boolean);
+    if (parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) return parts[0];
+    return parts[parts.length - 1] || 'home';
+  }
+
   // Subscribe to layout changes
   $effect(() => {
     const unsubscribe = layout.subscribe(state => {
       currentPath = state.currentPath;
       selectedFile = state.selectedFile;
+      // Auto-name active tab: file name if selected, otherwise directory name
+      const name = state.selectedFile
+        ? (state.selectedFile.split(/[/\\]/).pop() || state.selectedFile)
+        : getDirName(state.currentPath);
+      const tabsState = getTabsState();
+      tabs.renameTab(tabsState.activeTabId, name);
     });
     return unsubscribe;
   });
@@ -401,14 +413,9 @@
   }
 
   function handleTabSwitchRelative(delta: number) {
-    const tStart = performance.now();
     saveCurrentTabState();
-    const tSaved = performance.now();
     tabs.switchTabRelative(delta);
-    const tSwitched = performance.now();
     restoreTabAndFocus();
-    const tRestored = performance.now();
-    console.log(`[perf] tab-switch save:${(tSaved-tStart).toFixed(0)}ms switch:${(tSwitched-tSaved).toFixed(0)}ms restore:${(tRestored-tSwitched).toFixed(0)}ms total:${(tRestored-tStart).toFixed(0)}ms`);
   }
 
   function handleTabSwitchByIndex(index: number) {
@@ -425,29 +432,18 @@
     if (active.cursorIndex > 0 || active.scrollOffset > 0) {
       currentDirectoryPanel?.setPendingRestore(active.cursorIndex, active.scrollOffset);
     }
-    // Update layout store (preserve selectedFile during tab switch)
-    if (active.currentPath) {
-      layout.setCurrentPath(active.currentPath, false);
-    }
     // Sync PanelLayout local state
     currentPath = active.currentPath;
     selectedFile = active.selectedFile;
-    // Also update layout store's selectedFile
-    layout.setSelectedFile(active.selectedFile);
-    // Restore terminal state
-    layout.setTerminalHeight(active.terminalHeight);
-    if (active.terminalVisible) {
-      layout.showTerminal();
-      if (active.fullscreenTerminalOpen) {
-        layout.openFullscreenTerminal();
-      } else {
-        layout.closeFullscreenTerminal();
-      }
-      layout.setTerminalMode(active.terminalMode || 'insert');
-    } else {
-      layout.closeFullscreenTerminal();
-      layout.hideTerminal();
-    }
+    // Batch all layout store updates into one to avoid cascading reactive triggers
+    layout.restoreTabState({
+      currentPath: active.currentPath || '',
+      selectedFile: active.selectedFile,
+      terminalVisible: active.terminalVisible,
+      terminalMode: active.terminalVisible ? (active.terminalMode || 'insert') : null,
+      terminalHeight: active.terminalHeight,
+      fullscreenTerminalOpen: active.fullscreenTerminalOpen,
+    });
     // Restore focus to saved activeColumn
     const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
       ? 'terminal'
@@ -997,9 +993,6 @@
         handleTabNew();
       } else if (code === 'KeyC') {
         handleTabClose();
-      } else if (code === 'KeyR') {
-        const tabsState = getTabsState();
-        tabBar?.triggerRename(tabsState.activeTabId);
       } else if (code === 'KeyN' || code === 'BracketRight') {
         handleTabSwitchRelative(1);
       } else if (code === 'KeyP' || code === 'BracketLeft') {
@@ -1296,7 +1289,7 @@
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
 <div class="app-layout" role="application" aria-label="Wind Panel Layout">
 
-  <TabBar bind:this={tabBar} onSwitchTab={handleTabSwitch} />
+  <TabBar onSwitchTab={handleTabSwitch} />
 
   <div class="panel-layout" style="
     grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;

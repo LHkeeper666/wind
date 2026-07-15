@@ -486,7 +486,6 @@
   let pdfRenderScale: number = 1.5;
 
   async function loadFile(path: string) {
-    const t0 = performance.now();
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
@@ -521,7 +520,6 @@
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
-      console.log(`[perf] loadFile cache-hit ${(performance.now()-t0).toFixed(0)}ms`);
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime) { tabEditorCache.delete(currentTabId); loadFile(path); } })
@@ -671,35 +669,21 @@
     if (!previewArea || !filePath) return;
     if (isRendering) return;
     isRendering = true;
-    const t0 = performance.now();
     try {
-      const t1 = performance.now();
       const slot = getOrCreateSlot(currentTabId);
-      const t2 = performance.now();
       showTabSlot(currentTabId);
-      const t3 = performance.now();
 
       // Skip if slot already holds fresh render of the same file
       if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
           && slot.dataset.fileMtime === String(currentFileMtime)) {
-        // Defer scrollTop restoration — setting it synchronously forces the
-        // browser to compute the content's scrollHeight, which triggers a full
-        // layout on large DOM trees (~800ms for markdown with many KaTeX formulas).
-        const savedScroll = pendingRestoreScrollTop;
+        // Scroll position is already preserved since the slot DOM hasn't
+        // changed — avoid setting scrollTop which forces a full layout pass
+        // (~400ms on large DOMs like markdown with many KaTeX formulas).
         pendingRestoreScrollTop = -1;
-        if (savedScroll >= 0) {
-          requestAnimationFrame(() => { slot.scrollTop = savedScroll; });
-        }
         if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
         if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
           requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
         }
-        const tHit = performance.now();
-        console.log(`[perf] renderPreview slot-hit ${(tHit-t0).toFixed(0)}ms`);
-        // Measure when the browser actually renders the visibility change
-        requestAnimationFrame(() => {
-          console.log(`[perf] rAF after slot-hit ${(performance.now()-tHit).toFixed(0)}ms total:${(performance.now()-t0).toFixed(0)}ms`);
-        });
         return;
       }
 
@@ -741,7 +725,6 @@
       }
       if (isPdfFile(filePath) && pdfPageCount > 0) { addPdfInfoBar(slot); }
       if (isMarkdown) { setupScrollObserver(); }
-      console.log(`[perf] renderPreview full ${(performance.now()-t0).toFixed(0)}ms`);
     } finally {
       isRendering = false;
     }

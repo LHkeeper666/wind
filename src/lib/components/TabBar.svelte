@@ -1,64 +1,21 @@
 <script lang="ts">
-  import { tabs, activeTab } from '$lib/stores/tabs';
+  import { tabs } from '$lib/stores/tabs';
 
-  let { onSwitchTab, onRenameTab }: { onSwitchTab?: (tabId: number) => void; onRenameTab?: (tabId: number, name: string) => void } = $props();
-
-  let renamingId: number | null = $state(null);
-  let renameValue: string = $state('');
-  let renameInput: HTMLInputElement | undefined = $state(undefined);
-
-  export function triggerRename(tabId: number) {
-    const tabsList = getTabs();
-    const tab = tabsList.find(t => t.id === tabId);
-    if (!tab) return;
-    renamingId = tabId;
-    renameValue = tab.name;
-    setTimeout(() => renameInput?.focus(), 0);
-  }
+  let { onSwitchTab }: { onSwitchTab?: (tabId: number) => void } = $props();
 
   function handleTabClick(tabId: number) {
-    if (renamingId !== null) return;
-    if (onSwitchTab) {
-      onSwitchTab(tabId);
-    } else {
-      tabs.switchTab(tabId);
-    }
-  }
-
-  function handleTabDblClick(tabId: number) {
-    const tabsList = getTabs();
-    const tab = tabsList.find(t => t.id === tabId);
-    if (!tab) return;
-    renamingId = tabId;
-    renameValue = tab.name;
-    setTimeout(() => renameInput?.focus(), 0);
-  }
-
-  function handleRenameKeydown(event: KeyboardEvent, tabId: number) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      const name = renameValue || 'untitled';
-      tabs.renameTab(tabId, name);
-      onRenameTab?.(tabId, name);
-      renamingId = null;
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      renamingId = null;
-    }
-  }
-
-  function handleRenameBlur(tabId: number) {
-    const name = renameValue || 'untitled';
-    tabs.renameTab(tabId, name);
-    onRenameTab?.(tabId, name);
-    renamingId = null;
-  }
-
-  function getTabs() {
-    let result: any[] = [];
-    const unsub = tabs.subscribe(v => result = v.tabs);
-    unsub();
-    return result;
+    // Defer to next task so the browser finishes processing
+    // mousedown internals (hit-test, pointer state etc.) before
+    // our synchronous DOM mutations run. This avoids the browser
+    // having to reconcile mouse-event rendering with our changes,
+    // which otherwise delays the first animation frame by ~140ms.
+    setTimeout(() => {
+      if (onSwitchTab) {
+        onSwitchTab(tabId);
+      } else {
+        tabs.switchTab(tabId);
+      }
+    }, 0);
   }
 </script>
 
@@ -68,25 +25,13 @@
     <div
       class="tab-item"
       class:active={tab.id === $tabs.activeTabId}
-      onclick={() => handleTabClick(tab.id)}
-      ondblclick={() => handleTabDblClick(tab.id)}
+      onmousedown={() => handleTabClick(tab.id)}
       onkeydown={() => {}}
       role="tab"
       aria-selected={tab.id === $tabs.activeTabId}
     >
-      {#if renamingId === tab.id}
-        <input
-          class="tab-rename-input"
-          bind:value={renameValue}
-          bind:this={renameInput}
-          onkeydown={(e) => handleRenameKeydown(e, tab.id)}
-          onblur={() => handleRenameBlur(tab.id)}
-          onclick={(e) => e.stopPropagation()}
-        />
-      {:else}
-        <span class="tab-index">{index + 1}</span>
-        <span class="tab-name">{tab.name}</span>
-      {/if}
+      <span class="tab-index">{index + 1}</span>
+      <span class="tab-name">{tab.name}</span>
     </div>
   {/each}
 </div>
@@ -145,16 +90,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .tab-rename-input {
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-focus);
-    color: var(--text-primary);
-    font-size: 12px;
-    font-family: var(--font-mono);
-    padding: 0 4px;
-    width: 100px;
-    outline: none;
   }
 </style>

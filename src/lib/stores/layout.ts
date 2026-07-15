@@ -73,6 +73,40 @@ function createLayoutStore() {
   return {
     subscribe,
 
+    // Apply all tab state fields in a single store update to avoid
+    // cascading reactive triggers from multiple individual set* calls.
+    restoreTabState(partial: {
+      currentPath: string;
+      selectedFile: string | null;
+      terminalVisible: boolean;
+      terminalMode: 'insert' | 'normal' | null;
+      terminalHeight: number;
+      fullscreenTerminalOpen: boolean;
+    }) {
+      update(state => {
+        let normalized = partial.currentPath.replace(/\//g, '\\');
+        if (/^[A-Za-z]:$/.test(normalized)) normalized += '\\';
+        let parentPath: string;
+        if (normalized === '\\' || /^[A-Za-z]:\\$/.test(normalized)) {
+          parentPath = '\\';
+        } else {
+          const lastSlash = normalized.lastIndexOf('\\');
+          parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+        }
+        return {
+          ...state,
+          currentPath: normalized,
+          parentPath,
+          selectedFile: partial.selectedFile,
+          terminalVisible: partial.terminalVisible,
+          terminalMode: partial.terminalMode,
+          terminalHeight: partial.terminalHeight,
+          fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
+          activeColumn: partial.terminalVisible ? 'terminal' : 'current',
+        };
+      });
+    },
+
     // Set column ratios
     setRatios(ratios: [number, number, number]) {
       update(state => ({ ...state, columnRatios: ratios }));

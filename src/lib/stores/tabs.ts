@@ -192,10 +192,6 @@ function createTabsStore() {
           activeColumn: layoutState.activeColumn,
           tocOpen: extra?.tocOpen ?? newTabs[idx].tocOpen,
         };
-        // Update tab name from current path
-        if (layoutState.currentPath) {
-          newTabs[idx].name = getDirName(layoutState.currentPath);
-        }
         return { ...state, tabs: newTabs };
       });
     },
