@@ -1,5 +1,6 @@
 import type { Previewer } from './types';
 import { invoke } from '@tauri-apps/api/core';
+import { directoryCache, type DirCacheEntry } from '$lib/utils/directory-cache';
 
 interface FileEntry {
   name: string;
@@ -19,7 +20,6 @@ export class DirectoryPreviewer implements Previewer {
   private container: HTMLElement | null = null;
 
   match(filePath: string): boolean {
-    // This is checked by the caller (PreviewEditor) before invoking
     return false;
   }
 
@@ -28,8 +28,16 @@ export class DirectoryPreviewer implements Previewer {
     const filePath = container.dataset.filePath || '';
     if (!filePath) return;
 
+    // Use shared cache so DirectoryPanel can benefit from preview-loaded data
+    if (directoryCache.has(filePath)) {
+      container.innerHTML = this.renderEntries(directoryCache.get(filePath)!);
+      return;
+    }
+
     try {
       const entries = await invoke<FileEntry[]>('read_directory', { path: filePath });
+      // Cache without .. entry (matching DirectoryPanel's cache convention)
+      directoryCache.set(filePath, entries.filter(f => f.name !== '..') as DirCacheEntry[]);
       container.innerHTML = this.renderEntries(entries);
     } catch (err) {
       container.innerHTML = `<p class="preview-unsupported">Failed to read directory: ${err}</p>`;

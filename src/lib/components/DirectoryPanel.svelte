@@ -7,12 +7,13 @@
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
+  import { directoryCache } from '$lib/utils/directory-cache';
 
   interface FileEntry {
     name: string;
     path: string;
     is_dir: boolean;
-    size?: number | null;
+    size: number | null;
     is_hidden?: boolean;
     modified?: number | null;
     created?: number | null;
@@ -207,8 +208,6 @@
     pendingScrollOffset = -1;
   }
 
-  // Directory content cache
-  const directoryCache: Map<string, FileEntry[]> = new Map();
 
   function isVirtualRoot(dirPath: string): boolean {
     return dirPath === '/' || dirPath === '\\';
@@ -353,7 +352,7 @@
       // Inject .. for non-root directories (virtual root has no ..)
       if (!isVirtual) {
         const parentPath = getParentPath(dirPath);
-        files = [{ name: '..', path: parentPath, is_dir: true }, ...files];
+        files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
       }
       selectInitialEntry();
       applyPendingRestore();
@@ -374,7 +373,7 @@
         });
         // Inject .. for parent directory navigation
         const parentPath = getParentPath(dirPath);
-        files = [{ name: '..', path: parentPath, is_dir: true }, ...files];
+        files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
       }
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
