@@ -1000,6 +1000,13 @@ fn read_binary_file_partial(path: String, max_bytes: u64) -> Result<String, Stri
     Ok(STANDARD.encode(buffer))
 }
 
+// Thumbnail: scale to max 1200px on the longest side. 4/5 layout on 1920px≃1500px panel.
+const THUMBNAIL_MAX_SIDE: u32 = 1200;
+// Files smaller than 512KB are fast to transfer — skip thumbnail & send original quality.
+const THUMBNAIL_SKIP_SIZE: u64 = 512 * 1024;
+// JPEG re-encode quality after scaling (85 = good balance, avoids double-compression artifacts).
+const THUMBNAIL_JPEG_QUALITY: u8 = 85;
+
 #[tauri::command]
 async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
     let file_path = Path::new(&path).to_path_buf();
@@ -1047,8 +1054,8 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
 
             eprintln!("[thumbnail] JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
 
-            if max_side <= 400 {
-                eprintln!("[thumbnail] Image too small, returning original");
+            if max_side <= THUMBNAIL_MAX_SIDE || original_size <= THUMBNAIL_SKIP_SIZE {
+                eprintln!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -1059,21 +1066,27 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
             }
 
             let t1 = std::time::Instant::now();
-            let image = turbojpeg::decompress(&file_data, turbojpeg::PixelFormat::RGB)
-                .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to decode JPEG {}: {}", path, e);
-                    format!("Failed to decode JPEG: {}", e)
-                })?;
+            // turbojpeg can't decode CMYK / grayscale JPEGs to RGB.
+            // Fall back to the image crate for those.
+            let rgb_pixels: Vec<u8> = match turbojpeg::decompress(&file_data, turbojpeg::PixelFormat::RGB) {
+                Ok(image) => image.pixels,
+                Err(e) => {
+                    eprintln!("[thumbnail] turbojpeg failed ({}), falling back to image crate", e);
+                    let img = image::load_from_memory(&file_data)
+                        .map_err(|e2| format!("Failed to decode JPEG: {} (turbojpeg: {})", e2, e))?;
+                    img.to_rgb8().into_raw()
+                }
+            };
             let t2 = std::time::Instant::now();
 
-            let ratio = 400.0 / max_side as f64;
+            let ratio = THUMBNAIL_MAX_SIDE as f64 / max_side as f64;
             let final_w = (orig_w as f64 * ratio).round() as u32;
             let final_h = (orig_h as f64 * ratio).round() as u32;
 
             let src_image = fast_image_resize::images::Image::from_vec_u8(
                 orig_w,
                 orig_h,
-                image.pixels,
+                rgb_pixels,
                 fast_image_resize::PixelType::U8x3,
             ).map_err(|e| format!("Failed to create source image: {}", e))?;
 
@@ -1095,7 +1108,7 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
             let t3 = std::time::Instant::now();
 
             let mut buf: Vec<u8> = Vec::new();
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, THUMBNAIL_JPEG_QUALITY);
             let resized_img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
                 image::ImageBuffer::from_raw(final_w, final_h, dst_image.into_vec())
                     .ok_or("Failed to create resized image buffer")?;
@@ -1144,8 +1157,8 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
 
             eprintln!("[thumbnail] Non-JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
 
-            if max_side <= 400 {
-                eprintln!("[thumbnail] Image too small, returning original");
+            if max_side <= THUMBNAIL_MAX_SIDE || original_size <= THUMBNAIL_SKIP_SIZE {
+                eprintln!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -1162,7 +1175,7 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
                 })?;
             let rgb_img = img.to_rgb8();
 
-            let ratio = 400.0 / max_side as f64;
+            let ratio = THUMBNAIL_MAX_SIDE as f64 / max_side as f64;
             let final_w = (orig_w as f64 * ratio).round() as u32;
             let final_h = (orig_h as f64 * ratio).round() as u32;
 
@@ -1190,7 +1203,7 @@ async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String> {
                 .map_err(|e| format!("Failed to resize image: {}", e))?;
 
             let mut buf: Vec<u8> = Vec::new();
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, THUMBNAIL_JPEG_QUALITY);
             let resized_img: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
                 image::ImageBuffer::from_raw(final_w, final_h, dst_image.into_vec())
                     .ok_or("Failed to create resized image buffer")?;

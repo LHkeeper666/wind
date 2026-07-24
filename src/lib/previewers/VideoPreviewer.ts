@@ -119,8 +119,8 @@ export class VideoPreviewer implements Previewer {
 
     const img = document.createElement('img');
     img.src = url;
-    img.style.maxWidth = '100%';
-    img.style.maxHeight = '100%';
+    img.style.width = '100%';
+    img.style.height = '100%';
     img.style.objectFit = 'contain';
     wrapper.appendChild(img);
 

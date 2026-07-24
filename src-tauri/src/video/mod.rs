@@ -110,7 +110,7 @@ pub fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
         "-f", "image2pipe",
         "-v", "quiet",
         "-c:v", "mjpeg",
-        "-vf", "scale='if(gte(iw,ih),400,-2):if(gte(ih,iw),400,-2):flags=neighbor'",
+        "-vf", "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
         "-",
     ]);
 
@@ -147,7 +147,7 @@ pub fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
             "-f", "image2pipe",
             "-v", "quiet",
             "-c:v", "mjpeg",
-            "-vf", "scale='if(gte(iw,ih),400,-2):if(gte(ih,iw),400,-2):flags=neighbor'",
+            "-vf", "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
             "-",
         ]);
 

@@ -26,8 +26,8 @@ export class ImagePreviewer implements Previewer {
           container.innerHTML = '';
           const wrapper = document.createElement('div');
           wrapper.className = 'preview-image';
-          img.style.maxWidth = '100%';
-          img.style.maxHeight = '100%';
+          img.style.width = '100%';
+          img.style.height = '100%';
           img.style.objectFit = 'contain';
           wrapper.appendChild(img);
           container.appendChild(wrapper);
