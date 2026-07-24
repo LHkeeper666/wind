@@ -104,6 +104,7 @@
         overlayCmdActive = false;
         processOverlayCommand(overlayCmdBuf);
         overlayCmdBuf = '';
+        setTimeout(() => { if (overlayElement && overlayVisible) overlayElement.focus(); }, 0);
         return;
       }
       if (event.key === 'Escape' || (event.ctrlKey && event.code === 'BracketLeft')) {

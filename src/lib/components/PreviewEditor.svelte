@@ -1011,7 +1011,7 @@
   function handleOverlayKeydown(event: KeyboardEvent) {
     event.preventDefault(); event.stopPropagation();
     if (overlayCmdActive) {
-      if (event.key === 'Enter') { overlayCmdActive = false; processOverlayCommand(overlayCmdBuf); overlayCmdBuf = ''; return; }
+      if (event.key === 'Enter') { overlayCmdActive = false; processOverlayCommand(overlayCmdBuf); overlayCmdBuf = ''; setTimeout(() => { if (overlayElement && mode === 'editor-normal') overlayElement.focus(); }, 0); return; }
       if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { overlayCmdActive = false; overlayCmdBuf = ''; onToast(''); if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); } return; }
       if (event.key === 'Backspace') { if (overlayCmdBuf.length > 0) overlayCmdBuf = overlayCmdBuf.slice(0, -1); else overlayCmdActive = false; highlightSMatches(); return; }
       if (event.key.length === 1) { overlayCmdBuf += event.key; highlightSMatches(); }
