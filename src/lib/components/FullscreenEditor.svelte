@@ -49,7 +49,10 @@
     else if (code === 'Backspace') { key += 'BS'; }
     else if (code === 'Tab') { key += 'Tab'; }
     else if (code === 'Delete') { key += 'Del'; }
-    else if (code.startsWith('Digit')) { key += code[5]; }
+    else if (code.startsWith('Digit')) {
+      const shifted = ')!@#$%^&*(';
+      key += event.shiftKey ? shifted[parseInt(code[5])] : code[5];
+    }
     else if (code.startsWith('Arrow')) { key += code.slice(5); }
     else if (code === 'BracketLeft') { key += event.shiftKey ? '{' : '['; }
     else if (code === 'BracketRight') { key += event.shiftKey ? '}' : ']'; }
@@ -125,6 +128,12 @@
     if (event.key === ':') {
       overlayCmdActive = true;
       overlayCmdBuf = '';
+      if (editorView) {
+        const cm = getCM(editorView);
+        if (cm?.state?.vim?.visualMode) {
+          overlayCmdBuf = "'<,'>";
+        }
+      }
       return;
     }
 

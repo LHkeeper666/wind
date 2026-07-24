@@ -41,25 +41,38 @@
           if (!pattern) return Decoration.none as any;
           let regex: RegExp;
           try {
-            regex = new RegExp(pattern, flags.replace('g', '') + 'gi');
+            regex = new RegExp(pattern, flags.replace('g', '') + 'i');
           } catch { return Decoration.none as any; }
-          const hasRange = m[1] !== '' || m[2] !== '';
+          const isVisualRange = m[1] === "'<,'>";
+          const hasRange = !isVisualRange && (m[1] !== '' || m[2] !== '');
           const mark = Decoration.mark({ class: replacement ? 'cm-sMatch-replace' : 'cm-sMatch' });
           const decos: any[] = [];
           const doc = tr.state.doc;
-          const startLine = hasRange ? 1 : doc.lineAt(tr.state.selection.main.head).number;
-          const endLine = hasRange ? doc.lines : startLine;
+          let startLine: number;
+          let endLine: number;
+          if (isVisualRange) {
+            const sel = tr.state.selection.main;
+            startLine = doc.lineAt(sel.from).number;
+            endLine = doc.lineAt(sel.to).number;
+          } else if (hasRange) {
+            startLine = 1;
+            endLine = doc.lines;
+          } else {
+            startLine = doc.lineAt(tr.state.selection.main.head).number;
+            endLine = startLine;
+          }
           for (let i = startLine; i <= endLine; i++) {
             const line = doc.line(i);
             if (global) {
+              const lineRegex = new RegExp(pattern, 'gi');
               let m: RegExpExecArray | null;
-              while ((m = regex.exec(line.text)) !== null) {
+              while ((m = lineRegex.exec(line.text)) !== null) {
                 decos.push(mark.range(line.from + m.index, line.from + m.index + m[0].length));
                 if (!m[0].length) break;
               }
             } else {
-              const m = regex.exec(line.text);
-              if (m) decos.push(mark.range(line.from + m.index, line.from + m.index + m[0].length));
+              const m = line.text.match(regex);
+              if (m) decos.push(mark.range(line.from + m.index!, line.from + m.index! + m[0].length));
             }
           }
           return Decoration.set(decos.sort((a, b) => a.from - b.from));
@@ -922,7 +935,10 @@
     else if (code === 'Backspace') key += 'BS';
     else if (code === 'Tab') key += 'Tab';
     else if (code === 'Delete') key += 'Del';
-    else if (code.startsWith('Digit')) key += code[5];
+    else if (code.startsWith('Digit')) {
+      const shifted = ')!@#$%^&*(';
+      key += event.shiftKey ? shifted[parseInt(code[5])] : code[5];
+    }
     else if (code.startsWith('Arrow')) key += code.slice(5);
     else if (code === 'BracketLeft') key += event.shiftKey ? '{' : '[';
     else if (code === 'BracketRight') key += event.shiftKey ? '}' : ']';
@@ -1008,7 +1024,17 @@
       if (event.key.length === 1) searchBuf += event.key;
       return;
     }
-    if (event.key === ':') { overlayCmdActive = true; overlayCmdBuf = ''; return; }
+    if (event.key === ':') {
+      overlayCmdActive = true;
+      overlayCmdBuf = '';
+      if (editorView) {
+        const cm = getCM(editorView);
+        if (cm?.state?.vim?.visualMode) {
+          overlayCmdBuf = "'<,'>";
+        }
+      }
+      return;
+    }
     if (event.key === '/' || event.key === '?') { searchActive = true; searchBuf = ''; return; }
     if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       if (editorView) { if (event.shiftKey) findPrevious(editorView); else findNext(editorView); }
@@ -1292,8 +1318,8 @@
 
   :global(.cm-editor) { height: 100%; }
   :global(.cm-panel) { display: none !important; }
-  :global(.cm-searchMatch) { background-color: #fabd2f55; outline: 1px solid #fabd2f88; border-radius: 2px; }
-  :global(.cm-searchMatch-selected) { background-color: #fabd2faa; outline: 1px solid #fabd2fcc; border-radius: 2px; }
+  :global(.cm-searchMatch) { background-color: #fabd2f55 !important; outline: 1px solid #fabd2f88 !important; border-radius: 2px; }
+  :global(.cm-searchMatch-selected) { background-color: #fabd2faa !important; outline: 1px solid #fabd2fcc !important; border-radius: 2px; }
   :global(.cm-sMatch) { background-color: #b8bb2644; outline: 1px solid #b8bb2688; border-radius: 2px; }
   :global(.cm-sMatch-replace) { background-color: #b8bb2644; outline: 1px solid #b8bb2688; border-radius: 2px; font-size: 0; color: transparent; }
   :global(.cm-sMatch-replace::after) { content: var(--s-replacement, ''); font-size: initial; color: #83a598; font-style: italic; }
