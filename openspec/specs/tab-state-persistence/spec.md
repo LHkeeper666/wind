@@ -3,7 +3,7 @@
 Preserve and restore tab state (selected file, cursor, scroll, terminal mode, preview DOM) across tab switches.
 ## Requirements
 ### Requirement: Tab 切换时保存当前状态
-切换 tab 前，系统 SHALL 保存当前 tab 的 selectedFile、cursorIndex、scrollOffset、terminal 状态和预览 DOM 缓存到 TabState。
+切换 tab 前，系统 SHALL 保存当前 tab 的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM 缓存，以及 left panel 的 detach 状态到 TabState。
 
 #### Scenario: 保存 selectedFile
 - **WHEN** 用户从 tab A 切换到 tab B
@@ -29,8 +29,18 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **WHEN** 用户切换 tab 且当前没有选中任何文件
 - **THEN** TabState.selectedFile 保存为 null
 
+#### Scenario: 保存 left panel detach 状态
+- **WHEN** 用户从 tab A 切换到 tab B
+- **AND** tab A 的 left panel 处于 manual 模式，路径为 `ftp://myserver/var`
+- **THEN** tab A 的 TabState 保存 leftMode='manual', leftPath='ftp://myserver/var', leftCursorIndex, leftScrollOffset
+
+#### Scenario: 保存 left panel auto 状态
+- **WHEN** 用户从 tab A 切换到 tab B
+- **AND** tab A 的 left panel 处于 auto 模式
+- **THEN** tab A 的 TabState 保存 leftMode='auto'
+
 ### Requirement: Tab 切换时恢复保存的状态
-切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态和预览 DOM，而不是重置为默认值。
+切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM，以及 left panel 的 detach 状态。
 
 #### Scenario: 恢复 selectedFile 并显示预览
 - **WHEN** 用户切换到 tab A
@@ -75,4 +85,14 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **WHEN** 用户切换到 tab A
 - **AND** `foo.md` 的 DOM 缓存命中但文件 mtime 已变更
 - **THEN** 丢弃缓存，重新读取文件并渲染
+
+#### Scenario: 恢复 left panel manual 模式
+- **WHEN** 用户切换到 tab A
+- **AND** tab A 的 leftMode 为 'manual'，leftPath 为 `ftp://myserver/var`
+- **THEN** left panel 恢复为 manual 模式，显示 `ftp://myserver/var` 的内容，光标和滚动位置恢复
+
+#### Scenario: 恢复 left panel auto 模式
+- **WHEN** 用户切换到 tab A
+- **AND** tab A 的 leftMode 为 'auto'
+- **THEN** left panel 恢复为 auto 模式，路径从 center panel 的 currentPath 自动派生
 

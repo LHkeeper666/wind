@@ -13,12 +13,16 @@
     visible = false,
     rootPath = '',
     mode = 'current',
+    allowRecursive = true,
+    entries = null,
     onClose = () => {},
     onSelect = (path: string, isDir: boolean) => {},
   }: {
     visible: boolean;
     rootPath: string;
     mode?: 'current' | 'recursive';
+    allowRecursive?: boolean;
+    entries?: {name: string; path: string; is_dir: boolean}[] | null;
     onClose?: () => void;
     onSelect?: (path: string, isDir: boolean) => void;
   } = $props();
@@ -122,6 +126,19 @@
     const currentGeneration = ++searchGeneration;
     isSearching = true;
 
+    // In-memory filtering (e.g. FTP panels): instant, no network call
+    if (entries) {
+      const lower = query.toLowerCase();
+      const filtered = entries
+        .filter(e => e.name === '..' ? false : e.name.toLowerCase().includes(lower))
+        .slice(0, MAX_RESULTS);
+      results = filtered.map(e => ({ name: e.name, path: e.path, relative_path: e.name, is_dir: e.is_dir }));
+      reachedLimit = filtered.length >= MAX_RESULTS;
+      selectedIndex = results.length > 0 ? 0 : -1;
+      isSearching = false;
+      return;
+    }
+
     try {
       const searchResults = await invoke<SearchResult[]>('search_files', {
         rootPath,
@@ -167,6 +184,7 @@
         }
         break;
       case 'Tab':
+        if (!allowRecursive) break;
         event.preventDefault();
         currentMode = currentMode === 'current' ? 'recursive' : 'current';
         if (query && isValidRegex) {

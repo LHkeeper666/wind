@@ -23,6 +23,7 @@
   import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
 
   let currentPath: string = $state('');
+  let leftPanelPath: string = $derived($layout.leftMode === 'manual' ? $layout.leftPath : $layout.parentPath);
   let selectedFile: string | null = $state(null);
   let showCommandPalette: boolean = $state(false);
   let commandQuery: string = $state('');
@@ -109,8 +110,11 @@
 
   // Resolve a path argument relative to currentPath
   function resolvePath(input: string): string {
-    let trimmed = input.trim().replace(/\//g, '\\');
+    let trimmed = input.trim();
     if (!trimmed) return '';
+    // Don't convert slashes for FTP URLs
+    if (trimmed.startsWith('ftp://')) return trimmed.replace(/\\/g, '/');
+    trimmed = trimmed.replace(/\//g, '\\');
     // Git Bash style: /d/ → D:\, /c/Users → C:\Users, /d → D:\
     // Only single letter after \ is treated as drive letter
     if (/^\\[A-Za-z]$/.test(trimmed) || /^\\[A-Za-z]\\/.test(trimmed)) {
@@ -335,6 +339,13 @@
 
   function getDirName(path: string): string {
     if (!path || path === '/' || path === '\\') return 'root';
+    if (path.startsWith('ftp://')) {
+      const noPrefix = path.slice(6);
+      const slashPos = noPrefix.indexOf('/');
+      if (slashPos < 0) return noPrefix;
+      const parts = noPrefix.split('/').filter(Boolean);
+      return parts[parts.length - 1] || noPrefix;
+    }
     const normalized = path.replace(/\//g, '\\');
     const parts = normalized.split('\\').filter(Boolean);
     if (parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) return parts[0];
@@ -363,8 +374,33 @@
       showUnsavedConfirm = true;
       return;
     }
+    // Preserve slashes for FTP paths, normalize for local
+    if (!path.startsWith('ftp://')) {
+      path = path.replace(/\//g, '\\');
+    }
     layout.setCurrentPath(path);
     currentPath = path;
+  }
+
+  // Navigate left panel (used in manual mode when left panel is focused)
+  function handleLeftNavigate(path: string) {
+    if (!path.startsWith('ftp://')) {
+      path = path.replace(/\//g, '\\');
+    }
+    layout.setLeftPath(path);
+  }
+
+  function getParentPathForNavigate(dirPath: string): string {
+    if (dirPath.startsWith('ftp://')) {
+      const stripped = dirPath.replace(/\/$/, '');
+      const lastSlash = stripped.lastIndexOf('/');
+      if (lastSlash <= 6) return '\\';
+      return stripped.substring(0, lastSlash);
+    }
+    const normalized = dirPath.replace(/\//g, '\\').replace(/\\$/, '');
+    if (normalized === '\\' || /^[A-Za-z]:\\$/.test(normalized)) return '\\';
+    const lastSlash = normalized.lastIndexOf('\\');
+    return lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
   }
 
   // Tab operations
@@ -443,7 +479,16 @@
       terminalMode: active.terminalVisible ? (active.terminalMode || 'insert') : null,
       terminalHeight: active.terminalHeight,
       fullscreenTerminalOpen: active.fullscreenTerminalOpen,
+      leftMode: active.leftMode || 'auto',
+      leftPath: active.leftPath || '',
     });
+    // Refresh FTP panels on tab switch (may be stale after cross-tab operations)
+    if (active.currentPath.startsWith('ftp://')) {
+      currentDirectoryPanel?.refresh();
+    }
+    if (active.leftMode === 'manual' && active.leftPath.startsWith('ftp://')) {
+      parentDirectoryPanel?.refresh();
+    }
     // Restore focus to saved activeColumn
     const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
       ? 'terminal'
@@ -557,6 +602,22 @@
     }
   }
 
+  function isFtpPath(p: string): boolean { return p.startsWith('ftp://'); }
+  function getFtpConnName(p: string): string {
+    const rest = p.slice(6);
+    const slash = rest.indexOf('/');
+    return slash >= 0 ? rest.substring(0, slash) : rest;
+  }
+  function getFtpRemotePath(p: string): string {
+    const rest = p.slice(6);
+    const slash = rest.indexOf('/');
+    return slash >= 0 ? rest.substring(slash) : '/';
+  }
+  function getFtpDestPath(dirPath: string, name: string): string {
+    const base = dirPath.replace(/\/$/, '');
+    return base + '/' + name;
+  }
+
   async function handlePaste(force: boolean = false) {
     let state: any;
     const unsub = clipboard.subscribe(v => state = v)();
@@ -567,6 +628,91 @@
 
     const entries = state.entries;
     const operation = state.operation;
+    const destIsFtp = isFtpPath(currentPath);
+    const srcIsFtp = entries.some((e: any) => isFtpPath(e.path));
+    const isCrossBackend = destIsFtp || srcIsFtp;
+
+    // Cross-backend paste: skip local conflict detection
+    if (isCrossBackend) {
+      if (srcIsFtp && !destIsFtp) {
+        // FTP → Local: download
+        const destDir = currentPath.replace(/[\\\/]+$/, '');
+        for (const entry of entries) {
+          const localPath = destDir + '\\' + entry.name;
+          const connName = getFtpConnName(entry.path);
+          const remotePath = getFtpRemotePath(entry.path);
+          await invoke('ftp_download', { connName, remotePath, localPath });
+          showToast(`Downloading ${entry.name}...`);
+        }
+        if (operation === 'cut') {
+          // Delete remote source after download
+          for (const entry of entries) {
+            await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
+          }
+        }
+      } else if (!srcIsFtp && destIsFtp) {
+        // Local → FTP: upload
+        const destConn = getFtpConnName(currentPath);
+        const destBase = getFtpRemotePath(currentPath).replace(/\/+$/, '');
+        for (const entry of entries) {
+          const remotePath = destBase + '/' + entry.name;
+          await invoke('ftp_upload', { connName: destConn, localPath: entry.path, remotePath });
+          showToast(`Uploading ${entry.name}...`);
+        }
+        if (operation === 'cut') {
+          // Delete local source after upload
+          for (const entry of entries) {
+            await invoke('delete_file_async', { path: entry.path, permanent: true }).catch(() => {});
+          }
+        }
+      } else if (srcIsFtp && destIsFtp) {
+        // FTP → FTP
+        const srcConn = getFtpConnName(entries[0].path);
+        const destConn = getFtpConnName(currentPath);
+        if (srcConn === destConn) {
+          const destBase = getFtpDestPath(currentPath, '').replace(/\/+$/, '');
+          if (operation === 'cut') {
+            // Move: server-side rename (instant, regardless of file size)
+            for (const entry of entries) {
+              const newFullPath = destBase + '/' + entry.name;
+              try {
+                await invoke('ftp_rename', { oldPath: entry.path, newPath: newFullPath });
+              } catch (e: any) {
+                showToast(`Move failed: ${e}`);
+              }
+            }
+            showToast(`Moved ${entries.length} item(s) on ${srcConn}`);
+          } else {
+            // Copy: need download + re-upload (no server-side copy in FTP)
+            let done = 0;
+            for (const entry of entries) {
+              showToast(`Copying ${entry.name} (${done + 1}/${entries.length})...`);
+              const newRemote = destBase + '/' + entry.name;
+              // Download to temp, re-upload (streaming)
+              await invoke('ftp_copy', {
+                connName: srcConn,
+                srcPath: getFtpRemotePath(entry.path),
+                dstPath: newRemote,
+              }).catch((e: any) => { showToast(`Copy failed: ${e}`); });
+              done++;
+            }
+            showToast(`Copied ${entries.length} item(s) on ${srcConn}`);
+          }
+        } else {
+          // Different servers: download + upload relay
+          showToast('Cross-server transfer not yet supported');
+        }
+      }
+
+      if (operation === 'cut') {
+        clipboard.clear();
+      }
+      // Refresh panels after cross-backend transfer
+      currentDirectoryPanel?.refresh();
+      return;
+    }
+
+    // Local-to-local paste (existing behavior)
     const destDir = currentPath.replace(/[\\\/]+$/, '');
     let processed = 0;
     let firstPastedPath: string | null = null;
@@ -1001,6 +1147,9 @@
         tabs.swapTab(-1);
       } else if (code === 'Period') {
         tabs.swapTab(1);
+      } else if (code === 'KeyD') {
+        layout.toggleDetach();
+        showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
       } else if (key >= '1' && key <= '9') {
         handleTabSwitchByIndex(parseInt(key) - 1);
       }
@@ -1079,20 +1228,160 @@
     if (event.key === 'Enter') {
       const q = commandQuery.trim();
 
+      // detach / attach commands
+      if (q === 'detach') {
+        layout.detach();
+        showToast('Panel detached');
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+      if (q === 'attach') {
+        layout.attach();
+        showToast('Panel attached');
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+      if (q === 'td') {
+        layout.toggleDetach();
+        showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
       // cd command
       if (q === 'cd' || q.startsWith('cd ')) {
         const arg = q.substring(2).trim();
+        const isLeftManual = $layout.activeColumn === 'parent' && $layout.leftMode === 'manual';
+
         if (!arg) {
           invoke<string>('get_home_dir').then(homeDir => {
-            handleNavigate(homeDir);
+            if (isLeftManual) {
+              handleLeftNavigate(homeDir);
+            } else {
+              handleNavigate(homeDir);
+            }
           });
         } else {
-          const resolved = resolvePath(arg);
-          invoke('read_directory', { path: resolved }).then(() => {
-            handleNavigate(resolved);
+          // Handle ftp:// paths directly (no resolvePath needed)
+          if (arg.startsWith('ftp://')) {
+            const normalized = arg.replace(/\\/g, '/');
+            invoke('read_directory', { path: normalized }).then(() => {
+              if (isLeftManual) {
+                handleLeftNavigate(normalized);
+              } else {
+                handleNavigate(normalized);
+              }
+            }).catch((e: any) => {
+              showToast(`Failed to open FTP: ${e}`);
+            });
+          } else {
+            const resolved = resolvePath(arg);
+            invoke('read_directory', { path: resolved }).then(() => {
+              if (isLeftManual) {
+                handleLeftNavigate(resolved);
+              } else {
+                handleNavigate(resolved);
+              }
+            }).catch(() => {
+              showToast(`E344: Can't find directory: ${arg}`);
+            });
+          }
+        }
+        showCommandPalette = false;
+        if (isLeftManual) {
+          focusPanel('parent');
+        } else {
+          focusPanel('current');
+        }
+        return;
+      }
+
+      // ftp commands
+      if (q === 'ftp list' || q === 'ftp connections') {
+        invoke<{name: string; host: string; port: number; user: string}[]>('list_ftp_connections').then(configs => {
+          if (configs.length === 0) {
+            showToast('No FTP connections');
+          } else {
+            const lines = configs.map(c => `  ${c.name}: ${c.user}@${c.host}:${c.port}`).join('\n');
+            showToast(`FTP connections:\n${lines}`);
+          }
+        });
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
+      if (q === 'ftp disconnect') {
+        showToast('Usage: :ftp disconnect <name>');
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
+      if (q.startsWith('ftp disconnect ')) {
+        const name = q.substring(15).trim();
+        invoke('ftp_disconnect', { name }).then((msg: any) => {
+          showToast(msg);
+        }).catch((e: any) => showToast(`Error: ${e}`));
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
+      if (q === 'ftp connect') {
+        showToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
+        showCommandPalette = false;
+        focusPanel('current');
+        return;
+      }
+
+      if (q.startsWith('ftp connect ')) {
+        const rest = q.substring(12).trim();
+
+        // Shorthand: :ftp connect <name>  (reconnect via stored config)
+        const simpleRe = /^(\S+)$/;
+        const simpleMatch = rest.match(simpleRe);
+        if (simpleMatch) {
+          const name = simpleMatch[1];
+          // Try to ensure connection + navigate
+          invoke('check_ftp_connection', { name }).then(() => {
+            showToast(`Reconnected to ${name}`);
+            const ftpPath = `ftp://${name}/`;
+            handleNavigate(ftpPath);
           }).catch(() => {
-            showToast(`E344: Can't find directory: ${arg}`);
+            showToast(`No stored connection '${name}'. Use: :ftp connect ${name} <host> [--port N]`);
           });
+          showCommandPalette = false;
+          focusPanel('current');
+          return;
+        }
+
+        // Full form: <name> <host[:port]> [--port X] [--user X] [--pass X]
+        const argRe = /^(\S+)\s+(\S+?)(?::(\d+))?(?:\s+--port[=:\s]+(\d+))?(?:\s+--user[=:\s]+(\S+))?(?:\s+--pass[=:\s]+(\S+))?$/;
+        const match = rest.match(argRe);
+        if (!match) {
+          showToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
+        } else {
+          const [, name, host, colonPort, optPort, user, pass] = match;
+          const port = optPort || colonPort || null;
+          invoke('ftp_connect', {
+            name,
+            host,
+            port: port ? parseInt(port) : null,
+            user: user || null,
+            password: pass || null,
+          }).then((msg: any) => {
+            showToast(msg);
+            const ftpPath = `ftp://${name}/`;
+            invoke('read_directory', { path: ftpPath }).then(() => {
+              handleNavigate(ftpPath);
+            }).catch((e: any) => {
+              showToast(`FTP connected but failed to list: ${e}`);
+            });
+          }).catch((e: any) => showToast(`Error: ${e}`));
         }
         showCommandPalette = false;
         focusPanel('current');
@@ -1106,6 +1395,18 @@
           currentDirectoryPanel?.refresh();
           showCommandPalette = false;
           focusPanel('current');
+        } else if (arg.startsWith('ftp://')) {
+          // FTP path: no resolvePath, keep forward slashes
+          const normalized = arg.replace(/\\/g, '/');
+          invoke('read_directory', { path: normalized }).then(() => {
+            handleNavigate(normalized);
+            showCommandPalette = false;
+            focusPanel('current');
+          }).catch((e: any) => {
+            showToast(`Failed to open FTP: ${e}`);
+            showCommandPalette = false;
+            focusPanel('current');
+          });
         } else {
           const resolved = resolvePath(arg);
           invoke('read_directory', { path: resolved }).then(() => {
@@ -1166,6 +1467,16 @@
         return;
       }
       // Ratio command
+      if (q === 'ratio') {
+        layout.setRatios([1, 1, 3]);
+        showCommandPalette = false;
+        return;
+      }
+      if (q === 'ratio dual') {
+        layout.setRatios([1, 1, 1]);
+        showCommandPalette = false;
+        return;
+      }
       if (commandQuery.startsWith('ratio ')) {
         const ratioStr = commandQuery.substring(6).trim();
         const parts = ratioStr.split(':').map(Number);
@@ -1308,9 +1619,18 @@
       <DirectoryPanel
         bind:this={parentDirectoryPanel}
         type="parent"
-        path={$layout.parentPath}
+        path={leftPanelPath}
         selectedPath={$layout.currentPath}
-        onNavigate={handleNavigate}
+        detached={$layout.leftMode === 'manual'}
+        onNavigate={(p) => $layout.leftMode === 'manual' ? handleLeftNavigate(p) : handleNavigate(p)}
+        onNavigateUp={() => {
+          if ($layout.leftMode === 'manual') {
+            const parent = getParentPathForNavigate(leftPanelPath);
+            handleLeftNavigate(parent);
+          } else {
+            handleNavigate($layout.parentPath);
+          }
+        }}
         onSelect={() => {}}  // Parent column doesn't need to select files
         onSwitchPanel={handleSwitchPanel}
         onTabCommand={handleTabCommand}

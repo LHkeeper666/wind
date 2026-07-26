@@ -20,6 +20,10 @@ export interface TabState {
   pdfCurrentPage: number;
   activeColumn: 'parent' | 'current' | 'preview' | 'terminal';
   tocOpen: boolean;
+  leftMode: 'auto' | 'manual';
+  leftPath: string;
+  leftCursorIndex: number;
+  leftScrollOffset: number;
 }
 
 interface TabsState {
@@ -48,6 +52,10 @@ function getDefaultTab(id: number): TabState {
     pdfCurrentPage: 0,
     activeColumn: 'current',
     tocOpen: true,
+    leftMode: 'auto',
+    leftPath: '',
+    leftCursorIndex: 0,
+    leftScrollOffset: 0,
   };
 }
 
@@ -76,12 +84,17 @@ function createTabsStore() {
         if (inheritPath) {
           newTab.currentPath = inheritPath;
           newTab.name = getDirName(inheritPath);
-          const normalized = inheritPath.replace(/\//g, '\\');
-          if (/^[A-Za-z]:\\$/.test(normalized) || normalized === '\\') {
-            newTab.parentPath = '\\';
+          if (inheritPath.startsWith('ftp://')) {
+            const lastSlash = inheritPath.lastIndexOf('/');
+            newTab.parentPath = lastSlash > 6 ? inheritPath.substring(0, lastSlash) : '\\';
           } else {
-            const lastSlash = normalized.lastIndexOf('\\');
-            newTab.parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+            const normalized = inheritPath.replace(/\//g, '\\');
+            if (/^[A-Za-z]:\\$/.test(normalized) || normalized === '\\') {
+              newTab.parentPath = '\\';
+            } else {
+              const lastSlash = normalized.lastIndexOf('\\');
+              newTab.parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+            }
           }
         } else {
           // Inherit from current active tab
@@ -191,6 +204,8 @@ function createTabsStore() {
           pdfCurrentPage: extra?.pdfCurrentPage ?? newTabs[idx].pdfCurrentPage,
           activeColumn: layoutState.activeColumn,
           tocOpen: extra?.tocOpen ?? newTabs[idx].tocOpen,
+          leftMode: layoutState.leftMode,
+          leftPath: layoutState.leftPath,
         };
         return { ...state, tabs: newTabs };
       });

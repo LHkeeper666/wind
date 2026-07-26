@@ -4,6 +4,7 @@ mod pdf;
 mod video;
 mod file_ops;
 mod file_watcher;
+mod ftp;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -12,20 +13,23 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 use std::fs::File;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-fn list_drives() -> Vec<FileEntry> {
-    let mut drives = Vec::new();
+async fn list_virtual_root(state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
+    let mut entries = Vec::new();
+
+    // Local drives
     for letter in b'A'..=b'Z' {
         let drive = format!("{}:\\", letter as char);
         if Path::new(&drive).exists() {
-            drives.push(FileEntry {
+            entries.push(FileEntry {
                 name: drive.clone(),
                 path: drive,
                 is_dir: true,
@@ -37,7 +41,29 @@ fn list_drives() -> Vec<FileEntry> {
             });
         }
     }
-    drives
+
+    // FTP connections
+    let mgr = state.ftp_manager.lock().await;
+    for config in mgr.get_configs() {
+        entries.push(FileEntry {
+            name: format!("[FTP] {}", config.name),
+            path: format!("ftp://{}/", config.name),
+            is_dir: true,
+            size: None,
+            is_hidden: false,
+            modified: None,
+            created: None,
+            children: None,
+        });
+    }
+
+    Ok(entries)
+}
+
+// Legacy alias — called by frontend as `invoke('list_drives')`.
+#[tauri::command]
+async fn list_drives(state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
+    list_virtual_root(state).await
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,6 +90,7 @@ struct AppState {
     terminal: terminal::TerminalManager,
     neovim: Mutex<neovim::Neovim>,
     file_watcher: Mutex<file_watcher::FileWatcher>,
+    ftp_manager: TokioMutex<ftp::FtpManager>,
 }
 
 #[tauri::command]
@@ -116,7 +143,21 @@ fn stop_watch_file(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
+async fn read_directory(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileEntry>, String> {
+    // Route FTP paths
+    if path.starts_with("ftp://") {
+        eprintln!("[FTP] read_directory routing: FTP path — {}", path);
+        return ftp_read_directory(path, state).await;
+    }
+    // Route virtual root
+    if path == "\\" {
+        eprintln!("[FTP] read_directory routing: virtual root");
+        return list_virtual_root(state).await;
+    }
+
     // 规范化驱动器路径：D: → D:\
     let normalized = if path.len() == 2 && path.ends_with(':') {
         format!("{}\\", path)
@@ -1446,17 +1487,40 @@ async fn search_files(
     pattern: String,
     max_results: Option<usize>,
     recursive: Option<bool>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<SearchResult>, String> {
     let max = max_results.unwrap_or(50);
     let is_recursive = recursive.unwrap_or(true);
-    let max_depth: usize = if is_recursive { 10 } else { 1 };
-
-    // 重置取消标志
-    SEARCH_CANCELLED.store(false, Ordering::Relaxed);
 
     if pattern.is_empty() {
         return Ok(Vec::new());
     }
+
+    // FTP: search within current directory by listing + filtering
+    if root_path.starts_with("ftp://") {
+        let (conn_name, remote_path) = parse_ftp_url(&root_path)?;
+        let mut mgr = state.ftp_manager.lock().await;
+        let entries = try_list_dir(&mgr, conn_name, remote_path).await?;
+        drop(mgr);
+        let lower = pattern.to_lowercase();
+        let results: Vec<SearchResult> = entries
+            .iter()
+            .filter(|e| e.name.to_lowercase().contains(&lower))
+            .take(max)
+            .map(|e| SearchResult {
+                name: e.name.clone(),
+                path: e.path.clone(),
+                relative_path: e.name.clone(),
+                is_dir: e.is_dir,
+            })
+            .collect();
+        return Ok(results);
+    }
+
+    let max_depth: usize = if is_recursive { 10 } else { 1 };
+
+    // 重置取消标志
+    SEARCH_CANCELLED.store(false, Ordering::Relaxed);
 
     // 在独立线程中执行搜索，不阻塞主线程
     tokio::task::spawn_blocking(move || {
@@ -1482,6 +1546,493 @@ fn check_search_tools() -> serde_json::Value {
         "fd": fd_available,
         "rg": rg_available
     })
+}
+
+// ── FTP helpers ──
+
+/// Parse `ftp://<name>/<path>` into (connection_name, remote_path).
+fn parse_ftp_url(url: &str) -> Result<(&str, &str), String> {
+    let url = url.strip_prefix("ftp://")
+        .ok_or_else(|| format!("Not an FTP URL: {}", url))?;
+    let slash_pos = url.find('/');
+    let (name, path) = match slash_pos {
+        Some(pos) => {
+            let (n, p) = url.split_at(pos);
+            (n, if p.is_empty() { "/" } else { p })
+        }
+        None => (url, "/"),
+    };
+    Ok((name, path))
+}
+
+// ── FTP Tauri commands ──
+
+#[tauri::command]
+async fn ftp_connect(
+    name: String,
+    host: String,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let port = port.unwrap_or(21);
+    let user = user.unwrap_or_else(|| "anonymous".to_string());
+    let password = password.unwrap_or_else(|| "anonymous".to_string());
+    eprintln!("[FTP] command ftp_connect: name={} host={}:{} user={}", name, host, port, user);
+    let mut mgr = state.ftp_manager.lock().await;
+    mgr.connect(&name, &host, port, &user, &password).await?;
+    Ok(format!("Connected to {}", name))
+}
+
+#[tauri::command]
+async fn ftp_disconnect(name: String, state: State<'_, AppState>) -> Result<String, String> {
+    eprintln!("[FTP] command ftp_disconnect: name={}", name);
+    let mut mgr = state.ftp_manager.lock().await;
+    mgr.disconnect(&name).await?;
+    Ok(format!("Disconnected from {}", name))
+}
+
+#[tauri::command]
+async fn ftp_read_directory(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileEntry>, String> {
+    let (conn_name, remote_path) = parse_ftp_url(&path)?;
+    eprintln!("[FTP] command ftp_read_directory: conn={} path={}", conn_name, remote_path);
+
+    // Try listing; if session is stale, reconnect once and retry
+    let mut mgr = state.ftp_manager.lock().await;
+    let entries = match try_list_dir(&mgr, conn_name, remote_path).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("[FTP] read_directory: listing failed ({}), reconnecting...", e);
+            mgr.ensure_connected(conn_name).await?;
+            try_list_dir(&mgr, conn_name, remote_path).await?
+        }
+    };
+    drop(mgr);
+
+    Ok(entries)
+}
+
+async fn try_list_dir(
+    mgr: &ftp::FtpManager,
+    conn_name: &str,
+    remote_path: &str,
+) -> Result<Vec<FileEntry>, String> {
+    let session = mgr.get(conn_name)?;
+    let mut ftp = session.lock().await;
+
+    // Try MLSD first, fall back to LIST
+    let mut entries = match ftp.client.mlsd(Some(remote_path)).await {
+        Ok(lines) => {
+            let mut entries = Vec::new();
+            for line in &lines {
+                if let Some((name, is_dir, size, modified)) = ftp::parse_mld_line(line) {
+                    let full_path = format!("ftp://{}{}/{}", conn_name, remote_path.trim_end_matches('/'), name);
+                    entries.push(FileEntry {
+                        name,
+                        path: full_path,
+                        is_dir,
+                        size,
+                        is_hidden: false,
+                        modified,
+                        created: None,
+                        children: None,
+                    });
+                }
+            }
+            eprintln!("[FTP] read_directory: MLSD returned {} entries", entries.len());
+            entries
+        }
+        Err(e) => {
+            eprintln!("[FTP] read_directory: MLSD failed ({}), falling back to LIST", e);
+            let lines = ftp.client.list(Some(remote_path))
+                .await
+                .map_err(|e| format!("Failed to list directory: {}", e))?;
+            let mut entries = Vec::new();
+            for line in &lines {
+                if let Some((name, is_dir, size, _modified)) = ftp::parse_list_line(line) {
+                    let full_path = format!("ftp://{}{}/{}", conn_name, remote_path.trim_end_matches('/'), name);
+                    entries.push(FileEntry {
+                        name,
+                        path: full_path,
+                        is_dir,
+                        size,
+                        is_hidden: false,
+                        modified: None,
+                        created: None,
+                        children: None,
+                    });
+                }
+            }
+            eprintln!("[FTP] read_directory: LIST returned {} entries", entries.len());
+            entries
+        }
+    };
+
+    // Deduplicate by path
+    {
+        let before = entries.len();
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|e| seen.insert(e.path.clone()));
+        let removed = before - entries.len();
+        if removed > 0 {
+            eprintln!("[FTP] read_directory: dedup removed {} duplicate entries, {} remaining", removed, entries.len());
+        }
+    }
+
+    // Sort: directories first, then alphabetical
+    entries.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn ftp_download(
+    app: tauri::AppHandle,
+    conn_name: String,
+    remote_path: String,
+    local_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.get(&conn_name)?;
+    drop(mgr);
+
+    let file_name = remote_path.rsplit('/').next().unwrap_or(&remote_path);
+    eprintln!("[FTP] command ftp_download: conn={} remote={} → local={}", conn_name, remote_path, local_path);
+
+    let mut ftp = session.lock().await;
+
+    // Stream download directly to file
+    let local = Path::new(&local_path);
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    use tokio::io::AsyncWriteExt;
+    let mut stream = ftp.client.retr_as_stream(&remote_path)
+        .await
+        .map_err(|e| format!("Failed to download: {}", e))?;
+
+    let mut file = tokio::fs::File::create(local)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    let bytes = tokio::io::copy(&mut stream, &mut file)
+        .await
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+
+    eprintln!("[FTP] download: wrote {} bytes for {}", bytes, file_name);
+
+    let _ = app.emit("ftp-progress", serde_json::json!({
+        "file": file_name,
+        "done": bytes,
+        "total": bytes,
+        "op": "download"
+    }));
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_upload(
+    app: tauri::AppHandle,
+    conn_name: String,
+    local_path: String,
+    remote_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.get(&conn_name)?;
+    drop(mgr);
+
+    let file_name = local_path.rsplit('\\').next().unwrap_or(&local_path);
+    eprintln!("[FTP] command ftp_upload: conn={} local={} → remote={}", conn_name, local_path, remote_path);
+
+    let mut ftp = session.lock().await;
+
+    // Stream upload directly from file
+    let mut file = tokio::fs::File::open(&local_path)
+        .await
+        .map_err(|e| format!("Failed to open local file: {}", e))?;
+    let file_size = file.metadata().await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    eprintln!("[FTP] upload: streaming {} bytes for {}", file_size, file_name);
+
+    ftp.client.put_file(&remote_path, &mut file)
+        .await
+        .map_err(|e| format!("Failed to upload: {}", e))?;
+
+    let _ = app.emit("ftp-progress", serde_json::json!({
+        "file": file_name,
+        "done": file_size,
+        "total": file_size,
+        "op": "upload"
+    }));
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_delete(
+    path: String,
+    _permanent: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (conn_name, remote_path) = parse_ftp_url(&path)?;
+    eprintln!("[FTP] command ftp_delete: conn={} path={}", conn_name, remote_path);
+
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.get(conn_name)?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    // Try file delete first, fall back to directory delete
+    match ftp.client.rm(&remote_path).await {
+        Ok(()) => {
+            eprintln!("[FTP] delete: removed file {}", remote_path);
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("[FTP] delete: rm failed ({}), trying rmdir...", e);
+        }
+    }
+    ftp.client.rmdir(&remote_path)
+        .await
+        .map_err(|e| format!("Failed to delete: {}", e))?;
+    eprintln!("[FTP] delete: removed directory {}", remote_path);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_rename(
+    old_path: String,
+    new_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let (conn_name, remote_path) = parse_ftp_url(&old_path)?;
+    let (_, new_remote) = parse_ftp_url(&new_path)?;
+    eprintln!("[FTP] command ftp_rename: conn={} from={} to={}", conn_name, remote_path, new_remote);
+
+    // Try server-side rename first (fast path)
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        match ftp.client.rename(remote_path, new_remote).await {
+            Ok(()) => {
+                eprintln!("[FTP] rename: server-side rename OK");
+                return Ok(new_path.to_string());
+            }
+            Err(e) => {
+                eprintln!("[FTP] rename: server-side rename failed ({}), falling back to copy+delete", e);
+            }
+        }
+    }
+
+    // Fallback: download → re-upload → delete source
+    ftp_copy_move_fallback(conn_name, remote_path, new_remote, &state).await?;
+    eprintln!("[FTP] rename: copy+delete fallback completed");
+    Ok(new_path.to_string())
+}
+
+async fn ftp_copy_move_fallback(
+    conn_name: &str,
+    src_remote: &str,
+    dst_remote: &str,
+    state: &State<'_, AppState>,
+) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!(
+        "wind_ftp_move_{}_{}",
+        std::process::id(),
+        src_remote.rsplit('/').next().unwrap_or("file")
+    ));
+
+    // Download
+    eprintln!("[FTP] move-fallback: downloading to temp {}", tmp.display());
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        let mut stream = ftp.client.retr_as_stream(src_remote)
+            .await
+            .map_err(|e| format!("Failed to open download: {}", e))?;
+        let mut file = tokio::fs::File::create(&tmp)
+            .await
+            .map_err(|e| format!("Failed to create temp: {}", e))?;
+        tokio::io::copy(&mut stream, &mut file)
+            .await
+            .map_err(|e| format!("Failed to download: {}", e))?;
+    }
+
+    // Upload
+    eprintln!("[FTP] move-fallback: uploading to {}", dst_remote);
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        let mut file = tokio::fs::File::open(&tmp)
+            .await
+            .map_err(|e| format!("Failed to read temp: {}", e))?;
+        ftp.client.put_file(dst_remote, &mut file)
+            .await
+            .map_err(|e| format!("Failed to upload: {}", e))?;
+    }
+
+    // Delete source
+    eprintln!("[FTP] move-fallback: deleting source {}", src_remote);
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        ftp.client.rm(src_remote)
+            .await
+            .map_err(|e| format!("Failed to delete source: {}", e))?;
+    }
+
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_copy(
+    conn_name: String,
+    src_path: String,
+    dst_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    eprintln!("[FTP] command ftp_copy: conn={} src={} dst={}", conn_name, src_path, dst_path);
+
+    // Download to temp file, re-upload (no native server-side copy in FTP)
+    let tmp = std::env::temp_dir().join(format!("wind_ftp_copy_{}_{}", std::process::id(), src_path.rsplit('/').next().unwrap_or("file")));
+
+    // Download
+    eprintln!("[FTP] copy: downloading to temp {}", tmp.display());
+    let bytes_dl: u64;
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(&conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+
+        let mut stream = ftp.client.retr_as_stream(&src_path)
+            .await
+            .map_err(|e| format!("Failed to open download stream: {}", e))?;
+        let mut file = tokio::fs::File::create(&tmp)
+            .await
+            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        bytes_dl = tokio::io::copy(&mut stream, &mut file)
+            .await
+            .map_err(|e| format!("Failed to download: {}", e))?;
+    }
+    eprintln!("[FTP] copy: downloaded {} bytes", bytes_dl);
+
+    // Upload
+    eprintln!("[FTP] copy: uploading from temp");
+    let bytes_ul: u64;
+    {
+        let mgr = state.ftp_manager.lock().await;
+        let session = mgr.get(&conn_name)?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+
+        let mut file = tokio::fs::File::open(&tmp)
+            .await
+            .map_err(|e| format!("Failed to read temp file: {}", e))?;
+        bytes_ul = ftp.client.put_file(&dst_path, &mut file)
+            .await
+            .map_err(|e| format!("Failed to upload: {}", e))?;
+    }
+    eprintln!("[FTP] copy: uploaded {} bytes", bytes_ul);
+
+    // Cleanup
+    let _ = tokio::fs::remove_file(&tmp).await;
+    eprintln!("[FTP] copy: completed {} → {}", src_path, dst_path);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_create_file(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (conn_name, remote_path) = parse_ftp_url(&path)?;
+    eprintln!("[FTP] command ftp_create_file: conn={} path={}", conn_name, remote_path);
+
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.get(conn_name)?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    // Upload empty content
+    match ftp.client.put_with_stream(&remote_path).await {
+        Ok(stream) => {
+            drop(stream);
+            eprintln!("[FTP] create_file: created {}", remote_path);
+        }
+        Err(e) => {
+            eprintln!("[FTP] create_file: FAILED {} — {}", remote_path, e);
+            return Err(format!("Failed to create file: {}", e));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn ftp_mkdir(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (conn_name, remote_path) = parse_ftp_url(&path)?;
+    eprintln!("[FTP] command ftp_mkdir: conn={} path={}", conn_name, remote_path);
+
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.get(conn_name)?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    // Use custom_command to accept both 250 and 257 (Android servers return 250)
+    match ftp.client.custom_command(
+        format!("MKD {}", remote_path),
+        &[suppaftp::Status::RequestedFileActionOk, suppaftp::Status::PathCreated],
+    ).await {
+        Ok(_) => eprintln!("[FTP] mkdir: created {}", remote_path),
+        Err(e) => {
+            eprintln!("[FTP] mkdir: FAILED {} — {}", remote_path, e);
+            return Err(format!("Failed to create directory: {}", e));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_ftp_connections(state: State<'_, AppState>) -> Result<Vec<ftp::FtpConnectionConfig>, String> {
+    let mgr = state.ftp_manager.lock().await;
+    let configs = mgr.get_configs();
+    eprintln!("[FTP] command list_ftp_connections: {} connection(s)", configs.len());
+    Ok(configs)
+}
+
+#[tauri::command]
+async fn check_ftp_connection(name: String, state: State<'_, AppState>) -> Result<bool, String> {
+    eprintln!("[FTP] command check_ftp_connection: name={}", name);
+    let mut mgr = state.ftp_manager.lock().await;
+    mgr.ensure_connected(&name).await?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1511,10 +2062,13 @@ pub fn run() {
             let handle = app.handle().clone();
             let mut terminal = terminal::TerminalManager::new();
             terminal.set_app_handle(handle);
+            let mut ftp_manager = ftp::FtpManager::new();
+            ftp_manager.load_on_startup();
             app.manage(AppState {
                 terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),
                 file_watcher: Mutex::new(file_watcher::FileWatcher::new()),
+                ftp_manager: TokioMutex::new(ftp_manager),
             });
             Ok(())
         })
@@ -1568,7 +2122,19 @@ pub fn run() {
             pdf::search_pdf_text,
             video::get_video_thumbnail,
             video::start_video_server,
-            video::stop_video_server
+            video::stop_video_server,
+            ftp_connect,
+            ftp_disconnect,
+            ftp_read_directory,
+            ftp_download,
+            ftp_upload,
+            ftp_delete,
+            ftp_rename,
+            ftp_copy,
+            ftp_create_file,
+            ftp_mkdir,
+            list_ftp_connections,
+            check_ftp_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

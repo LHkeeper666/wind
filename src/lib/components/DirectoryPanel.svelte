@@ -23,6 +23,7 @@
     type = 'current',
     path = '',
     selectedPath = null,
+    detached = false,
     onNavigate = (path: string) => {},
     onSelect = (path: string) => {},
     onActivate = (path: string) => {},
@@ -36,6 +37,7 @@
     type: 'parent' | 'current';
     path: string;
     selectedPath: string | null;
+    detached?: boolean;
     onNavigate?: (path: string) => void;
     onSelect?: (path: string) => void;
     onActivate?: (path: string) => void;
@@ -75,6 +77,7 @@
 
   // Filter state
   let filterPattern: string = $state('');
+  let filterMode: 'prefix' | 'wildcard' = $state('prefix');
 
   // Derived values that depend on state declared above
   let displayFiles: FileEntry[] = $derived.by(() => {
@@ -82,9 +85,14 @@
 
     // Apply filter
     if (filterPattern) {
-      const pattern = filterPattern.replace(/\*/g, '.*').replace(/\?/g, '.');
-      const regex = new RegExp(`^${pattern}$`, 'i');
-      result = result.filter(f => f.name === '..' || regex.test(f.name));
+      if (filterMode === 'prefix') {
+        const lower = filterPattern.toLowerCase();
+        result = result.filter(f => f.name === '..' || f.name.toLowerCase().startsWith(lower));
+      } else {
+        const pattern = filterPattern.replace(/\*/g, '.*').replace(/\?/g, '.');
+        const regex = new RegExp(`^${pattern}$`, 'i');
+        result = result.filter(f => f.name === '..' || regex.test(f.name));
+      }
     }
 
     // Apply sort (.. always stays first)
@@ -221,6 +229,13 @@
   function getParentPath(dirPath: string): string {
     if (isVirtualRoot(dirPath)) return '/';
     if (isDriveRoot(dirPath)) return '/';
+    // FTP paths: use forward-slash logic
+    if (dirPath.startsWith('ftp://')) {
+      const stripped = dirPath.replace(/\/$/, ''); // strip trailing slash
+      const lastSlash = stripped.lastIndexOf('/');
+      if (lastSlash <= 6) return '\\'; // ftp:// is 6 chars → root of connection → virtual root
+      return stripped.substring(0, lastSlash);
+    }
     const normalized = dirPath.replace(/\//g, '\\');
     const lastSlash = normalized.lastIndexOf('\\');
     if (lastSlash <= 0) return '/';
@@ -354,6 +369,9 @@
         const parentPath = getParentPath(dirPath);
         files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
       }
+      // Safety dedup
+      const seen = new Set<string>();
+      files = files.filter(f => { if (seen.has(f.path)) return false; seen.add(f.path); return true; });
       selectInitialEntry();
       applyPendingRestore();
       isLoading = false;
@@ -375,6 +393,14 @@
         const parentPath = getParentPath(dirPath);
         files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
       }
+      // Client-side dedup by path (safety net, backend should already handle this)
+      const seen = new Set<string>();
+      files = files.filter(f => {
+        if (seen.has(f.path)) return false;
+        seen.add(f.path);
+        return true;
+      });
+
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
       selectInitialEntry();
@@ -465,26 +491,48 @@
     try {
       if (inputMode === 'rename') {
         const entry = displayFiles[selectedIndex];
-        const parentPath = path.replace(/[\\\/]+$/, '');
-        const newPath = parentPath + '\\' + value;
-        await invoke('rename_file', { oldPath: entry.path, newName: value });
-        await currentDirectoryPanel_refresh();
-        onSelect(newPath);
-        onToast(`Renamed to ${value}`);
+        if (entry.path.startsWith('ftp://')) {
+          const parentBase = path.replace(/\/+$/, '');
+          const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value });
+          loadDirectory(path, true);
+          onSelect(newPath);
+          onToast(`Renamed to ${value}`);
+        } else {
+          const parentPath = path.replace(/[\\\/]+$/, '');
+          const newPath = parentPath + '\\' + value;
+          await invoke('rename_file', { oldPath: entry.path, newName: value });
+          await currentDirectoryPanel_refresh();
+          onSelect(newPath);
+          onToast(`Renamed to ${value}`);
+        }
       } else if (inputMode === 'create-file') {
-        const parentPath = path.replace(/[\\\/]+$/, '');
-        const newPath = parentPath + '\\' + value;
-        await invoke('create_file', { path: newPath, isDir: false });
-        await currentDirectoryPanel_refresh();
-        onSelect(newPath);
-        onToast(`Created ${value}`);
+        if (path.startsWith('ftp://')) {
+          const remotePath = path.replace(/\/+$/, '') + '/' + value;
+          await invoke('ftp_create_file', { path: remotePath });
+          loadDirectory(path, true);
+          onToast(`Created ${value}`);
+        } else {
+          const parentPath = path.replace(/[\\\/]+$/, '');
+          const newPath = parentPath + '\\' + value;
+          await invoke('create_file', { path: newPath, isDir: false });
+          await currentDirectoryPanel_refresh();
+          onSelect(newPath);
+          onToast(`Created ${value}`);
+        }
       } else if (inputMode === 'create-dir') {
-        const parentPath = path.replace(/[\\\/]+$/, '');
-        const newPath = parentPath + '\\' + value;
-        await invoke('create_file', { path: newPath, isDir: true });
-        await currentDirectoryPanel_refresh();
-        onSelect(newPath);
-        onToast(`Created ${value}/`);
+        if (path.startsWith('ftp://')) {
+          const remotePath = path.replace(/\/+$/, '') + '/' + value;
+          await invoke('ftp_mkdir', { path: remotePath });
+          loadDirectory(path, true);
+          onToast(`Created ${value}/`);
+        } else {
+          const parentPath = path.replace(/[\\\/]+$/, '');
+          const newPath = parentPath + '\\' + value;
+          await invoke('create_file', { path: newPath, isDir: true });
+          await currentDirectoryPanel_refresh();
+          onSelect(newPath);
+          onToast(`Created ${value}/`);
+        }
       } else if (inputMode === 'filter') {
         filterPattern = value;
         if (value) {
@@ -540,11 +588,17 @@
     onToast(dirFirst ? 'Directories first' : 'Mixed order');
   }
 
-  function startFilter() {
+  function startFilter(mode: 'prefix' | 'wildcard' = 'wildcard') {
+    filterMode = mode;
     inputMode = 'filter';
     inputValue = filterPattern;
-    inputPlaceholder = '*.txt, *.rs, *.{js,ts}';
-    inputPrompt = 'Filter:';
+    if (mode === 'prefix') {
+      inputPlaceholder = 'Enter prefix to filter...';
+      inputPrompt = 'Prefix:';
+    } else {
+      inputPlaceholder = '*.txt, *.rs, *.{js,ts}';
+      inputPrompt = 'Filter:';
+    }
     inputVisible = true;
   }
 
@@ -622,10 +676,14 @@
     const confirmed = await promptDelete(permanent);
     if (!confirmed) return;
 
-    // Use async delete: progress bar for directories, non-blocking for all
+    // Use async delete; route FTP paths to ftp_delete
     for (const entry of entries) {
       try {
-        await invoke('delete_file_async', { path: entry.path, permanent });
+        if (entry.path.startsWith('ftp://')) {
+          await invoke('ftp_delete', { path: entry.path, permanent });
+        } else {
+          await invoke('delete_file_async', { path: entry.path, permanent });
+        }
       } catch (e) {
         onToast(`Failed to delete ${entry.name}: ${e}`);
       }
@@ -633,6 +691,10 @@
 
     selectedPaths = new Set();
     onToast(`Deleting ${entries.length} ${entries.length === 1 ? 'file' : 'files'}...`);
+    // Refresh directory after FTP deletes
+    if (entries.some(e => e.path.startsWith('ftp://'))) {
+      loadDirectory(path, true);
+    }
     // Directory refresh handled by persistent op-complete listener in PanelLayout
   }
 
@@ -739,7 +801,7 @@
         break;
       case 'f':
         event.preventDefault();
-        startFilter();
+        startFilter('wildcard');
         break;
       case 'o':
         event.preventDefault();
@@ -773,16 +835,15 @@
             }
             break;
           case 'KeyH':
-            if (type === 'current') {
+            if (type === 'current' || type === 'parent') {
               event.preventDefault();
-              // Remember current directory name so parent highlights it
               const dirName = path.split(/[/\\]/).filter(Boolean).pop();
-              if (dirName) pendingSelectName = dirName;
+              if (dirName && type === 'current') pendingSelectName = dirName;
               onNavigateUp();
             }
             break;
           case 'KeyL':
-            if (type === 'current') {
+            if (type === 'current' || detached || type === 'parent') {
               event.preventDefault();
               if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
                 const entry = displayFiles[selectedIndex];
@@ -797,7 +858,6 @@
           case 'Slash':
             event.preventDefault();
             if (lastKey === 'KeyA' && now - lastKeyTime < 500) {
-              // a/ = create directory
               lastKey = '';
               startCreateDir();
             } else if (isGSlash) {
@@ -917,6 +977,9 @@
 >
   <div class="panel-header">
     {#if path}
+      {#if detached}
+        <span class="detach-marker" title="Manual mode (detached)">&#9679;</span>
+      {/if}
       <span class="panel-path" title={path}>{path === '/' ? '/' : path.split('\\').pop() || path.split('/').pop() || path}</span>
     {/if}
     {#if filterPattern}
@@ -972,6 +1035,8 @@
     visible={isSearchModalOpen}
     rootPath={path}
     mode={searchMode}
+    allowRecursive={!path.startsWith('ftp://')}
+    entries={path.startsWith('ftp://') ? files : null}
     onClose={closeSearchModal}
     onSelect={handleSearchSelect}
   />
@@ -1013,6 +1078,13 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .detach-marker {
+    font-size: 8px;
+    color: var(--accent);
+    margin-right: 4px;
+    flex-shrink: 0;
   }
 
   .panel-path {

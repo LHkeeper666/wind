@@ -8,6 +8,10 @@ export interface LayoutState {
   parentPath: string;
   currentPath: string;
 
+  // Left panel detach mode
+  leftMode: 'auto' | 'manual';
+  leftPath: string;
+
   // Selected file in current directory
   selectedFile: string | null;
 
@@ -51,6 +55,8 @@ const initialState: LayoutState = {
   columnRatios: [1, 1, 3],
   parentPath: '',
   currentPath: '',
+  leftMode: 'auto',
+  leftPath: '',
   selectedFile: null,
   activeColumn: 'current',
   terminalMode: null,
@@ -82,16 +88,26 @@ function createLayoutStore() {
       terminalMode: 'insert' | 'normal' | null;
       terminalHeight: number;
       fullscreenTerminalOpen: boolean;
+      leftMode?: 'auto' | 'manual';
+      leftPath?: string;
     }) {
       update(state => {
-        let normalized = partial.currentPath.replace(/\//g, '\\');
-        if (/^[A-Za-z]:$/.test(normalized)) normalized += '\\';
+        let normalized: string;
         let parentPath: string;
-        if (normalized === '\\' || /^[A-Za-z]:\\$/.test(normalized)) {
-          parentPath = '\\';
+
+        if (partial.currentPath.startsWith('ftp://')) {
+          normalized = partial.currentPath;
+          const lastSlash = partial.currentPath.lastIndexOf('/');
+          parentPath = lastSlash > 6 ? partial.currentPath.substring(0, lastSlash) : '\\';
         } else {
-          const lastSlash = normalized.lastIndexOf('\\');
-          parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+          normalized = partial.currentPath.replace(/\//g, '\\');
+          if (/^[A-Za-z]:$/.test(normalized)) normalized += '\\';
+          if (normalized === '\\' || /^[A-Za-z]:\\$/.test(normalized)) {
+            parentPath = '\\';
+          } else {
+            const lastSlash = normalized.lastIndexOf('\\');
+            parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+          }
         }
         return {
           ...state,
@@ -102,6 +118,8 @@ function createLayoutStore() {
           terminalMode: partial.terminalMode,
           terminalHeight: partial.terminalHeight,
           fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
+          leftMode: partial.leftMode ?? state.leftMode,
+          leftPath: partial.leftPath ?? state.leftPath,
           activeColumn: partial.terminalVisible ? 'terminal' : 'current',
         };
       });
@@ -115,21 +133,35 @@ function createLayoutStore() {
     // Update current path and auto-update parent path
     setCurrentPath(path: string, resetSelectedFile: boolean = true) {
       update(state => {
-        // 规范化路径分隔符
-        let normalized = path.replace(/\//g, '\\');
-        // 确保驱动器根目录格式为 X:\（不是 X:）
-        if (/^[A-Za-z]:$/.test(normalized)) {
-          normalized = normalized + '\\';
-        }
-
+        let normalized: string;
         let parentPath: string;
-        if (normalized === '\\') {
-          parentPath = '\\';
-        } else if (/^[A-Za-z]:\\$/.test(normalized)) {
-          parentPath = '\\';
+
+        if (path.startsWith('ftp://')) {
+          // FTP paths: keep forward slashes
+          normalized = path;
+          const lastSlash = path.lastIndexOf('/');
+          if (lastSlash <= 6) {
+            // ftp://name/ — root of connection
+            parentPath = '\\';
+          } else {
+            parentPath = path.substring(0, lastSlash);
+          }
         } else {
-          const lastSlash = normalized.lastIndexOf('\\');
-          parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+          // 规范化路径分隔符
+          normalized = path.replace(/\//g, '\\');
+          // 确保驱动器根目录格式为 X:\（不是 X:）
+          if (/^[A-Za-z]:$/.test(normalized)) {
+            normalized = normalized + '\\';
+          }
+
+          if (normalized === '\\') {
+            parentPath = '\\';
+          } else if (/^[A-Za-z]:\\$/.test(normalized)) {
+            parentPath = '\\';
+          } else {
+            const lastSlash = normalized.lastIndexOf('\\');
+            parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
+          }
         }
 
         return {
@@ -273,6 +305,42 @@ function createLayoutStore() {
     // Hide terminal
     hideTerminal() {
       update(state => ({ ...state, terminalVisible: false, terminalMode: null, activeColumn: 'current' }));
+    },
+
+    // Detach left panel — freeze current path and enter manual mode
+    detach() {
+      update(state => ({
+        ...state,
+        leftMode: 'manual',
+        leftPath: state.parentPath,
+      }));
+    },
+
+    // Attach left panel — restore auto mode, follow center panel's parent
+    attach() {
+      update(state => ({
+        ...state,
+        leftMode: 'auto',
+      }));
+    },
+
+    // Toggle detach/attach
+    toggleDetach() {
+      update(state => {
+        if (state.leftMode === 'auto') {
+          return { ...state, leftMode: 'manual', leftPath: state.parentPath };
+        } else {
+          return { ...state, leftMode: 'auto' };
+        }
+      });
+    },
+
+    // Set left panel path (manual mode)
+    setLeftPath(path: string) {
+      update(state => ({
+        ...state,
+        leftPath: path,
+      }));
     },
 
     // Reset to initial state
