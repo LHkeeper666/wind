@@ -297,6 +297,16 @@
     showTabSlot(currentTabId);
   });
 
+  // Auto-focus output panel when it becomes visible
+  $effect(() => {
+    if (outputVisible) {
+      requestAnimationFrame(() => {
+        const el = document.querySelector('.panel-output') as HTMLElement | null;
+        if (el) el.focus();
+      });
+    }
+  });
+
   // Load file when filePath changes
   $effect(() => {
     if (filePath) {
@@ -364,6 +374,7 @@
   export function getIsModified(): boolean { return isModified; }
 
   function handlePanelFocus() {
+    if (outputVisible) return;
     if (mode === 'editor-normal' && overlayElement) { overlayElement.focus(); }
     else if (mode === 'editor-insert' && editorView) { editorView.focus(); }
   }
@@ -961,6 +972,61 @@
   let clipboardBridge: ClipboardBridge | null = null;
   let searchActive: boolean = $state(false);
   let searchBuf: string = $state('');
+  let outputVisible: boolean = $state(false);
+  let outputText: string = $state('');
+  let outputExitCode: number = $state(0);
+
+  // Tab completion state
+  let completions: { name: string; is_dir: boolean }[] = [];
+  let completionIndex: number = -1;
+  let completionPrefix: string = '';
+  let completionDir: string = '';
+
+  async function triggerFileCompletion() {
+    const cmd = overlayCmdBuf;
+    // Only complete after :! prefix with a non-empty partial
+    if (!cmd.startsWith('!')) return;
+    const afterBang = cmd.slice(1); // text after !
+    const lastSpace = afterBang.lastIndexOf(' ');
+    const partial = lastSpace >= 0 ? afterBang.slice(lastSpace + 1) : '';
+    if (!partial) return;
+
+    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || 'C:\\' : 'C:\\';
+
+    // Re-fetch if directory changed
+    if (completionDir !== cwd || completions.length === 0) {
+      try {
+        const entries = await invoke<{ name: string; is_dir: boolean }[]>('read_directory', { path: cwd });
+        completions = entries
+          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        completionDir = cwd;
+        completionPrefix = partial;
+        completionIndex = 0;
+      } catch {
+        resetCompletion();
+        return;
+      }
+    } else {
+      // Cycle to next match
+      if (completions.length > 0) {
+        completionIndex = (completionIndex + 1) % completions.length;
+      }
+    }
+
+    if (completions.length === 0) return;
+
+    const completed = completions[completionIndex];
+    const prefix = lastSpace >= 0 ? afterBang.slice(0, lastSpace + 1) : '';
+    overlayCmdBuf = '!' + prefix + completed.name;
+  }
+
+  function resetCompletion() {
+    completions = [];
+    completionIndex = -1;
+    completionPrefix = '';
+    completionDir = '';
+  }
 
   function executeSearch() {
     if (!editorView || !searchBuf) return;
@@ -985,8 +1051,49 @@
     editorView.dispatch({ effects: triggerSMatchUpdate.of() });
   }
 
+  async function executeShellCommand(command: string) {
+    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || null : null;
+    outputVisible = true;
+    outputText = 'Executing...';
+    outputExitCode = 0;
+    try {
+      const result = await invoke<{ stdout: string; stderr: string; exit_code: number }>('exec_shell_command', { command, cwd });
+      outputText = result.stdout;
+      if (result.stderr) outputText += '\n' + result.stderr;
+      outputExitCode = result.exit_code;
+      if (!outputText.trim()) outputText = '(no output)';
+    } catch (error) {
+      outputText = String(error);
+      outputExitCode = -1;
+    }
+  }
+
+  function closeOutputPanel() {
+    outputVisible = false;
+    outputText = '';
+    if (mode === 'editor-normal' && overlayElement) {
+      overlayElement.focus();
+    } else if (mode === 'editor-insert' && editorView) {
+      editorView.focus();
+    }
+  }
+
+  function handleOutputKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeOutputPanel();
+    }
+  }
+
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
+    if (trimmed.startsWith('!')) {
+      const shellCmd = trimmed.slice(1).trim();
+      if (!shellCmd) { onToast('E471: Argument required'); return; }
+      executeShellCommand(shellCmd);
+      return;
+    }
     if (trimmed === 'w' || trimmed === 'write') {
       if (batchRenameTempPath) onBatchRenameSave(content); else saveFile();
     } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
@@ -1010,11 +1117,18 @@
 
   function handleOverlayKeydown(event: KeyboardEvent) {
     event.preventDefault(); event.stopPropagation();
+    if (outputVisible) {
+      if (event.key === 'Enter' || event.key === 'Escape') {
+        closeOutputPanel();
+      }
+      return;
+    }
     if (overlayCmdActive) {
       if (event.key === 'Enter') { overlayCmdActive = false; processOverlayCommand(overlayCmdBuf); overlayCmdBuf = ''; setTimeout(() => { if (overlayElement && mode === 'editor-normal') overlayElement.focus(); }, 0); return; }
       if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { overlayCmdActive = false; overlayCmdBuf = ''; onToast(''); if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); } return; }
       if (event.key === 'Backspace') { if (overlayCmdBuf.length > 0) overlayCmdBuf = overlayCmdBuf.slice(0, -1); else overlayCmdActive = false; highlightSMatches(); return; }
-      if (event.key.length === 1) { overlayCmdBuf += event.key; highlightSMatches(); }
+      if (event.key === 'Tab') { event.preventDefault(); triggerFileCompletion(); return; }
+      if (event.key.length === 1) { overlayCmdBuf += event.key; resetCompletion(); highlightSMatches(); }
       return;
     }
     if (searchActive) {
@@ -1207,6 +1321,26 @@
 
   {#if mode === 'editor-normal' && searchActive}
     <div class="panel-cmdline">/{searchBuf}</div>
+  {/if}
+
+  {#if outputVisible}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      class="panel-output"
+      tabindex="0"
+      onkeydown={handleOutputKeydown}
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="output-content">
+        <pre class="output-text">{outputText}</pre>
+      </div>
+      <div class="output-footer">
+        <span>Press ENTER to continue</span>
+        {#if outputExitCode !== 0}
+          <span class="output-exitcode">exit: {outputExitCode}</span>
+        {/if}
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -1412,4 +1546,44 @@
   :global(.preview-markdown .mermaid-container) { margin: 1em 0; text-align: center; overflow-x: auto; }
   :global(.preview-markdown .mermaid-container svg) { max-width: 100%; height: auto; }
   :global(.preview-markdown pre.mermaid-error) { border-left: 3px solid var(--error, #e74c3c); }
+
+  /* Output panel */
+  .panel-output {
+    display: flex;
+    flex-direction: column;
+    max-height: 200px;
+    background-color: var(--bg-primary);
+    border-top: 2px solid var(--accent);
+  }
+  .output-content {
+    flex: 1;
+    overflow: auto;
+    padding: 8px 12px;
+    min-height: 0;
+  }
+  .output-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    user-select: text;
+    cursor: text;
+  }
+  .output-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .output-exitcode {
+    color: var(--warning);
+  }
 </style>

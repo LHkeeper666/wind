@@ -32,6 +32,58 @@
   let isModified: boolean = $state(false);
   let clipboardBridge: ClipboardBridge | null = null;
   let savedContent: string = content;
+  let outputVisible: boolean = $state(false);
+  let outputText: string = $state('');
+  let outputExitCode: number = $state(0);
+
+  // Tab completion state
+  let completions: { name: string; is_dir: boolean }[] = [];
+  let completionIndex: number = -1;
+  let completionPrefix: string = '';
+  let completionDir: string = '';
+
+  async function triggerFileCompletion() {
+    const cmd = overlayCmdBuf;
+    if (!cmd.startsWith('!')) return;
+    const afterBang = cmd.slice(1);
+    const lastSpace = afterBang.lastIndexOf(' ');
+    const partial = lastSpace >= 0 ? afterBang.slice(lastSpace + 1) : '';
+    if (!partial) return;
+
+    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || 'C:\\' : 'C:\\';
+
+    if (completionDir !== cwd || completions.length === 0) {
+      try {
+        const entries = await invoke<{ name: string; is_dir: boolean }[]>('read_directory', { path: cwd });
+        completions = entries
+          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        completionDir = cwd;
+        completionPrefix = partial;
+        completionIndex = 0;
+      } catch {
+        resetCompletion();
+        return;
+      }
+    } else {
+      if (completions.length > 0) {
+        completionIndex = (completionIndex + 1) % completions.length;
+      }
+    }
+
+    if (completions.length === 0) return;
+
+    const completed = completions[completionIndex];
+    const prefix = lastSpace >= 0 ? afterBang.slice(0, lastSpace + 1) : '';
+    overlayCmdBuf = '!' + prefix + completed.name;
+  }
+
+  function resetCompletion() {
+    completions = [];
+    completionIndex = -1;
+    completionPrefix = '';
+    completionDir = '';
+  }
 
   // --- overlay: IME fix (same as PreviewEditor) ---
 
@@ -76,8 +128,47 @@
     return key;
   }
 
+  async function executeShellCommand(command: string) {
+    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || null : null;
+    outputVisible = true;
+    outputText = 'Executing...';
+    outputExitCode = 0;
+    try {
+      const result = await invoke<{ stdout: string; stderr: string; exit_code: number }>('exec_shell_command', { command, cwd });
+      outputText = result.stdout;
+      if (result.stderr) outputText += '\n' + result.stderr;
+      outputExitCode = result.exit_code;
+      if (!outputText.trim()) outputText = '(no output)';
+    } catch (error) {
+      outputText = String(error);
+      outputExitCode = -1;
+    }
+  }
+
+  function closeOutputPanel() {
+    outputVisible = false;
+    outputText = '';
+    if (overlayElement && overlayVisible) {
+      overlayElement.focus();
+    }
+  }
+
+  function handleOutputKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeOutputPanel();
+    }
+  }
+
   function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
+    if (trimmed.startsWith('!')) {
+      const shellCmd = trimmed.slice(1).trim();
+      if (!shellCmd) return;
+      executeShellCommand(shellCmd);
+      return;
+    }
     if (trimmed === 'w' || trimmed === 'write') {
       saveFile();
     } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
@@ -99,8 +190,16 @@
     event.preventDefault();
     event.stopPropagation();
 
+    if (outputVisible) {
+      if (event.key === 'Enter' || event.key === 'Escape') {
+        closeOutputPanel();
+      }
+      return;
+    }
+
     if (overlayCmdActive) {
       if (event.key === 'Enter') {
+        resetCompletion();
         overlayCmdActive = false;
         processOverlayCommand(overlayCmdBuf);
         overlayCmdBuf = '';
@@ -108,11 +207,13 @@
         return;
       }
       if (event.key === 'Escape' || (event.ctrlKey && event.code === 'BracketLeft')) {
+        resetCompletion();
         overlayCmdActive = false;
         overlayCmdBuf = '';
         return;
       }
       if (event.key === 'Backspace') {
+        resetCompletion();
         if (overlayCmdBuf.length > 0) {
           overlayCmdBuf = overlayCmdBuf.slice(0, -1);
         } else {
@@ -120,7 +221,13 @@
         }
         return;
       }
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        triggerFileCompletion();
+        return;
+      }
       if (event.key.length === 1) {
+        resetCompletion();
         overlayCmdBuf += event.key;
       }
       return;
@@ -167,10 +274,21 @@
 
   // Focus overlay when it becomes visible (vim exits insert mode)
   $effect(() => {
+    if (outputVisible) return;
     if (overlayVisible && overlayElement && editorView) {
       overlayElement.focus();
     } else if (!overlayVisible && editorView) {
       editorView.focus();
+    }
+  });
+
+  // Auto-focus output panel when it becomes visible
+  $effect(() => {
+    if (outputVisible) {
+      requestAnimationFrame(() => {
+        const el = document.querySelector('.output-panel') as HTMLElement | null;
+        if (el) el.focus();
+      });
     }
   });
 
@@ -360,6 +478,26 @@
         <span class="hint">:w save | :q quit | :wq save & quit | :q! force quit</span>
       {/if}
     </div>
+
+    {#if outputVisible}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="output-panel"
+        tabindex="0"
+        onkeydown={handleOutputKeydown}
+        onclick={(e) => e.stopPropagation()}
+      >
+        <div class="output-content">
+          <pre class="output-text">{outputText}</pre>
+        </div>
+        <div class="output-footer">
+          <span>Press ENTER to continue</span>
+          {#if outputExitCode !== 0}
+            <span class="output-exitcode">exit: {outputExitCode}</span>
+          {/if}
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -475,5 +613,45 @@
 
   :global(.cm-editor) {
     height: 100%;
+  }
+
+  /* Output panel */
+  .output-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: 200px;
+    background-color: var(--bg-primary);
+    border-top: 2px solid var(--accent);
+  }
+  .output-content {
+    flex: 1;
+    overflow: auto;
+    padding: 8px 12px;
+    min-height: 0;
+  }
+  .output-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    user-select: text;
+    cursor: text;
+  }
+  .output-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 12px;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .output-exitcode {
+    color: var(--warning);
   }
 </style>

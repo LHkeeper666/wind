@@ -42,6 +42,20 @@ export function createVimCommandHandler(
       }
       if (trimmed === 'wq' || trimmed === 'wq!' || trimmed === 'x' || trimmed === 'x!') { callbacks.save().then(() => callbacks.quit()); return; }
       if (trimmed === 'wqall' || trimmed === 'wqall!') { callbacks.save().then(() => callbacks.forceQuit()); return; }
+      if (trimmed.startsWith('!')) {
+        const shellCmd = trimmed.slice(1).trim();
+        if (!shellCmd) { onStatus?.('E471: Argument required'); return; }
+        onStatus?.('Executing...');
+        invoke<{ stdout: string; stderr: string; exit_code: number }>('exec_shell_command', { command: shellCmd, cwd: null })
+          .then(result => {
+            const output = result.stdout + (result.stderr ? '\n' + result.stderr : '');
+            const exitInfo = result.exit_code !== 0 ? ` [exit: ${result.exit_code}]` : '';
+            onStatus?.(output || '(no output)');
+            onStatus?.('Press ENTER to continue');
+          })
+          .catch(error => { onStatus?.(String(error)); });
+        return;
+      }
       onStatus?.(`E492: Not an editor command: ${trimmed}`);
     }
 

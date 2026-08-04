@@ -2054,6 +2054,54 @@ fn set_ime_enabled(enabled: bool) {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct ShellOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
+fn detect_bash_path() -> Option<String> {
+    let candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\msys64\usr\bin\bash.exe",
+        r"C:\cygwin64\bin\bash.exe",
+    ];
+    for path in &candidates {
+        if Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    // Fallback: check if bash is in PATH
+    if std::process::Command::new("bash")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Some("bash".to_string());
+    }
+    None
+}
+
+#[tauri::command]
+fn exec_shell_command(command: String, cwd: Option<String>) -> Result<ShellOutput, String> {
+    let bash = detect_bash_path()
+        .ok_or_else(|| "bash not found. Install Git for Windows or MSYS2.".to_string())?;
+
+    let output = std::process::Command::new(&bash)
+        .args(["-c", &command])
+        .current_dir(cwd.unwrap_or_else(|| ".".to_string()))
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    Ok(ShellOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2113,6 +2161,7 @@ pub fn run() {
             neovim_spawn,
             neovim_input,
             neovim_command,
+            exec_shell_command,
             search_files,
             cancel_search,
             check_search_tools,
