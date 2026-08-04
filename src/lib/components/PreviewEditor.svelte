@@ -101,6 +101,7 @@
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
+    activeColumn = '',
   }: {
     filePath: string | null;
     currentTabId?: number;
@@ -112,6 +113,7 @@
     batchRenameTempPath?: string | null;
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
+    activeColumn?: string;
   } = $props();
 
   let content: string = $state('');
@@ -129,6 +131,7 @@
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
   let editorFilePath: string | null = null;
+  let codeFileDirectEdit: boolean = $state(false);
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
@@ -292,6 +295,18 @@
     await loadFile(filePath);
   }
 
+  // Redirect focus when active column switches away from preview
+  $effect(() => {
+    if (activeColumn && activeColumn !== 'preview' && mode !== 'global-normal') {
+      const target = activeColumn === 'current'
+        ? document.querySelector('.current-panel .directory-panel')
+        : document.querySelector('.parent-panel .directory-panel');
+      if (target instanceof HTMLElement) {
+        target.focus();
+      }
+    }
+  });
+
   // When tab changes, ensure only the active tab's slot is visible
   $effect(() => {
     showTabSlot(currentTabId);
@@ -308,11 +323,12 @@
   });
 
   // Load file when filePath changes
+  let _prevFilePath: string | null = null;
   $effect(() => {
-    if (filePath) {
+    if (filePath && filePath !== _prevFilePath) {
+      _prevFilePath = filePath;
       getOrCreateSlot(currentTabId);
       showTabSlot(currentTabId);
-      if (editorContainer) editorContainer.style.display = 'none';
       loadFile(filePath);
     }
   });
@@ -343,15 +359,19 @@
       } else if (editorView && editorTargetLine >= 0 && changed) {
         moveCursorToLine(editorTargetLine);
       }
-      if (m === 'editor-normal') {
+      if (m === 'editor-normal' && changed) {
         if (overlayElement) overlayElement.focus();
-      } else if (editorView) {
+      } else if (editorView && changed) {
         editorView.focus();
       }
     } else {
       if (previewArea) previewArea.style.display = '';
       if (editorContainer) editorContainer.style.display = 'none';
       if (editorView) closeSearchPanel(editorView);
+      if (changed && codeFileDirectEdit) {
+        const slot = getActiveSlot();
+        if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
+      }
       if (changed && panelElement && !tocFocused) {
         panelElement.focus();
       }
@@ -365,10 +385,25 @@
   $effect(() => {
     if (mode !== 'global-normal') return;
     if (!previewArea || !filePath) return;
-    if (content || binaryContent) {
+    if (codeFileDirectEdit && content) {
+      renderSimpleCodePreview();
+    } else if (content || binaryContent) {
       renderPreview();
     }
   });
+
+  function renderSimpleCodePreview() {
+    const slot = getOrCreateSlot(currentTabId);
+    showTabSlot(currentTabId);
+    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath) return;
+    slot.innerHTML = '';
+    slot.dataset.filePath = filePath || '';
+    slot.dataset.rendered = 'true';
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--font-mono);font-size:13px;line-height:1.5;color:var(--text-primary);';
+    pre.textContent = content;
+    slot.appendChild(pre);
+  }
 
   export function getMode(): string { return mode; }
   export function getIsModified(): boolean { return isModified; }
@@ -377,6 +412,10 @@
     if (outputVisible) return;
     if (mode === 'editor-normal' && overlayElement) { overlayElement.focus(); }
     else if (mode === 'editor-insert' && editorView) { editorView.focus(); }
+    else if (mode === 'global-normal' && codeFileDirectEdit && filePath) {
+      codeFileDirectEdit = false;
+      mode = 'editor-normal';
+    }
   }
 
   export function enterEditorMode() {
@@ -684,9 +723,29 @@
         content = ''; binaryContent = null;
       }
     }
-    mode = 'global-normal';
+    // Code files skip Shiki preview
+    // If already in editor mode, update content without mode switch
+    if (!isMarkdown && ext !== 'json' && !binaryContent && content) {
+      codeFileDirectEdit = false;
+      if (mode === 'editor-normal' || mode === 'editor-insert') {
+        if (editorView) {
+          editorView.dispatch({
+            changes: { from: 0, to: editorView.state.doc.length, insert: content }
+          });
+          savedContent = editorView.state.doc.toString();
+          isModified = false;
+        }
+        editorFilePath = filePath;
+      } else {
+        codeFileDirectEdit = true;
+        mode = 'global-normal';
+      }
+    } else {
+      codeFileDirectEdit = false;
+      mode = 'global-normal';
+      renderPreview();
+    }
     startWatching(path);
-    renderPreview();
   }
 
   async function renderPreview() {
@@ -791,7 +850,7 @@
   }
 
   function scrollEditorToPos(view: EditorView, pos: number) {
-    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'nearest' }) });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const s = view.scrollDOM;
@@ -909,6 +968,8 @@
     const needsScroll = editorTargetLine >= 0;
     editorTargetLine = -1;
     editorView = new EditorView({ state, parent: editorContainer });
+    savedContent = editorView.state.doc.toString();
+    isModified = false;
     if (needsScroll && editorView) scrollEditorToPos(editorView, editorView.state.selection.main.head);
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -1115,7 +1176,21 @@
     }
   }
 
+  let ctrlWPending: boolean = false;
+
   function handleOverlayKeydown(event: KeyboardEvent) {
+    // Pass Ctrl+W window nav keys through to PanelLayout
+    if (event.ctrlKey && event.key === 'w') {
+      ctrlWPending = true;
+      return;
+    }
+    if (ctrlWPending) {
+      ctrlWPending = false;
+      if (event.code === 'KeyH' || event.code === 'KeyL' || event.code === 'KeyJ' || event.code === 'KeyK' || event.code === 'KeyM') {
+        return;
+      }
+    }
+
     event.preventDefault(); event.stopPropagation();
     if (outputVisible) {
       if (event.key === 'Enter' || event.key === 'Escape') {
@@ -1282,7 +1357,7 @@
         />
       {/if}
     </div>
-    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath}>
+    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} onclick={(e) => e.stopPropagation()}>
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         class="editor-overlay"
@@ -1428,6 +1503,7 @@
   .editor-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     z-index: 10; background: transparent; outline: none;
+    pointer-events: none;
   }
   .editor-overlay.overlay-hidden { display: none; }
 

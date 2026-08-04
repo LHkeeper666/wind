@@ -186,7 +186,20 @@
     }
   }
 
+  let ctrlWPending: boolean = false;
+
   function handleOverlayKeydown(event: KeyboardEvent) {
+    if (event.ctrlKey && event.key === 'w') {
+      ctrlWPending = true;
+      return;
+    }
+    if (ctrlWPending) {
+      ctrlWPending = false;
+      if (event.code === 'KeyH' || event.code === 'KeyL' || event.code === 'KeyJ' || event.code === 'KeyK' || event.code === 'KeyM') {
+        return;
+      }
+    }
+
     event.preventDefault();
     event.stopPropagation();
 
@@ -396,7 +409,7 @@
     });
 
     if (initialLine > 0 && editorView) {
-      editorView.dispatch({ effects: EditorView.scrollIntoView(editorView.state.selection.main.head, { y: 'center' }) });
+      editorView.dispatch({ effects: EditorView.scrollIntoView(editorView.state.selection.main.head, { y: 'nearest' }) });
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const s = editorView!.scrollDOM;
@@ -587,6 +600,7 @@
     z-index: 10;
     background: transparent;
     outline: none;
+    pointer-events: none;
   }
 
   .editor-overlay.overlay-hidden {

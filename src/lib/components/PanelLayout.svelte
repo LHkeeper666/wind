@@ -1525,9 +1525,6 @@
 
   function focusPanel(panel: 'parent' | 'current' | 'preview' | 'terminal') {
     layout.setActiveColumn(panel);
-    // Use rAF instead of setTimeout so the browser finishes async layout
-    // before we call focus(). This avoids a synchronous forced layout on
-    // massive DOM (e.g. markdown with thousands of KaTeX formulas).
     requestAnimationFrame(() => {
       if (panel === 'terminal' && floatingTerminal) {
         floatingTerminal.focus();
@@ -1704,6 +1701,7 @@
         bind:this={previewEditor}
         filePath={selectedFile}
         currentTabId={$activeTab.id}
+        activeColumn={$layout.activeColumn}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}

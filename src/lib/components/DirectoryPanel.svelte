@@ -250,7 +250,7 @@
   }
 
   export function refresh() {
-    return loadDirectory(path, true);
+    return loadDirectory(path, true, isFocused);
   }
 
   function handleFocus() {
@@ -263,13 +263,14 @@
 
   // Load directory content when path changes
   let prevPath: string = '';
-  $effect(() => {
+  $effect.pre(() => {
     if (path && path !== prevPath) {
       prevPath = path;
       selectedIndex = -1;
       selectedPathInternal = null;
       selectedPaths = new Set();
-      untrack(() => loadDirectory(path));
+      const _wasFocused = isFocused;
+      untrack(() => loadDirectory(path, false, _wasFocused));
     }
   });
 
@@ -355,7 +356,7 @@
     onSelect(displayFiles[selectedIndex].path);
   }
 
-  async function loadDirectory(dirPath: string, forceRefresh: boolean = false) {
+  async function loadDirectory(dirPath: string, forceRefresh: boolean = false, wasFocused: boolean = false) {
     isLoading = true;
     errorMessage = '';
 
@@ -375,6 +376,9 @@
       selectInitialEntry();
       applyPendingRestore();
       isLoading = false;
+      if (wasFocused) {
+        requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; });
+      }
       return;
     }
 
@@ -410,6 +414,7 @@
       errorMessage = `Failed to load: ${error}`;
     } finally {
       isLoading = false;
+      if (wasFocused) { requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; }); }
     }
   }
 
@@ -837,9 +842,13 @@
           case 'KeyH':
             if (type === 'current' || type === 'parent') {
               event.preventDefault();
+              const shouldRestore = isFocused;
               const dirName = path.split(/[/\\]/).filter(Boolean).pop();
               if (dirName && type === 'current') pendingSelectName = dirName;
               onNavigateUp();
+              if (shouldRestore) {
+                setTimeout(() => { panelElement?.focus(); isFocused = true; }, 100);
+              }
             }
             break;
           case 'KeyL':
