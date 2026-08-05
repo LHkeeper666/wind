@@ -12,8 +12,11 @@
   import { keymap, Decoration } from '@codemirror/view';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
+  import { indentUnit } from '@codemirror/language';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
+  import { pythonCompletionSource } from '$lib/completions/python-completion';
+  import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
 
@@ -214,6 +217,8 @@
       slot = document.createElement('div');
       slot.className = 'tab-preview-slot';
       slot.style.zIndex = '0';
+      const fm = getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim();
+      if (fm) slot.style.fontFamily = fm;
       previewArea?.appendChild(slot);
       tabSlots.set(tabId, slot);
     }
@@ -923,6 +928,7 @@
     const language = getLanguage(filePath);
     const extensions = [
       basicSetup, search({ top: true }), sMatchField, EditorView.lineWrapping,
+      indentUnit.of('    '),
       keymap.of([{
         key: 'Tab',
         run: (view) => {
@@ -950,6 +956,10 @@
         (msg) => onToast(msg)
       ),
       oneDark,
+      EditorView.theme({
+        '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
+        '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
+      }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) { content = update.state.doc.toString(); isModified = content !== savedContent; }
         const cm = (update.view as any).cm;
@@ -961,6 +971,9 @@
       }),
     ];
     if (language) extensions.push(language);
+    if (filePath && filePath.toLowerCase().endsWith('.py')) {
+      extensions.push(pythonLanguage.data.of({ autocomplete: pythonCompletionSource }));
+    }
     const state = EditorState.create({
       doc: content, extensions,
       selection: editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) } : undefined,
@@ -1495,6 +1508,7 @@
     position: absolute; inset: 0; overflow: auto;
     padding: 12px; display: flex; flex-direction: column; box-sizing: border-box;
     background: var(--bg-primary);
+    font-family: var(--font-mono);
   }
 
   .editor-area { width: 100%; height: 100%; display: none; position: relative; }
@@ -1526,7 +1540,7 @@
   .shortcuts li { padding: 3px 0; font-size: 12px; color: var(--text-secondary); }
   .shortcuts kbd { background-color: var(--bg-tertiary); padding: 1px 4px; font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--border); }
 
-  :global(.cm-editor) { height: 100%; }
+  :global(.cm-editor) { height: 100%; font-family: var(--font-mono); }
   :global(.cm-panel) { display: none !important; }
   :global(.cm-searchMatch) { background-color: #fabd2f55 !important; outline: 1px solid #fabd2f88 !important; border-radius: 2px; }
   :global(.cm-searchMatch-selected) { background-color: #fabd2faa !important; outline: 1px solid #fabd2fcc !important; border-radius: 2px; }
@@ -1534,7 +1548,7 @@
   :global(.cm-sMatch-replace) { background-color: #b8bb2644; outline: 1px solid #b8bb2688; border-radius: 2px; font-size: 0; color: transparent; }
   :global(.cm-sMatch-replace::after) { content: var(--s-replacement, ''); font-size: initial; color: #83a598; font-style: italic; }
 
-  :global(.dir-list) { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 13px; min-width: 0; }
+  :global(.dir-list) { font-family: var(--font-mono); font-size: 13px; min-width: 0; }
   :global(.dir-entry) { display: flex; align-items: center; padding: 2px 0; gap: 6px; min-width: 0; }
   :global(.entry-name) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--file-color); }
   :global(.entry-name.is-dir) { color: var(--dir-color); font-weight: 500; }

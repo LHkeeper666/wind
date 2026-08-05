@@ -5,6 +5,7 @@ mod video;
 mod file_ops;
 mod file_watcher;
 mod ftp;
+mod python_completion;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -2183,7 +2184,9 @@ pub fn run() {
             ftp_create_file,
             ftp_mkdir,
             list_ftp_connections,
-            check_ftp_connection
+            check_ftp_connection,
+            python_completion::scan_python_packages,
+            python_completion::get_package_api,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

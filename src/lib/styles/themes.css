@@ -17,7 +17,7 @@
   --dir-color: #83a598;
   --file-color: #ebdbb2;
   --dim-color: #a89984;
-  --font-mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --font-mono: 'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
   --zoom-level: 1;
   --scrollbar-thumb: #504945;
   --scrollbar-track: #282828;
@@ -65,7 +65,7 @@
   --dir-color: #076678;
   --file-color: #3c3836;
   --dim-color: #665c54;
-  --font-mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --font-mono: 'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
   --scrollbar-thumb: #bdae93;
   --scrollbar-track: #f9f5d7;
 }
