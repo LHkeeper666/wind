@@ -74,6 +74,8 @@
   let sortBy: 'name' | 'size' | 'ext' | 'modified' | 'created' = $state('name');
   let sortReverse: boolean = $state(false);
   let dirFirst: boolean = $state(true);
+  let sortPrefixPending: boolean = $state(false);
+  let sortPrefixTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Filter state
   let filterPattern: string = $state('');
@@ -107,7 +109,7 @@
 
       let cmp = 0;
       if (sortBy === 'name') {
-        cmp = a.name.localeCompare(b.name);
+        cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
       } else if (sortBy === 'size') {
         cmp = (a.size ?? 0) - (b.size ?? 0);
       } else if (sortBy === 'ext') {
@@ -740,26 +742,33 @@
     const now = Date.now();
     const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
     const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
-    const isSortPrefix = lastKey === 'KeyS' && now - lastKeyTime < 500;
-
-    // Handle sort prefix sub-keys before the main switch
-    // Lowercase = ascending, uppercase (Shift) = descending
-    if (isSortPrefix) {
-      const codeMap: Record<string, string> = {
-        KeyN: 'name', KeyS: 'size', KeyE: 'ext',
-        KeyM: 'modified', KeyC: 'created', KeyT: 'dirfirst',
-      };
-      const baseKey = codeMap[event.code];
-      if (baseKey) {
-        event.preventDefault();
-        if (baseKey === 'dirfirst') {
-          toggleDirFirst();
-        } else {
-          setSort(baseKey as any, event.shiftKey);
-        }
-        lastKey = '';
-        return;
+    // Sort prefix state machine (s + sub-key)
+    const codeMap: Record<string, string> = {
+      KeyN: 'name', KeyS: 'size', KeyE: 'ext',
+      KeyM: 'modified', KeyC: 'created', KeyT: 'dirfirst',
+    };
+    if (sortPrefixPending && codeMap[event.code]) {
+      event.preventDefault();
+      sortPrefixPending = false;
+      if (sortPrefixTimeout) { clearTimeout(sortPrefixTimeout); sortPrefixTimeout = null; }
+      const mode = codeMap[event.code];
+      if (mode === 'dirfirst') {
+        toggleDirFirst();
+      } else {
+        setSort(mode as any, event.shiftKey);
       }
+      return;
+    }
+    if (sortPrefixPending) {
+      sortPrefixPending = false;
+      if (sortPrefixTimeout) { clearTimeout(sortPrefixTimeout); sortPrefixTimeout = null; }
+    }
+    if (event.code === 'KeyS' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      sortPrefixPending = true;
+      if (sortPrefixTimeout) clearTimeout(sortPrefixTimeout);
+      sortPrefixTimeout = setTimeout(() => { sortPrefixPending = false; }, 1000);
+      return;
     }
 
     switch (event.key) {
