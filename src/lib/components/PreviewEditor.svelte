@@ -140,6 +140,10 @@
   let loadGeneration: number = 0;
   let waitingForTabKey: boolean = false;
 
+  // t prefix for tab operations in editor-normal overlay
+  let tPending: boolean = false;
+  let tTimeout: ReturnType<typeof setTimeout> | null = null;
+
   // TOC state
   let tocHeadings: TocHeading[] = $state([]);
   let tocActiveLine: number = $state(-1);
@@ -330,8 +334,9 @@
   // Load file when filePath changes
   let _prevFilePath: string | null = null;
   $effect(() => {
-    if (filePath && filePath !== _prevFilePath) {
-      _prevFilePath = filePath;
+    if (filePath === _prevFilePath) return;
+    _prevFilePath = filePath;
+    if (filePath) {
       getOrCreateSlot(currentTabId);
       showTabSlot(currentTabId);
       loadFile(filePath);
@@ -1238,11 +1243,56 @@
       return;
     }
     if (event.key === '/' || event.key === '?') { searchActive = true; searchBuf = ''; return; }
+
+    // t prefix for tab operations (editor-normal, only when vim has no pending operator)
+    if (tPending) {
+      tPending = false;
+      if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; }
+      layout.clearKeyPrefix();
+      const code = event.code; const key = event.key;
+      if (code === 'KeyT') onTabCommand('new');
+      else if (code === 'KeyC') onTabCommand('close');
+      else if (code === 'KeyN' || code === 'BracketRight') onTabCommand('next');
+      else if (code === 'KeyP' || code === 'BracketLeft') onTabCommand('prev');
+      else if (code === 'Comma') onTabCommand('swap-prev');
+      else if (code === 'Period') onTabCommand('swap-next');
+      else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
+      else {
+        const cm = getCM(editorView!);
+        if (cm) {
+          (Vim as any).multiSelectHandleKey?.(cm, 't', 'user');
+          const vk = codeToVimKey(event);
+          if (vk) (Vim as any).multiSelectHandleKey?.(cm, vk, 'user');
+        }
+      }
+      return;
+    }
+    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey && mode === 'editor-normal') {
+      if (editorView) {
+        const cm = getCM(editorView);
+        if (cm) {
+          const vs = cm.state?.vim;
+          if ((vs as any)?.operator) {
+            // Operator pending (e.g. dt", ct)): let t through as vim motion
+          } else {
+            tPending = true;
+            layout.setKeyPrefix('t');
+            if (tTimeout) clearTimeout(tTimeout);
+            tTimeout = setTimeout(() => { tPending = false; layout.clearKeyPrefix(); }, 1000);
+            return;
+          }
+        }
+      }
+    }
+
     if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       if (editorView) { if (event.shiftKey) findPrevious(editorView); else findNext(editorView); }
       return;
     }
-    if (event.key === 'Escape' && editorView) { closeSearchPanel(editorView); }
+    if (event.key === 'Escape') {
+      if (tPending) { tPending = false; if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; } layout.clearKeyPrefix(); return; }
+      if (editorView) closeSearchPanel(editorView);
+    }
     const vimKey = codeToVimKey(event);
     if (!vimKey || !editorView) return;
     if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) { clipboardBridge.injectClipboard(); }
