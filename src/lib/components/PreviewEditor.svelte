@@ -180,6 +180,7 @@
   let scrollObserver: IntersectionObserver | undefined;
   let isMarkdown: boolean = $state(false);
   let editorTargetLine: number = -1;
+  let pendingEditorPos: number = -1;
 
   // Per-tab editor state cache
   interface TabEditorCache {
@@ -188,6 +189,7 @@
     savedContent: string;
     binaryContent: ArrayBuffer | null;
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
+    editorCursorPos: number;
     previewScrollTop: number;
     isModified: boolean;
     pdfCurrentPage: number;
@@ -255,6 +257,7 @@
     tabEditorCache.set(tabId, {
       filePath, content, savedContent, binaryContent,
       mode: savedMode,
+      editorCursorPos: editorView?.state.selection.main.head ?? 0,
       previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
       isModified, pdfCurrentPage, pdfPageCount, fileMtime: currentFileMtime,
       tocOpen, tocHeadings: [...tocHeadings],
@@ -370,7 +373,10 @@
         moveCursorToLine(editorTargetLine);
       }
       if (m === 'editor-normal' && changed) {
-        if (overlayElement) overlayElement.focus();
+        // Use rAF to ensure this runs after all Svelte effects and DOM updates
+        requestAnimationFrame(() => {
+          if (overlayElement && mode === 'editor-normal') overlayElement.focus();
+        });
       } else if (editorView && changed) {
         editorView.focus();
       }
@@ -590,6 +596,9 @@
         if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
       }
       mode = cached.mode;
+      if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
+        pendingEditorPos = cached.editorCursorPos;
+      }
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
@@ -979,12 +988,16 @@
     if (filePath && filePath.toLowerCase().endsWith('.py')) {
       extensions.push(pythonLanguage.data.of({ autocomplete: pythonCompletionSource }));
     }
+    const restorePos = pendingEditorPos >= 0 ? pendingEditorPos : 0;
     const state = EditorState.create({
       doc: content, extensions,
-      selection: editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) } : undefined,
+      selection: pendingEditorPos >= 0 ? { anchor: pendingEditorPos }
+        : editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) }
+        : undefined,
     });
-    const needsScroll = editorTargetLine >= 0;
+    const needsScroll = pendingEditorPos >= 0 || editorTargetLine >= 0;
     editorTargetLine = -1;
+    pendingEditorPos = -1;
     editorView = new EditorView({ state, parent: editorContainer });
     savedContent = editorView.state.doc.toString();
     isModified = false;

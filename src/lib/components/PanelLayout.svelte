@@ -407,8 +407,9 @@
   function saveCurrentTabState() {
     // Cache full editor state for tab restore
     const state = getTabsState();
-    previewEditor?.cacheTabState(state.activeTabId);
+    // Snapshot BEFORE cacheTabState — cacheTabState sets mode to global-normal
     const snapshot = previewEditor?.getEditorStateSnapshot();
+    previewEditor?.cacheTabState(state.activeTabId);
 
     tabs.saveActiveTabState({
       cursorIndex: currentDirectoryPanel?.getSelectedIndex() ?? 0,
@@ -468,6 +469,17 @@
     if (active.cursorIndex > 0 || active.scrollOffset > 0) {
       currentDirectoryPanel?.setPendingRestore(active.cursorIndex, active.scrollOffset);
     }
+    // Set activeColumn BEFORE restoreTabState so the editor's activeColumn
+    // $effect sees the correct value when mode is restored to editor-normal,
+    // preventing it from redirecting focus to the directory panel.
+    const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
+      ? 'terminal'
+      : (active.activeColumn !== 'terminal' ? active.activeColumn : 'current');
+    // If the tab was in editor mode, force focus to preview panel
+    const actualPanel = (active.editorMode === 'editor-normal' || active.editorMode === 'editor-insert')
+      ? 'preview'
+      : targetPanel;
+    layout.setActiveColumn(actualPanel);
     // Sync PanelLayout local state
     currentPath = active.currentPath;
     selectedFile = active.selectedFile;
@@ -489,11 +501,23 @@
     if (active.leftMode === 'manual' && active.leftPath.startsWith('ftp://')) {
       parentDirectoryPanel?.refresh();
     }
-    // Restore focus to saved activeColumn
-    const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
-      ? 'terminal'
-      : (active.activeColumn !== 'terminal' ? active.activeColumn : 'current');
-    focusPanel(targetPanel);
+    // Apply DOM focus (async, after state is fully restored)
+    requestAnimationFrame(() => {
+      if (actualPanel === 'terminal' && floatingTerminal) {
+        floatingTerminal.focus();
+      } else if (actualPanel === 'parent' && parentDirectoryPanel) {
+        parentDirectoryPanel.focus();
+      } else if (actualPanel === 'current' && currentDirectoryPanel) {
+        currentDirectoryPanel.focus();
+      } else if (actualPanel === 'preview' && previewPanel) {
+        if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
+          previewEditor.focusToc();
+        } else {
+          const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
+          if (element) element.focus({ preventScroll: true });
+        }
+      }
+    });
   }
 
   function getActiveTab() {
