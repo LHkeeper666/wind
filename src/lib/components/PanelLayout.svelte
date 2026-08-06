@@ -475,8 +475,10 @@
     const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
       ? 'terminal'
       : (active.activeColumn !== 'terminal' ? active.activeColumn : 'current');
-    // If the tab was in editor mode, force focus to preview panel
-    const actualPanel = (active.editorMode === 'editor-normal' || active.editorMode === 'editor-insert')
+    // If the tab was in editor mode AND the user hadn't explicitly switched
+    // focus away (activeColumn was preview), keep focus on preview panel.
+    const wasInEditor = active.editorMode === 'editor-normal' || active.editorMode === 'editor-insert';
+    const actualPanel = wasInEditor && active.activeColumn === 'preview'
       ? 'preview'
       : targetPanel;
     layout.setActiveColumn(actualPanel);
@@ -494,6 +496,9 @@
       leftMode: active.leftMode || 'auto',
       leftPath: active.leftPath || '',
     });
+    // Re-assert activeColumn — restoreTabState may have triggered reactive
+    // effects that changed it (e.g. tab rename callback → layout subscription)
+    layout.setActiveColumn(actualPanel);
     // Refresh FTP panels on tab switch (may be stale after cross-tab operations)
     if (active.currentPath.startsWith('ftp://')) {
       currentDirectoryPanel?.refresh();

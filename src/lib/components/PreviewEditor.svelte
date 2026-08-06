@@ -373,9 +373,13 @@
         moveCursorToLine(editorTargetLine);
       }
       if (m === 'editor-normal' && changed) {
-        // Use rAF to ensure this runs after all Svelte effects and DOM updates
+        // Use rAF to ensure this runs after all Svelte effects and DOM updates.
+        // Only focus the overlay when the preview panel is the active column;
+        // otherwise the user intentionally switched focus elsewhere (e.g. Ctrl+W h).
         requestAnimationFrame(() => {
-          if (overlayElement && mode === 'editor-normal') overlayElement.focus();
+          if (overlayElement && mode === 'editor-normal' && activeColumn === 'preview') {
+            overlayElement.focus();
+          }
         });
       } else if (editorView && changed) {
         editorView.focus();

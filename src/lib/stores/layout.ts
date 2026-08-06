@@ -120,7 +120,6 @@ function createLayoutStore() {
           fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
           leftMode: partial.leftMode ?? state.leftMode,
           leftPath: partial.leftPath ?? state.leftPath,
-          activeColumn: partial.terminalVisible ? 'terminal' : 'current',
         };
       });
     },
@@ -293,7 +292,8 @@ function createLayoutStore() {
         ...state,
         terminalVisible: !state.terminalVisible,
         terminalMode: !state.terminalVisible ? 'insert' : null,
-        activeColumn: !state.terminalVisible ? 'terminal' : 'current',
+        activeColumn: !state.terminalVisible ? 'terminal'
+          : state.activeColumn === 'terminal' ? 'current' : state.activeColumn,
       }));
     },
 
@@ -302,9 +302,14 @@ function createLayoutStore() {
       update(state => ({ ...state, terminalVisible: true, terminalMode: 'insert', activeColumn: 'terminal' }));
     },
 
-    // Hide terminal
+    // Hide terminal — preserve previous activeColumn unless it was terminal
     hideTerminal() {
-      update(state => ({ ...state, terminalVisible: false, terminalMode: null, activeColumn: 'current' }));
+      update(state => ({
+        ...state,
+        terminalVisible: false,
+        terminalMode: null,
+        activeColumn: state.activeColumn === 'terminal' ? 'current' : state.activeColumn,
+      }));
     },
 
     // Detach left panel — freeze current path and enter manual mode
