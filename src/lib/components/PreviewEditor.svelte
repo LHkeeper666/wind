@@ -397,6 +397,20 @@
       if (previewWithToc) previewWithToc.style.display = '';
       if (editorContainer) editorContainer.style.display = 'none';
       if (editorView) closeSearchPanel(editorView);
+      // Sync preview scroll to match editor's visible center line
+      if (changed && editorView) {
+        const vh = editorView.scrollDOM.clientHeight;
+        const centerY = editorView.scrollDOM.scrollTop + vh / 2;
+        const block = editorView.lineBlockAtHeight(centerY);
+        if (block) {
+          const lineNo = editorView.state.doc.lineAt(block.from).number - 1;
+          requestAnimationFrame(() => {
+            const slot = getActiveSlot();
+            const el = slot?.querySelector(`[data-line="${lineNo}"]`);
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'auto' });
+          });
+        }
+      }
       if (changed && codeFileDirectEdit) {
         const slot = getActiveSlot();
         if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
