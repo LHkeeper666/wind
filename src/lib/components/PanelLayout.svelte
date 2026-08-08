@@ -956,7 +956,7 @@
 
   function handleCloseTerminal() {
     layout.hideTerminal();
-    focusPanel('current');
+    focusPanel($layout.activeColumn);
   }
 
   function handleCloseImageViewer() {
@@ -1071,10 +1071,10 @@
         // In fullscreen mode, Ctrl+` closes terminal completely
         layout.closeFullscreenTerminal();
         layout.hideTerminal();
-        focusPanel('current');
+        focusPanel($layout.activeColumn);
       } else if ($layout.terminalVisible) {
         layout.hideTerminal();
-        focusPanel('current');
+        focusPanel($layout.activeColumn);
       } else {
         layout.showTerminal();
         focusPanel('terminal');

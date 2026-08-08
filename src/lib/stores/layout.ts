@@ -49,6 +49,9 @@ export interface LayoutState {
   // Expanded preview mode (0:1:4 layout, hides parent)
   previewExpanded: boolean;
   originalRatios: [number, number, number];
+
+  // Pre-terminal active column for focus restore on close
+  preTerminalColumn: 'parent' | 'current' | 'preview' | 'terminal';
 }
 
 const initialState: LayoutState = {
@@ -71,6 +74,7 @@ const initialState: LayoutState = {
   keyPrefix: null,
   previewExpanded: false,
   originalRatios: [1, 1, 3],
+  preTerminalColumn: 'current',
 };
 
 function createLayoutStore() {
@@ -293,22 +297,29 @@ function createLayoutStore() {
         terminalVisible: !state.terminalVisible,
         terminalMode: !state.terminalVisible ? 'insert' : null,
         activeColumn: !state.terminalVisible ? 'terminal'
-          : state.activeColumn === 'terminal' ? 'current' : state.activeColumn,
+          : state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
+        preTerminalColumn: !state.terminalVisible ? state.activeColumn : state.preTerminalColumn,
       }));
     },
 
     // Show terminal
     showTerminal() {
-      update(state => ({ ...state, terminalVisible: true, terminalMode: 'insert', activeColumn: 'terminal' }));
+      update(state => ({
+        ...state,
+        terminalVisible: true,
+        terminalMode: 'insert',
+        activeColumn: 'terminal',
+        preTerminalColumn: state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
+      }));
     },
 
-    // Hide terminal — preserve previous activeColumn unless it was terminal
+    // Hide terminal — restore pre-terminal focus
     hideTerminal() {
       update(state => ({
         ...state,
         terminalVisible: false,
         terminalMode: null,
-        activeColumn: state.activeColumn === 'terminal' ? 'current' : state.activeColumn,
+        activeColumn: state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
       }));
     },
 

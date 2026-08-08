@@ -3,7 +3,6 @@
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState } from '@codemirror/state';
   import { keymap } from '@codemirror/view';
-  import { oneDark } from '@codemirror/theme-one-dark';
   import { indentUnit } from '@codemirror/language';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
@@ -11,6 +10,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { gruvboxDark, gruvboxTheme } from '$lib/utils/editor-theme';
 
   let {
     filePath = null,
@@ -367,7 +367,8 @@
           isModified: () => isModified,
         })
       ),
-      oneDark,
+      gruvboxDark,
+      gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
         '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },

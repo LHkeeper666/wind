@@ -220,15 +220,20 @@
     window.addEventListener('mouseup', stopDrag);
   }
 
+  let dragRAF: number | null = null;
+
   function handleDrag(event: MouseEvent) {
-    if (isDragging) {
+    if (!isDragging || dragRAF !== null) return;
+    dragRAF = requestAnimationFrame(() => {
+      dragRAF = null;
       const delta = dragStartY - event.clientY;
       terminalHeight = Math.max(100, Math.min(window.innerHeight * 0.8, dragStartHeight + delta));
-    }
+    });
   }
 
   function stopDrag() {
     isDragging = false;
+    if (dragRAF !== null) { cancelAnimationFrame(dragRAF); dragRAF = null; }
     window.removeEventListener('mousemove', handleDrag);
     window.removeEventListener('mouseup', stopDrag);
   }

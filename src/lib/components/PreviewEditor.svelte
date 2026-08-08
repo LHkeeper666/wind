@@ -10,7 +10,6 @@
   import { EditorView, basicSetup } from 'codemirror';
   import { EditorState, StateField, StateEffect } from '@codemirror/state';
   import { keymap, Decoration } from '@codemirror/view';
-  import { oneDark } from '@codemirror/theme-one-dark';
   import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
   import { indentUnit } from '@codemirror/language';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
@@ -19,6 +18,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { gruvboxDark, gruvboxTheme } from '$lib/utils/editor-theme';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -128,12 +128,14 @@
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
   let previewArea: HTMLElement | undefined = $state(undefined);
+  let previewWithToc: HTMLElement | undefined = $state(undefined);
   let editorContainer: HTMLElement | undefined = $state(undefined);
   let panelElement: HTMLElement | undefined = $state(undefined);
   let previewRouter: PreviewRouter | undefined;
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined;
   let editorFilePath: string | null = null;
+  let editorResizeObserver: ResizeObserver | null = null;
   let codeFileDirectEdit: boolean = $state(false);
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
@@ -181,6 +183,7 @@
   let isMarkdown: boolean = $state(false);
   let editorTargetLine: number = -1;
   let pendingEditorPos: number = -1;
+  let pendingEditorScrollTop: number = -1;
 
   // Per-tab editor state cache
   interface TabEditorCache {
@@ -190,6 +193,7 @@
     binaryContent: ArrayBuffer | null;
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
     editorCursorPos: number;
+    editorScrollTop: number;
     previewScrollTop: number;
     isModified: boolean;
     pdfCurrentPage: number;
@@ -258,6 +262,7 @@
       filePath, content, savedContent, binaryContent,
       mode: savedMode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
+      editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
       isModified, pdfCurrentPage, pdfPageCount, fileMtime: currentFileMtime,
       tocOpen, tocHeadings: [...tocHeadings],
@@ -350,6 +355,7 @@
     previewRouter?.dispose();
     if (editorView) { editorView.destroy(); }
     scrollObserver?.disconnect();
+    editorResizeObserver?.disconnect();
     stopWatching();
     if (fileChangedUnlisten) { fileChangedUnlisten(); fileChangedUnlisten = null; }
   });
@@ -365,8 +371,8 @@
     const changed = m !== prevMode;
     prevMode = m;
     if (m === 'editor-normal' || m === 'editor-insert') {
+      if (previewWithToc) previewWithToc.style.display = 'none';
       if (editorContainer) editorContainer.style.display = 'block';
-      if (previewArea) previewArea.style.display = 'none';
       if (editorContainer && filePath && (!editorView || editorFilePath !== filePath)) {
         initEditor();
       } else if (editorView && editorTargetLine >= 0 && changed) {
@@ -385,14 +391,14 @@
         editorView.focus();
       }
     } else {
-      if (previewArea) previewArea.style.display = '';
+      if (previewWithToc) previewWithToc.style.display = '';
       if (editorContainer) editorContainer.style.display = 'none';
       if (editorView) closeSearchPanel(editorView);
       if (changed && codeFileDirectEdit) {
         const slot = getActiveSlot();
         if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
       }
-      if (changed && panelElement && !tocFocused) {
+      if (changed && panelElement && !tocFocused && activeColumn === 'preview') {
         panelElement.focus();
       }
     }
@@ -602,13 +608,14 @@
       mode = cached.mode;
       if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
         pendingEditorPos = cached.editorCursorPos;
+        pendingEditorScrollTop = cached.editorScrollTop;
       }
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => { if (meta.modified !== cached.fileMtime) { tabEditorCache.delete(currentTabId); loadFile(path); } })
+        .then(meta => { if (meta.modified !== cached.fileMtime && mode === 'global-normal') { tabEditorCache.delete(currentTabId); loadFile(path); } })
         .catch(() => {});
       return;
     }
@@ -715,7 +722,7 @@
     }
 
     // Text / binary
-    const MAX_PREVIEW_SIZE = 200 * 1024;
+    const MAX_PREVIEW_SIZE = 1024 * 1024; // 1MB
     originalFileSize = 0;
     try {
       const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
@@ -746,10 +753,9 @@
         content = ''; binaryContent = null;
       }
     }
-    // Code files skip Shiki preview
-    // If already in editor mode, update content without mode switch
+    // Code files go directly to editor mode (no Shiki preview)
     if (!isMarkdown && ext !== 'json' && !binaryContent && content) {
-      codeFileDirectEdit = false;
+      codeFileDirectEdit = true;
       if (mode === 'editor-normal' || mode === 'editor-insert') {
         if (editorView) {
           editorView.dispatch({
@@ -760,8 +766,7 @@
         }
         editorFilePath = filePath;
       } else {
-        codeFileDirectEdit = true;
-        mode = 'global-normal';
+        mode = 'editor-normal';
       }
     } else {
       codeFileDirectEdit = false;
@@ -873,7 +878,7 @@
   }
 
   function scrollEditorToPos(view: EditorView, pos: number) {
-    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'nearest' }) });
+    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const s = view.scrollDOM;
@@ -973,7 +978,8 @@
         }),
         (msg) => onToast(msg)
       ),
-      oneDark,
+      gruvboxDark,
+      gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
         '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
@@ -1005,7 +1011,29 @@
     editorView = new EditorView({ state, parent: editorContainer });
     savedContent = editorView.state.doc.toString();
     isModified = false;
-    if (needsScroll && editorView) scrollEditorToPos(editorView, editorView.state.selection.main.head);
+    // Tab switch restore: use cached scroll position, skip scrollIntoView
+    if (pendingEditorScrollTop >= 0) {
+      requestAnimationFrame(() => {
+        if (editorView) {
+          editorView.scrollDOM.scrollTop = pendingEditorScrollTop;
+          editorView.scrollDOM.scrollTop = Math.max(0, Math.min(editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollHeight - editorView.scrollDOM.clientHeight));
+        }
+      });
+      pendingEditorScrollTop = -1;
+    } else if (needsScroll && editorView) {
+      // Fresh entry (e.g. 'e' key from preview): center on target line
+      scrollEditorToPos(editorView, editorView.state.selection.main.head);
+    }
+
+    // Clamp editor scroll on container resize (terminal drag, panel resize, etc.)
+    editorResizeObserver?.disconnect();
+    editorResizeObserver = new ResizeObserver(() => {
+      if (editorView) {
+        const s = editorView.scrollDOM;
+        s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
+      }
+    });
+    editorResizeObserver.observe(editorContainer);
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || !editorView) return;
@@ -1425,7 +1453,7 @@
   </div>
 
   <div class="panel-content">
-    <div class="preview-with-toc" class:hidden={!filePath && !batchRenameTempPath}>
+    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={!filePath && !batchRenameTempPath}>
       <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
       {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
         <TocSidebar
@@ -1743,4 +1771,27 @@
   .output-exitcode {
     color: var(--warning);
   }
+
+  /* JSON Preview */
+  :global(.preview-json) {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+  }
+  :global(.json-toggle) {
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-muted);
+    margin-right: 2px;
+  }
+  :global(.json-toggle:hover) { color: var(--accent); }
+  :global(.json-content.collapsed) { display: none; }
+  :global(.json-key) { color: var(--accent); }
+  :global(.json-string) { color: #b8bb26; }
+  :global(.json-number) { color: #fe8019; }
+  :global(.json-boolean) { color: #d3869b; }
+  :global(.json-null) { color: #928374; }
+  :global(.json-bracket) { color: var(--text-secondary); }
+  :global(.json-item) { padding-left: 20px; border-left: 1px solid var(--border); }
 </style>
