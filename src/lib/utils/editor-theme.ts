@@ -62,7 +62,7 @@ export const gruvboxTheme = EditorView.theme({
   '.cm-content': { caretColor: 'var(--text-primary)' },
   '.cm-gutters': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-muted)', border: 'none' },
   '.cm-activeLineGutter': { backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' },
-  '.cm-activeLine': { backgroundColor: 'rgba(var(--bg-secondary-rgb), 0.25)', borderLeft: '2px solid var(--accent)' },
+  '.cm-activeLine': { backgroundColor: 'var(--bg-secondary)' },
   '.cm-cursor': { borderLeftColor: 'var(--text-primary)' },
   '.cm-selectionBackground': { backgroundColor: 'rgba(var(--bg-active-rgb), 0.5)' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
