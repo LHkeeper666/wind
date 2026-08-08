@@ -394,22 +394,27 @@
         editorView.focus();
       }
     } else {
-      if (previewWithToc) previewWithToc.style.display = '';
-      if (editorContainer) editorContainer.style.display = 'none';
-      if (editorView) closeSearchPanel(editorView);
-      // Sync preview scroll to match editor's visible center line
+      // Read editor scroll position BEFORE hiding editorContainer
+      // (hidden container has zero layout, making lineBlockAtHeight unreliable)
+      let pendingPreviewLine = -1;
       if (changed && editorView) {
         const vh = editorView.scrollDOM.clientHeight;
         const centerY = editorView.scrollDOM.scrollTop + vh / 2;
         const block = editorView.lineBlockAtHeight(centerY);
         if (block) {
-          const lineNo = editorView.state.doc.lineAt(block.from).number - 1;
-          requestAnimationFrame(() => {
-            const slot = getActiveSlot();
-            const el = slot?.querySelector(`[data-line="${lineNo}"]`);
-            if (el) el.scrollIntoView({ block: 'center', behavior: 'auto' });
-          });
+          pendingPreviewLine = editorView.state.doc.lineAt(block.from).number - 1;
         }
+      }
+      if (previewWithToc) previewWithToc.style.display = '';
+      if (editorContainer) editorContainer.style.display = 'none';
+      if (editorView) closeSearchPanel(editorView);
+      if (pendingPreviewLine >= 0) {
+        const targetLine = pendingPreviewLine;
+        requestAnimationFrame(() => {
+          const slot = getActiveSlot();
+          const el = slot?.querySelector(`[data-line="${targetLine}"]`);
+          if (el) el.scrollIntoView({ block: 'center', behavior: 'auto' });
+        });
       }
       if (changed && codeFileDirectEdit) {
         const slot = getActiveSlot();
