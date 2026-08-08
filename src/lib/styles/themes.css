@@ -23,6 +23,7 @@
   --scrollbar-track: #282828;
 
   /* RGB variants for alpha compositing */
+  --bg-secondary-rgb: 60, 56, 54;
   --bg-active-rgb: 102, 92, 84;
 }
 
@@ -73,5 +74,6 @@
   --scrollbar-track: #f9f5d7;
 
   /* RGB variants for alpha compositing */
+  --bg-secondary-rgb: 235, 219, 178;
   --bg-active-rgb: 189, 174, 147;
 }
