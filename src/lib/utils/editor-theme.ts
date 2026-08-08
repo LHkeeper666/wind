@@ -1,9 +1,10 @@
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { EditorView } from '@codemirror/view';
+import { Compartment } from '@codemirror/state';
 
-// Gruvbox dark syntax highlighting
-export const gruvboxHighlightStyle = HighlightStyle.define([
+// Gruvbox Dark syntax highlighting
+const gruvboxDarkHighlight = HighlightStyle.define([
   { tag: tags.keyword, color: '#fb4934' },
   { tag: [tags.typeName, tags.className, tags.namespace], color: '#fabd2f' },
   { tag: [tags.function(tags.variableName), tags.labelName], color: '#83a598' },
@@ -20,19 +21,51 @@ export const gruvboxHighlightStyle = HighlightStyle.define([
   { tag: tags.heading, color: '#fabd2f', fontWeight: 'bold' },
 ]);
 
-// Gruvbox dark syntax extension
-export const gruvboxDark = syntaxHighlighting(gruvboxHighlightStyle);
+// Gruvbox Light syntax highlighting
+const gruvboxLightHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: '#9d0006' },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: '#b57614' },
+  { tag: [tags.function(tags.variableName), tags.labelName], color: '#076678' },
+  { tag: [tags.propertyName, tags.attributeName], color: '#427b58' },
+  { tag: tags.string, color: '#79740e' },
+  { tag: [tags.number, tags.bool, tags.self, tags.null], color: '#af3a03' },
+  { tag: tags.comment, color: '#928374', fontStyle: 'italic' },
+  { tag: tags.regexp, color: '#8f3f71' },
+  { tag: [tags.operator, tags.punctuation, tags.bracket], color: '#665c54' },
+  { tag: [tags.meta, tags.modifier], color: '#8f3f71' },
+  { tag: tags.strong, fontWeight: 'bold' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+  { tag: tags.link, color: '#076678', textDecoration: 'underline' },
+  { tag: tags.heading, color: '#b57614', fontWeight: 'bold' },
+]);
 
-// Gruvbox dark chrome (editor UI)
+export const gruvboxDark = syntaxHighlighting(gruvboxDarkHighlight);
+export const gruvboxLight = syntaxHighlighting(gruvboxLightHighlight);
+
+export function getSyntaxTheme(): ReturnType<typeof syntaxHighlighting> {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  return isLight ? gruvboxLight : gruvboxDark;
+}
+
+// Compartment for dynamic theme switching (reconfigured on data-theme change)
+export function createThemeCompartment(): Compartment {
+  return new Compartment();
+}
+
+export function getCurrentTheme(): ReturnType<typeof syntaxHighlighting> {
+  return getSyntaxTheme();
+}
+
+// Chrome theme using CSS variables — auto-adapts to dark/light
 export const gruvboxTheme = EditorView.theme({
-  '&': { backgroundColor: '#282828' },
-  '.cm-content': { caretColor: '#ebdbb2' },
-  '.cm-gutters': { backgroundColor: '#282828', color: '#7c6f64', border: 'none' },
-  '.cm-activeLineGutter': { backgroundColor: '#3c3836', color: '#ebdbb2' },
-  '.cm-activeLine': { backgroundColor: '#3c383640', borderLeft: '2px solid #fabd2f' },
-  '.cm-cursor': { borderLeftColor: '#ebdbb2' },
-  '.cm-selectionBackground': { backgroundColor: '#665c5480' },
-  '&.cm-focused .cm-selectionBackground': { backgroundColor: '#665c54' },
-  '.cm-matchingBracket': { backgroundColor: '#504945', outline: '1px solid #a89984' },
-  '.cm-lineNumbers .cm-gutterElement': { color: '#7c6f64' },
+  '&': { backgroundColor: 'var(--bg-primary)' },
+  '.cm-content': { caretColor: 'var(--text-primary)' },
+  '.cm-gutters': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-muted)', border: 'none' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' },
+  '.cm-activeLine': { backgroundColor: 'rgba(var(--bg-secondary-rgb), 0.25)', borderLeft: '2px solid var(--accent)' },
+  '.cm-cursor': { borderLeftColor: 'var(--text-primary)' },
+  '.cm-selectionBackground': { backgroundColor: 'rgba(var(--bg-active-rgb), 0.5)' },
+  '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
+  '.cm-matchingBracket': { backgroundColor: 'var(--bg-tertiary)', outline: '1px solid var(--text-secondary)' },
+  '.cm-lineNumbers .cm-gutterElement': { color: 'var(--text-muted)' },
 });

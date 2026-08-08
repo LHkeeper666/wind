@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { EditorView, basicSetup } from 'codemirror';
-  import { EditorState } from '@codemirror/state';
+  import { EditorState, Compartment } from '@codemirror/state';
   import { keymap } from '@codemirror/view';
   import { indentUnit } from '@codemirror/language';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
@@ -10,7 +10,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
-  import { gruvboxDark, gruvboxTheme } from '$lib/utils/editor-theme';
+  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme } from '$lib/utils/editor-theme';
 
   let {
     filePath = null,
@@ -34,6 +34,8 @@
   let overlayCmdBuf: string = $state('');
   let isModified: boolean = $state(false);
   let clipboardBridge: ClipboardBridge | null = null;
+  let themeCompartment = new Compartment();
+  let themeObserver: MutationObserver | null = null;
   let savedContent: string = content;
   let outputVisible: boolean = $state(false);
   let outputText: string = $state('');
@@ -314,6 +316,8 @@
     if (editorView) {
       editorView.destroy();
     }
+    themeObserver?.disconnect();
+    themeObserver = null;
 
     const language = getLanguage(filePath);
     const extensions = [
@@ -367,7 +371,7 @@
           isModified: () => isModified,
         })
       ),
-      gruvboxDark,
+      themeCompartment.of(getSyntaxTheme()),
       gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
@@ -432,6 +436,17 @@
 
     // Bridge vim clipboard with system clipboard
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
+
+    // Watch theme changes to swap syntax highlighting
+    if (!themeObserver) {
+      themeObserver = new MutationObserver(() => {
+        if (editorView) {
+          const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+          editorView.dispatch({ effects: themeCompartment.reconfigure(isLight ? gruvboxLight : gruvboxDark) });
+        }
+      });
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
 
     // Block IME composition on the overlay div (defense-in-depth)
     if (overlayElement) {

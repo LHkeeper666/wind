@@ -8,7 +8,7 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { EditorView, basicSetup } from 'codemirror';
-  import { EditorState, StateField, StateEffect } from '@codemirror/state';
+  import { EditorState, StateField, StateEffect, Compartment } from '@codemirror/state';
   import { keymap, Decoration } from '@codemirror/view';
   import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
   import { indentUnit } from '@codemirror/language';
@@ -18,7 +18,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
-  import { gruvboxDark, gruvboxTheme } from '$lib/utils/editor-theme';
+  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme } from '$lib/utils/editor-theme';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -136,6 +136,8 @@
   let editorView: EditorView | undefined;
   let editorFilePath: string | null = null;
   let editorResizeObserver: ResizeObserver | null = null;
+  let themeCompartment = new Compartment();
+  let themeObserver: MutationObserver | null = null;
   let codeFileDirectEdit: boolean = $state(false);
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
@@ -356,6 +358,7 @@
     if (editorView) { editorView.destroy(); }
     scrollObserver?.disconnect();
     editorResizeObserver?.disconnect();
+    themeObserver?.disconnect();
     stopWatching();
     if (fileChangedUnlisten) { fileChangedUnlisten(); fileChangedUnlisten = null; }
   });
@@ -978,7 +981,7 @@
         }),
         (msg) => onToast(msg)
       ),
-      gruvboxDark,
+      themeCompartment.of(getSyntaxTheme()),
       gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
@@ -1034,6 +1037,18 @@
       }
     });
     editorResizeObserver.observe(editorContainer);
+
+    // Watch theme changes to swap syntax highlighting
+    if (!themeObserver) {
+      themeObserver = new MutationObserver(() => {
+        if (editorView) {
+          const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+          editorView.dispatch({ effects: themeCompartment.reconfigure(isLight ? gruvboxLight : gruvboxDark) });
+        }
+      });
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+
     clipboardBridge = initClipboardBridge(editorView, overlayElement);
     editorView.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || !editorView) return;
