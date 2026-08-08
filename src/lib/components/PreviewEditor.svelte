@@ -994,6 +994,9 @@
         if (vimState) {
           if (vimState.insertMode && mode === 'editor-normal') mode = 'editor-insert';
           else if (!vimState.insertMode && !vimState.visualMode && mode === 'editor-insert') mode = 'editor-normal';
+          update.view.dom.classList.toggle('vim-visual', !!vimState.visualMode);
+        } else {
+          update.view.dom.classList.remove('vim-visual');
         }
       }),
     ];

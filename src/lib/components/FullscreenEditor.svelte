@@ -391,6 +391,9 @@
           } else if (!vimState.insertMode && !vimState.visualMode && !overlayVisible) {
             overlayVisible = true;
           }
+          update.view.dom.classList.toggle('vim-visual', !!vimState.visualMode);
+        } else {
+          update.view.dom.classList.remove('vim-visual');
         }
       }),
     ];
