@@ -1036,15 +1036,19 @@
     editorView = new EditorView({ state, parent: editorContainer });
     savedContent = editorView.state.doc.toString();
     isModified = false;
-    // Tab switch restore: use cached scroll position, skip scrollIntoView
+    // Tab switch restore: use cached scroll position, skip scrollIntoView.
+    // Double rAF ensures CodeMirror's internal measure cycles complete first.
     if (pendingEditorScrollTop >= 0) {
-      requestAnimationFrame(() => {
-        if (editorView) {
-          editorView.scrollDOM.scrollTop = pendingEditorScrollTop;
-          editorView.scrollDOM.scrollTop = Math.max(0, Math.min(editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollHeight - editorView.scrollDOM.clientHeight));
-        }
-      });
+      const savedTop = pendingEditorScrollTop;
       pendingEditorScrollTop = -1;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (editorView) {
+            editorView.scrollDOM.scrollTop = savedTop;
+            editorView.scrollDOM.scrollTop = Math.max(0, Math.min(editorView.scrollDOM.scrollTop, editorView.scrollDOM.scrollHeight - editorView.scrollDOM.clientHeight));
+          }
+        });
+      });
     } else if (needsScroll && editorView) {
       // Fresh entry (e.g. 'e' key from preview): center on target line
       scrollEditorToPos(editorView, editorView.state.selection.main.head);
