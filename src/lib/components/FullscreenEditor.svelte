@@ -10,7 +10,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
-  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme } from '$lib/utils/editor-theme';
+  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
 
   let {
     filePath = null,
@@ -372,6 +372,7 @@
         })
       ),
       themeCompartment.of(getSyntaxTheme()),
+      suppressNativeSelection,
       gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
@@ -501,7 +502,13 @@
       <button class="close-btn" onclick={onClose} title="Close (:q)">x</button>
     </div>
 
-    <div class="editor-content" bind:this={editorContainer}>
+    <div class="editor-content" bind:this={editorContainer} onmouseup={() => {
+      if (overlayVisible) {
+        requestAnimationFrame(() => {
+          if (overlayElement && overlayVisible) overlayElement.focus();
+        });
+      }
+    }}>
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         class="editor-overlay"
@@ -659,6 +666,7 @@
     height: 100%;
     font-family: var(--font-mono);
   }
+  :global(.cm-editor ::selection) { background-color: var(--bg-active); color: var(--text-primary); }
 
   /* Output panel */
   .output-panel {

@@ -1123,6 +1123,7 @@
         event.preventDefault();
         event.stopPropagation();
         if ($layout.terminalVisible && $layout.activeColumn !== 'terminal') {
+          layout.setPreTerminalColumn($layout.activeColumn as 'parent' | 'current' | 'preview');
           focusPanel('terminal');
         }
         return;
@@ -1130,7 +1131,7 @@
         event.preventDefault();
         event.stopPropagation();
         if ($layout.activeColumn === 'terminal') {
-          focusPanel('current');
+          focusPanel($layout.preTerminalColumn === 'terminal' ? 'current' : $layout.preTerminalColumn);
         }
         return;
       } else if (code === 'KeyM') {

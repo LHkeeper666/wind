@@ -1,7 +1,7 @@
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { EditorView } from '@codemirror/view';
-import { Compartment } from '@codemirror/state';
+import { Compartment, Prec } from '@codemirror/state';
 
 // Gruvbox Dark syntax highlighting
 const gruvboxDarkHighlight = HighlightStyle.define([
@@ -66,8 +66,16 @@ export const gruvboxTheme = EditorView.theme({
   '&.vim-visual .cm-activeLine': { backgroundColor: 'transparent' },
   '&.vim-visual .cm-activeLineGutter': { backgroundColor: 'transparent' },
   '.cm-cursor': { borderLeftColor: 'var(--text-primary)' },
-  '.cm-selectionBackground': { backgroundColor: 'rgba(var(--bg-active-rgb), 0.5)' },
+  '.cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
   '.cm-matchingBracket': { backgroundColor: 'var(--bg-tertiary)', outline: '1px solid var(--text-secondary)' },
   '.cm-lineNumbers .cm-gutterElement': { color: 'var(--text-muted)' },
 });
+
+// Override CodeMirror's hideNativeSelection (Prec.highest) which sets focused ::selection to Highlight.
+// We suppress native selection entirely — CodeMirror's drawSelection plugin handles all visuals.
+export const suppressNativeSelection = Prec.highest(EditorView.theme({
+  ".cm-content :focus::selection, .cm-content :focus ::selection": {
+    backgroundColor: "transparent !important"
+  }
+}));

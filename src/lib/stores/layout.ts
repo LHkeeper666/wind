@@ -313,6 +313,11 @@ function createLayoutStore() {
       }));
     },
 
+    // Remember which column was active before switching to terminal
+    setPreTerminalColumn(column: 'parent' | 'current' | 'preview') {
+      update(state => ({ ...state, preTerminalColumn: column }));
+    },
+
     // Hide terminal — restore pre-terminal focus
     hideTerminal() {
       update(state => ({

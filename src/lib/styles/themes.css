@@ -25,6 +25,7 @@
   /* RGB variants for alpha compositing */
   --bg-secondary-rgb: 60, 56, 54;
   --bg-active-rgb: 102, 92, 84;
+  --text-primary-rgb: 235, 219, 178;
 }
 
 /* Terminal-style scrollbar */
@@ -49,6 +50,17 @@
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Suppress native text selection in the editor — CodeMirror's drawSelection provides the visuals */
+.cm-editor ::selection {
+  background-color: transparent;
+  color: inherit;
+}
+
+/* Override CodeMirror's focused selection background (higher specificity than our theme) */
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--bg-active) !important;
 }
 
 [data-theme="light"] {
@@ -76,4 +88,5 @@
   /* RGB variants for alpha compositing */
   --bg-secondary-rgb: 235, 219, 178;
   --bg-active-rgb: 189, 174, 147;
+  --text-primary-rgb: 60, 56, 54;
 }

@@ -18,7 +18,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
-  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme } from '$lib/utils/editor-theme';
+  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -317,6 +317,7 @@
   // Redirect focus when active column switches away from preview
   $effect(() => {
     if (activeColumn && activeColumn !== 'preview' && mode !== 'global-normal') {
+      if (activeColumn === 'terminal') return; // terminal focus handled by PanelLayout.focusPanel
       const target = activeColumn === 'current'
         ? document.querySelector('.current-panel .directory-panel')
         : document.querySelector('.parent-panel .directory-panel');
@@ -1001,6 +1002,7 @@
         (msg) => onToast(msg)
       ),
       themeCompartment.of(getSyntaxTheme()),
+      suppressNativeSelection,
       gruvboxTheme,
       EditorView.theme({
         '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
@@ -1506,7 +1508,17 @@
         />
       {/if}
     </div>
-    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} onclick={(e) => e.stopPropagation()}>
+    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} onclick={(e) => e.stopPropagation()} onmouseup={() => {
+      // Re-focus overlay after mouse interactions (selection, click) pass through to CodeMirror.
+      // pointer-events:none on the overlay lets mouse events reach CodeMirror, which steals focus.
+      if (mode === 'editor-normal') {
+        requestAnimationFrame(() => {
+          if (overlayElement && mode === 'editor-normal' && activeColumn === 'preview') {
+            overlayElement.focus();
+          }
+        });
+      }
+    }}>
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         class="editor-overlay"
@@ -1677,6 +1689,7 @@
   .shortcuts kbd { background-color: var(--bg-tertiary); padding: 1px 4px; font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--border); }
 
   :global(.cm-editor) { height: 100%; font-family: var(--font-mono); }
+  :global(.cm-editor ::selection) { background-color: var(--bg-active); color: var(--text-primary); }
   :global(.cm-panel) { display: none !important; }
   :global(.cm-searchMatch) { background-color: #fabd2f55 !important; outline: 1px solid #fabd2f88 !important; border-radius: 2px; }
   :global(.cm-searchMatch-selected) { background-color: #fabd2faa !important; outline: 1px solid #fabd2fcc !important; border-radius: 2px; }
