@@ -137,6 +137,25 @@ impl FtpManager {
         self.configs.get(name).cloned()
     }
 
+    /// Create an independent session for background transfers.
+    /// Does NOT replace the main session — the caller is responsible for cleanup.
+    pub async fn create_independent(&self, name: &str) -> Result<Arc<Mutex<FtpSession>>, String> {
+        let config = self.configs.get(name)
+            .ok_or_else(|| format!("No config for connection '{}'", name))?.clone();
+        let addr = format!("{}:{}", config.host, config.port);
+        let mut client = AsyncRustlsFtpStream::connect(&addr)
+            .await
+            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+        client.login(&config.user, &config.password)
+            .await
+            .map_err(|e| format!("Login failed: {}", e))?;
+        if let Err(e) = client.opts("UTF8", Some("ON")).await {
+            eprintln!("[FTP] independent session: OPTS UTF8 ON failed (ignored): {}", e);
+        }
+        eprintln!("[FTP] created independent session for '{name}'");
+        Ok(Arc::new(Mutex::new(FtpSession { client })))
+    }
+
     /// Reconnect using a stored config
     pub async fn reconnect(&mut self, name: &str) -> Result<(), String> {
         let config = self.configs.get(name)
@@ -216,14 +235,28 @@ impl FtpManager {
 /// Parse MLSD output into (name, is_dir, size, modified) tuples.
 /// MLSD format (RFC 3659): fact=value;fact=value; filename
 pub fn parse_mld_line(line: &str) -> Option<(String, bool, Option<u64>, Option<u64>)> {
-    let space_pos = line.rfind(' ')?;
-    let facts = &line[..space_pos];
-    let name = line[space_pos + 1..].trim().to_string();
+    // Find the last semicolon; the filename starts after the space following it.
+    // Using rfind(' ') breaks on filenames containing spaces.
+    let name = if let Some(semi_pos) = line.rfind(';') {
+        let after_semi = &line[semi_pos + 1..];
+        if let Some(space_pos) = after_semi.find(' ') {
+            after_semi[space_pos + 1..].trim().to_string()
+        } else {
+            // No space after semicolon — the rest might be a fact without trailing semicolon
+            // Fall back to rfind(' ') but only if after_semi contains a space
+            return parse_mld_line_fallback(line);
+        }
+    } else {
+        // No semicolons — fall back to space-based parsing
+        return parse_mld_line_fallback(line);
+    };
 
-    if name == "." || name == ".." {
+    if name.is_empty() || name == "." || name == ".." {
         return None;
     }
 
+    // Facts are everything before the filename (including the last semicolon)
+    let facts = &line[..line.len() - name.len()];
     let facts_lower = facts.to_lowercase();
     let is_dir = facts_lower.contains("type=dir");
     let mut size: Option<u64> = None;
@@ -238,6 +271,26 @@ pub fn parse_mld_line(line: &str) -> Option<(String, bool, Option<u64>, Option<u
         }
     }
 
+    Some((name, is_dir, size, modified))
+}
+
+fn parse_mld_line_fallback(line: &str) -> Option<(String, bool, Option<u64>, Option<u64>)> {
+    let space_pos = line.rfind(' ')?;
+    let facts = &line[..space_pos];
+    let name = line[space_pos + 1..].trim().to_string();
+    if name == "." || name == ".." { return None; }
+    let facts_lower = facts.to_lowercase();
+    let is_dir = facts_lower.contains("type=dir");
+    let mut size: Option<u64> = None;
+    let mut modified: Option<u64> = None;
+    for fact in facts.split(';') {
+        let fact_lower = fact.trim().to_lowercase();
+        if let Some(val) = fact_lower.strip_prefix("size=") {
+            size = val.parse().ok();
+        } else if let Some(val) = fact_lower.strip_prefix("modify=") {
+            modified = parse_ftp_timestamp(val);
+        }
+    }
     Some((name, is_dir, size, modified))
 }
 
@@ -267,6 +320,51 @@ pub fn parse_list_line(line: &str) -> Option<(String, bool, Option<u64>, Option<
     }
 
     Some((name, is_dir, size, None))
+}
+
+/// Recursively list a remote FTP directory tree using MLSD (LIST fallback).
+/// Returns Vec<(full_remote_path, size_bytes, is_dir)> for all entries discovered.
+pub async fn list_dir_recursive(
+    client: &mut AsyncRustlsFtpStream,
+    remote_path: &str,
+) -> Result<Vec<(String, u64, bool)>, String> {
+    let path = remote_path.trim_end_matches('/');
+    let mut results: Vec<(String, u64, bool)> = Vec::new();
+    let mut dirs_to_visit: Vec<String> = Vec::new();
+
+    // List current directory
+    let lines = match client.mlsd(Some(path)).await {
+        Ok(lines) => lines,
+        Err(e) => {
+            eprintln!("[FTP] list_dir_recursive: MLSD failed ({}), falling back to LIST", e);
+            client.list(Some(path)).await
+                .map_err(|e2| format!("Failed to list directory '{}': MLSD: {}, LIST: {}", path, e, e2))?
+        }
+    };
+
+    for line in &lines {
+        if let Some((name, is_dir, size, _modified)) = parse_mld_line(line)
+            .or_else(|| parse_list_line(line))
+        {
+            let full_path = format!("{}/{}", path, name);
+            if is_dir {
+                results.push((full_path.clone(), 0, true));
+                dirs_to_visit.push(full_path);
+            } else {
+                results.push((full_path, size.unwrap_or(0), false));
+            }
+        }
+    }
+
+    // Recursively visit subdirectories
+    for dir_path in dirs_to_visit {
+        match Box::pin(list_dir_recursive(client, &dir_path)).await {
+            Ok(mut sub_results) => results.append(&mut sub_results),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(results)
 }
 
 fn parse_ftp_timestamp(val: &str) -> Option<u64> {

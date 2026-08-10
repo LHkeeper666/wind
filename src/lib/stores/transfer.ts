@@ -1,0 +1,300 @@
+import { writable, derived } from 'svelte/store';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+
+export interface TransferEntry {
+  id: number;
+  batchId: number;
+  opType: 'copy' | 'move' | 'delete' | 'ftp-download' | 'ftp-upload';
+  source: string;
+  destination: string;
+  totalBytes: number;
+  bytesDone: number;
+  speedBps: number;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  error?: string;
+  startTime: number;
+  elapsedMs?: number;
+}
+
+export interface TransferBatch {
+  batchId: number;
+  entries: TransferEntry[];
+  opType: string;
+  isActive: boolean;
+  completedAt?: number;
+}
+
+function shortPath(path: string): string {
+  if (path.startsWith('ftp://')) {
+    const parts = path.split('/');
+    const name = parts[parts.length - 1] || parts[parts.length - 2] || path;
+    const conn = parts[2] || '';
+    return `ftp://${conn}/.../${name}`;
+  }
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || path;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+}
+
+function formatSpeed(bps: number): string {
+  if (bps === 0) return '';
+  return `${formatSize(bps)}/s`;
+}
+
+function opTypeLabel(opType: string): string {
+  switch (opType) {
+    case 'copy': return 'Copy';
+    case 'move': return 'Move';
+    case 'delete': return 'Delete';
+    case 'ftp-download': return 'FTP Download';
+    case 'ftp-upload': return 'FTP Upload';
+    default: return opType;
+  }
+}
+
+interface EnqueueTask {
+  op_type: string;
+  source: string;
+  destination: string;
+  total_bytes: number;
+  conn_name?: string;
+}
+
+function createTransferStore() {
+  const { subscribe, set, update } = writable<TransferEntry[]>([]);
+  let unlistens: (() => void)[] = [];
+
+  function init() {
+    Promise.all([
+      listen<Record<string, unknown>>('transfer-progress', (event) => {
+        const p = event.payload;
+        update(entries => {
+          const id = p.id as number;
+          const idx = entries.findIndex(e => e.id === id);
+          const updated = { ...(idx >= 0 ? entries[idx] : {}),
+            id,
+            batchId: p.batch_id as number,
+            opType: p.op_type as TransferEntry['opType'],
+            source: p.source as string,
+            destination: p.destination as string,
+            totalBytes: (p.total_bytes as number) || (idx >= 0 ? entries[idx].totalBytes : 0),
+            bytesDone: p.bytes_done as number,
+            speedBps: p.speed_bps as number,
+            status: (p.status as TransferEntry['status']) || (idx >= 0 ? entries[idx].status : 'queued'),
+            startTime: (idx >= 0 ? entries[idx].startTime : 0) || Date.now(),
+          } as TransferEntry;
+          if (idx >= 0) {
+            const newEntries = [...entries];
+            newEntries[idx] = updated;
+            return newEntries;
+          }
+          return [...entries, updated];
+        });
+      }),
+
+      listen<Record<string, unknown>>('transfer-complete', (event) => {
+        const p = event.payload;
+        update(entries => {
+          const idx = entries.findIndex(e => e.id === p.id as number);
+          if (idx < 0) return entries;
+          const newEntries = [...entries];
+          newEntries[idx] = {
+            ...newEntries[idx],
+            status: 'done' as const,
+            bytesDone: (p.bytes_done as number) || newEntries[idx].totalBytes,
+            totalBytes: (p.bytes_done as number) || newEntries[idx].totalBytes,
+            elapsedMs: p.elapsed_ms as number,
+            speedBps: (p.avg_speed_bps as number) || 0,
+          };
+          return newEntries;
+        });
+      }),
+
+      listen<Record<string, unknown>>('transfer-failed', (event) => {
+        const p = event.payload;
+        update(entries => {
+          const idx = entries.findIndex(e => e.id === p.id as number);
+          if (idx < 0) return entries;
+          const newEntries = [...entries];
+          newEntries[idx] = { ...newEntries[idx], status: 'failed' as const, error: p.error as string };
+          return newEntries;
+        });
+      }),
+
+      listen<Record<string, unknown>>('transfer-cancelled', (event) => {
+        const p = event.payload;
+        update(entries => {
+          const idx = entries.findIndex(e => e.id === p.id as number);
+          if (idx < 0) return entries;
+          const newEntries = [...entries];
+          newEntries[idx] = { ...newEntries[idx], status: 'cancelled' as const };
+          return newEntries;
+        });
+      }),
+
+      listen<Record<string, unknown>>('transfer-queue-updated', (event) => {
+        const ids = event.payload.ids as number[];
+        update(entries => {
+          // Reorder queued entries to match backend queue order
+          const nonQueued = entries.filter(e => e.status !== 'queued');
+          const queued = entries.filter(e => e.status === 'queued');
+          const reordered = ids
+            .map(id => queued.find(e => e.id === id))
+            .filter((e): e is TransferEntry => !!e);
+          // Append any queued entries not in the reorder list
+          for (const e of queued) {
+            if (!reordered.find(r => r.id === e.id)) {
+              reordered.push(e);
+            }
+          }
+          return [...nonQueued, ...reordered];
+        });
+      }),
+    ]).then(results => {
+      unlistens = results;
+    });
+  }
+
+  async function enqueueTransfers(tasks: EnqueueTask[]): Promise<number[]> {
+    // Backend emits transfer-progress with status "queued" for each task,
+    // which creates the entries via the event listener. No optimistic creation needed.
+    try {
+      return await invoke<number[]>('transfer_enqueue', { tasks });
+    } catch (e) {
+      console.error('[transfer] enqueue failed:', e);
+      return [];
+    }
+  }
+
+  async function cancelTransfer(id: number) {
+    try {
+      await invoke('transfer_cancel', { id });
+    } catch (e) {
+      console.error('[transfer] cancel failed:', e);
+    }
+  }
+
+  async function retryTransfer(entry: TransferEntry) {
+    const task: EnqueueTask = {
+      op_type: entry.opType,
+      source: entry.source,
+      destination: entry.destination,
+      total_bytes: entry.totalBytes,
+    };
+    await enqueueTransfers([task]);
+  }
+
+  function clearTransfer(id: number) {
+    update(entries => entries.filter(e => e.id !== id));
+  }
+
+  async function reorderTransfers(ids: number[]) {
+    // Optimistic local update
+    update(entries => {
+      const nonQueued = entries.filter(e => e.status !== 'queued');
+      const queued = entries.filter(e => e.status === 'queued');
+      const reordered = ids
+        .map(id => queued.find(e => e.id === id))
+        .filter((e): e is TransferEntry => !!e);
+      return [...nonQueued, ...reordered];
+    });
+    try {
+      await invoke('transfer_reorder', { ids });
+    } catch (e) {
+      console.error('[transfer] reorder failed:', e);
+    }
+  }
+
+  async function loadHistory(): Promise<TransferEntry[]> {
+    try {
+      const records = await invoke<Array<Record<string, unknown>>>('transfer_get_history');
+      return records.map(r => ({
+        id: r.id as number,
+        batchId: r.batch_id as number,
+        opType: r.transfer_type as TransferEntry['opType'],
+        source: r.source as string,
+        destination: r.destination as string,
+        totalBytes: r.total_bytes as number,
+        bytesDone: r.bytes_transferred as number,
+        speedBps: (r.avg_speed_bps as number) || 0,
+        status: r.status as TransferEntry['status'],
+        error: (r.error_message as string) || undefined,
+        startTime: (r.started_at as number) * 1000,
+        elapsedMs: ((r.completed_at as number) - (r.started_at as number)) * 1000,
+      }));
+    } catch (e) {
+      console.error('[transfer] load history failed:', e);
+      return [];
+    }
+  }
+
+  async function clearHistory() {
+    try {
+      await invoke('transfer_clear_history');
+      update(entries => entries.filter(e => e.status === 'queued' || e.status === 'running'));
+    } catch (e) {
+      console.error('[transfer] clear history failed:', e);
+    }
+  }
+
+  // Initialize listeners
+  init();
+
+  return {
+    subscribe,
+    enqueueTransfers,
+    cancelTransfer,
+    retryTransfer,
+    clearTransfer,
+    reorderTransfers,
+    loadHistory,
+    clearHistory,
+    util: { shortPath, formatSize, formatSpeed, opTypeLabel },
+  };
+}
+
+export const transfer = createTransferStore();
+
+// Derived: batches grouped by batchId, newest at bottom
+export const transferBatches = derived(transfer, ($transfer) => {
+  const batchMap = new Map<number, TransferEntry[]>();
+  for (const entry of $transfer) {
+    const list = batchMap.get(entry.batchId) || [];
+    list.push(entry);
+    batchMap.set(entry.batchId, list);
+  }
+
+  const batches: TransferBatch[] = [];
+  for (const [batchId, entries] of batchMap) {
+    const hasActive = entries.some(e => e.status === 'queued' || e.status === 'running');
+    const opType = entries[0]?.opType || '';
+    batches.push({
+      batchId,
+      entries,
+      opType,
+      isActive: hasActive,
+      completedAt: hasActive ? undefined : Math.max(...entries.map(e => e.startTime)),
+    });
+  }
+
+  // Sort: active batches at bottom, then by time
+  batches.sort((a, b) => {
+    if (a.isActive !== b.isActive) return a.isActive ? 1 : -1;
+    return (a.completedAt || 0) - (b.completedAt || 0);
+  });
+
+  return batches;
+});
+
+// Derived: count of active transfers
+export const activeTransferCount = derived(transfer, ($transfer) =>
+  $transfer.filter(e => e.status === 'queued' || e.status === 'running').length
+);

@@ -86,34 +86,46 @@ The system SHALL allow users to browse directories on connected FTP servers usin
 - **THEN** DirectoryPanel displays error message "Failed to load: connection lost"
 
 ### Requirement: FTP file upload
-The system SHALL allow users to upload files from the local filesystem to an FTP server.
+The system SHALL allow users to upload files from the local filesystem to an FTP server with streaming progress reporting and cancellation support.
 
 #### Scenario: Upload via cross-panel paste (copy)
 - **WHEN** user yanks (y) a local file, switches to an FTP panel, and presses p
-- **THEN** system uploads the file to the current FTP directory with progress indication in FileOpProgress
+- **THEN** system enqueues the upload task via TransferScheduler with progress displayed in TransferManager panel
 
 #### Scenario: Upload via cross-panel paste (cut)
 - **WHEN** user cuts (x) a local file, switches to an FTP panel, and presses p
-- **THEN** system uploads the file (same as copy), and after successful upload, deletes the local source file
+- **THEN** system enqueues the upload task, and after successful upload, deletes the local source file
 
-#### Scenario: Upload progress reporting
+#### Scenario: Upload streaming progress
 - **WHEN** an FTP upload is in progress
-- **THEN** FileOpProgress component displays the filename and progress percentage
+- **THEN** the system emits `transfer-progress` events every 100ms with bytes uploaded and calculated speed
+- **AND** TransferManager displays a real-time progress bar with percentage and speed
+
+#### Scenario: Cancel upload
+- **WHEN** user cancels an FTP upload via TransferManager
+- **THEN** the partial file on the remote server is deleted
+- **AND** the transfer status changes to "cancelled"
 
 ### Requirement: FTP file download
-The system SHALL allow users to download files from an FTP server to the local filesystem.
+The system SHALL allow users to download files from an FTP server to the local filesystem with streaming progress reporting and cancellation support.
 
 #### Scenario: Download via cross-panel paste (copy)
 - **WHEN** user yanks (y) a file from an FTP panel, switches to a local panel, and presses p
-- **THEN** system downloads the file from the FTP server to the local directory with progress indication
+- **THEN** system enqueues the download task via TransferScheduler with progress displayed in TransferManager panel
 
 #### Scenario: Download via cross-panel paste (cut)
 - **WHEN** user cuts (x) a file from an FTP panel, switches to a local panel, and presses p
-- **THEN** system downloads the file (same as copy), and after successful download, deletes the remote source file
+- **THEN** system enqueues the download task, and after successful download, deletes the remote source file
 
-#### Scenario: Download progress reporting
+#### Scenario: Download streaming progress
 - **WHEN** an FTP download is in progress
-- **THEN** FileOpProgress component displays the filename and progress percentage
+- **THEN** the system emits `transfer-progress` events every 100ms with bytes downloaded and calculated speed
+- **AND** the download uses a 64KB chunked read loop instead of `tokio::io::copy` for intermediate progress reporting
+
+#### Scenario: Cancel download
+- **WHEN** user cancels an FTP download via TransferManager
+- **THEN** the partial local file is deleted
+- **AND** the transfer status changes to "cancelled"
 
 ### Requirement: FTP file delete
 The system SHALL allow users to delete files and directories on an FTP server.
@@ -139,4 +151,21 @@ FTP directory listings SHALL be converted to the existing `FileEntry` struct so 
 #### Scenario: FTP file entry fields
 - **WHEN** the FTP server returns a file entry
 - **THEN** the FileEntry contains: name (filename), path (full `ftp://` URI), is_dir (false), size (file size in bytes), is_hidden (based on dot-prefix), modified (file mtime as unix timestamp)
+
+### Requirement: FTP folder transfer trigger
+The system SHALL trigger folder upload/download when a directory entry is pasted across FTP/local panel boundaries.
+
+#### Scenario: Paste directory from FTP panel to local panel
+- **WHEN** the clipboard contains a directory entry from an FTP panel (is_dir=true) and user triggers paste in a local panel
+- **THEN** the system calls `ftp_download_folder` instead of `ftp_download` for single files
+- **AND** a single batch containing all files in the folder tree is enqueued via TransferScheduler
+
+#### Scenario: Paste local directory to FTP panel
+- **WHEN** the clipboard contains a local directory entry (is_dir=true) and user triggers paste in an FTP panel
+- **THEN** the system calls `ftp_upload_folder` instead of `ftp_upload` for single files
+- **AND** a single batch containing all files in the folder tree is enqueued via TransferScheduler
+
+#### Scenario: Paste single file unchanged
+- **WHEN** the clipboard contains a single file entry (is_dir=false)
+- **THEN** the system continues to use the existing single-file `ftp_download`/`ftp_upload` path
 

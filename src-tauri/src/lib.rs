@@ -6,6 +6,7 @@ mod file_ops;
 mod file_watcher;
 mod ftp;
 mod python_completion;
+mod transfer;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use std::fs::File;
 use tauri::{Emitter, Manager, State};
@@ -91,7 +92,8 @@ struct AppState {
     terminal: terminal::TerminalManager,
     neovim: Mutex<neovim::Neovim>,
     file_watcher: Mutex<file_watcher::FileWatcher>,
-    ftp_manager: TokioMutex<ftp::FtpManager>,
+    ftp_manager: Arc<TokioMutex<ftp::FtpManager>>,
+    transfer_scheduler: Arc<TokioMutex<transfer::TransferScheduler>>,
 }
 
 #[tauri::command]
@@ -780,6 +782,83 @@ async fn cancel_file_op(id: u64) -> Result<(), String> {
     } else {
         Err(format!("Operation {} not found", id))
     }
+}
+
+// ── Transfer Manager commands ──
+
+#[tauri::command]
+async fn transfer_enqueue(
+    tasks: Vec<transfer::EnqueueTask>,
+    state: State<'_, AppState>,
+) -> Result<Vec<u64>, String> {
+    let sched = state.transfer_scheduler.clone();
+    let mut scheduler = sched.lock().await;
+    Ok(scheduler.enqueue(tasks, sched.clone()))
+}
+
+#[tauri::command]
+async fn transfer_cancel(
+    id: u64,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let sched = state.transfer_scheduler.clone();
+    let mut scheduler = sched.lock().await;
+    Ok(scheduler.cancel(id, sched.clone()))
+}
+
+#[tauri::command]
+async fn transfer_reorder(
+    ids: Vec<u64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.reorder(ids);
+    Ok(())
+}
+
+#[tauri::command]
+async fn transfer_get_history(
+    state: State<'_, AppState>,
+) -> Result<Vec<transfer::TransferHistoryRecord>, String> {
+    let scheduler = state.transfer_scheduler.lock().await;
+    Ok(scheduler.get_history())
+}
+
+#[tauri::command]
+async fn transfer_clear_history(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.clear_history();
+    Ok(())
+}
+
+#[tauri::command]
+async fn transfer_set_ftp_slots(
+    n: usize,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.set_ftp_max_slots(n);
+    Ok(())
+}
+
+#[tauri::command]
+async fn transfer_set_local_slots(
+    n: usize,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.set_local_max_slots(n);
+    Ok(())
+}
+
+#[tauri::command]
+async fn transfer_get_slots(
+    state: State<'_, AppState>,
+) -> Result<(usize, usize), String> {
+    let scheduler = state.transfer_scheduler.lock().await;
+    Ok(scheduler.get_slot_config())
 }
 
 #[tauri::command]
@@ -1500,7 +1579,7 @@ async fn search_files(
     // FTP: search within current directory by listing + filtering
     if root_path.starts_with("ftp://") {
         let (conn_name, remote_path) = parse_ftp_url(&root_path)?;
-        let mut mgr = state.ftp_manager.lock().await;
+        let mgr = state.ftp_manager.lock().await;
         let entries = try_list_dir(&mgr, conn_name, remote_path).await?;
         drop(mgr);
         let lower = pattern.to_lowercase();
@@ -2021,6 +2100,48 @@ async fn ftp_mkdir(
 }
 
 #[tauri::command]
+async fn ftp_download_folder(
+    conn_name: String,
+    remote_path: String,
+    local_path: String,
+    move_mode: bool,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    eprintln!("[FTP] command ftp_download_folder: conn={conn_name} remote={remote_path} → local={local_path} move={move_mode}");
+    let sched = state.transfer_scheduler.clone();
+    let mut scheduler = sched.lock().await;
+    let (total_bytes, ids) = scheduler.enqueue_ftp_folder_download(
+        sched.clone(),
+        &conn_name,
+        &remote_path,
+        &local_path,
+        move_mode,
+    ).await?;
+    Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
+}
+
+#[tauri::command]
+async fn ftp_upload_folder(
+    conn_name: String,
+    local_path: String,
+    remote_path: String,
+    move_mode: bool,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    eprintln!("[FTP] command ftp_upload_folder: local={local_path} → conn={conn_name} remote={remote_path} move={move_mode}");
+    let sched = state.transfer_scheduler.clone();
+    let mut scheduler = sched.lock().await;
+    let (total_bytes, ids) = scheduler.enqueue_ftp_folder_upload(
+        sched.clone(),
+        &conn_name,
+        &local_path,
+        &remote_path,
+        move_mode,
+    ).await?;
+    Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
+}
+
+#[tauri::command]
 async fn list_ftp_connections(state: State<'_, AppState>) -> Result<Vec<ftp::FtpConnectionConfig>, String> {
     let mgr = state.ftp_manager.lock().await;
     let configs = mgr.get_configs();
@@ -2110,14 +2231,19 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let mut terminal = terminal::TerminalManager::new();
-            terminal.set_app_handle(handle);
+            terminal.set_app_handle(handle.clone());
             let mut ftp_manager = ftp::FtpManager::new();
             ftp_manager.load_on_startup();
+            let ftp_manager = Arc::new(TokioMutex::new(ftp_manager));
+            let transfer_scheduler = Arc::new(TokioMutex::new(
+                transfer::TransferScheduler::new(handle.clone(), ftp_manager.clone())
+            ));
             app.manage(AppState {
                 terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),
                 file_watcher: Mutex::new(file_watcher::FileWatcher::new()),
-                ftp_manager: TokioMutex::new(ftp_manager),
+                ftp_manager: ftp_manager.clone(),
+                transfer_scheduler: transfer_scheduler.clone(),
             });
             Ok(())
         })
@@ -2145,6 +2271,14 @@ pub fn run() {
             delete_file_async,
             cancel_file_op,
             check_copy_conflicts,
+            transfer_enqueue,
+            transfer_cancel,
+            transfer_reorder,
+            transfer_get_history,
+            transfer_clear_history,
+            transfer_set_ftp_slots,
+            transfer_set_local_slots,
+            transfer_get_slots,
             get_file_size,
             get_file_info,
             open_file,
@@ -2178,6 +2312,8 @@ pub fn run() {
             ftp_read_directory,
             ftp_download,
             ftp_upload,
+            ftp_download_folder,
+            ftp_upload_folder,
             ftp_delete,
             ftp_rename,
             ftp_copy,

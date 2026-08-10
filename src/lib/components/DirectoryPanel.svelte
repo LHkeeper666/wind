@@ -3,6 +3,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { layout } from '$lib/stores/layout';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
+  import { transfer } from '$lib/stores/transfer';
   import SearchModal from './SearchModal.svelte';
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
@@ -358,7 +359,10 @@
     onSelect(displayFiles[selectedIndex].path);
   }
 
+  let loadingGen = 0;
+
   async function loadDirectory(dirPath: string, forceRefresh: boolean = false, wasFocused: boolean = false) {
+    const gen = ++loadingGen;
     isLoading = true;
     errorMessage = '';
 
@@ -375,6 +379,7 @@
       // Safety dedup
       const seen = new Set<string>();
       files = files.filter(f => { if (seen.has(f.path)) return false; seen.add(f.path); return true; });
+      if (gen !== loadingGen) return;
       selectInitialEntry();
       applyPendingRestore();
       isLoading = false;
@@ -407,16 +412,22 @@
         return true;
       });
 
+      // Discard stale results from superseded concurrent calls
+      if (gen !== loadingGen) return;
+
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
       selectInitialEntry();
       applyPendingRestore();
     } catch (error) {
+      if (gen !== loadingGen) return;
       console.error('Failed to load directory:', error);
       errorMessage = `Failed to load: ${error}`;
     } finally {
-      isLoading = false;
-      if (wasFocused) { requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; }); }
+      if (gen === loadingGen) {
+        isLoading = false;
+        if (wasFocused) { requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; }); }
+      }
     }
   }
 
@@ -683,38 +694,34 @@
     const confirmed = await promptDelete(permanent);
     if (!confirmed) return;
 
-    // Use async delete; route FTP paths to ftp_delete
-    for (const entry of entries) {
-      try {
-        if (entry.path.startsWith('ftp://')) {
-          await invoke('ftp_delete', { path: entry.path, permanent });
-        } else {
-          await invoke('delete_file_async', { path: entry.path, permanent });
-        }
-      } catch (e) {
-        onToast(`Failed to delete ${entry.name}: ${e}`);
-      }
-    }
+    // Route through TransferManager for unified progress display
+    const tasks = entries.map((entry: ClipboardEntry) => {
+      const isFtp = entry.path.startsWith('ftp://');
+      return {
+        op_type: 'delete' as const,
+        source: entry.path,
+        destination: '', // Delete has no destination
+        total_bytes: entry.size || 0,
+        conn_name: isFtp ? entry.path.slice(6).split('/')[0] : undefined,
+      };
+    });
+    const ids = await transfer.enqueueTransfers(tasks);
+    window.dispatchEvent(new CustomEvent('transfer:open'));
 
     selectedPaths = new Set();
-    onToast(`Deleting ${entries.length} ${entries.length === 1 ? 'file' : 'files'}...`);
-    // Refresh directory after FTP deletes
-    if (entries.some(e => e.path.startsWith('ftp://'))) {
-      loadDirectory(path, true);
-    }
-    // Directory refresh handled by persistent op-complete listener in PanelLayout
+    onToast(`Deleting ${ids.length} ${ids.length === 1 ? 'file' : 'files'}...`);
   }
 
   function getEntriesToOperate(): ClipboardEntry[] {
     if (selectedPaths.size > 0) {
       return files
         .filter(f => f.name !== '..' && selectedPaths.has(f.path))
-        .map(f => ({ path: f.path, name: f.name, is_dir: f.is_dir }));
+        .map(f => ({ path: f.path, name: f.name, is_dir: f.is_dir, size: f.size ?? undefined }));
     }
     if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
       const f = displayFiles[selectedIndex];
       if (f.name === '..') return [];
-      return [{ path: f.path, name: f.name, is_dir: f.is_dir }];
+      return [{ path: f.path, name: f.name, is_dir: f.is_dir, size: f.size ?? undefined }];
     }
     return [];
   }

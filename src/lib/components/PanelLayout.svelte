@@ -19,7 +19,8 @@
   import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
-  import FileOpProgress from './FileOpProgress.svelte';
+  import TransferManager from './TransferManager.svelte';
+  import { transfer, activeTransferCount } from '$lib/stores/transfer';
   import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
 
   let currentPath: string = $state('');
@@ -30,6 +31,7 @@
   let commandInput: HTMLInputElement | undefined = $state(undefined);
   let showFileSearch: boolean = $state(false);
   let showHelp: boolean = $state(false);
+  let showTransfer: boolean = $state(false);
   let fileSearchHomeDir: string = $state('');
   let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
@@ -322,10 +324,13 @@
       currentDirectoryPanel?.refresh();
     };
     fileOpUnlistens.push(
-      await listen('op-complete', refreshCurrentDir),
-      await listen('op-cancelled', refreshCurrentDir),
-      await listen('op-failed', refreshCurrentDir),
+      await listen('transfer-complete', refreshCurrentDir),
+      await listen('transfer-cancelled', refreshCurrentDir),
+      await listen('transfer-failed', refreshCurrentDir),
     );
+
+    // Listen for transfer panel open requests from child components
+    window.addEventListener('transfer:open', () => { showTransfer = true; });
   });
 
   let fileOpUnlistens: (() => void)[] = [];
@@ -664,34 +669,101 @@
     // Cross-backend paste: skip local conflict detection
     if (isCrossBackend) {
       if (srcIsFtp && !destIsFtp) {
-        // FTP → Local: download
+        // FTP → Local: download via TransferManager
         const destDir = currentPath.replace(/[\\\/]+$/, '');
-        for (const entry of entries) {
-          const localPath = destDir + '\\' + entry.name;
-          const connName = getFtpConnName(entry.path);
-          const remotePath = getFtpRemotePath(entry.path);
-          await invoke('ftp_download', { connName, remotePath, localPath });
-          showToast(`Downloading ${entry.name}...`);
+        const dirs = entries.filter((e: any) => e.is_dir);
+        const files = entries.filter((e: any) => !e.is_dir);
+
+        let totalQueued = 0;
+
+        // Download folders as batch downloads
+        for (const dir of dirs) {
+          const connName = getFtpConnName(dir.path);
+          const remotePath = getFtpRemotePath(dir.path);
+          await invoke('ftp_download_folder', {
+            connName,
+            remotePath,
+            localPath: destDir + '\\' + dir.name,
+            moveMode: operation === 'cut',
+          });
+          totalQueued++;
         }
+
+        // Download files as individual transfers
+        if (files.length > 0) {
+          const tasks = files.map((entry: any) => ({
+            op_type: 'ftp-download' as const,
+            source: entry.path,
+            destination: destDir + '\\' + entry.name,
+            total_bytes: entry.size || 0,
+            conn_name: getFtpConnName(entry.path),
+          }));
+          const ids = await transfer.enqueueTransfers(tasks);
+          totalQueued += ids.length;
+        }
+
+        if (totalQueued > 0) {
+          showToast(`Queued ${totalQueued} download(s)`);
+          showTransfer = true;
+        }
+
         if (operation === 'cut') {
-          // Delete remote source after download
           for (const entry of entries) {
             await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
           }
         }
       } else if (!srcIsFtp && destIsFtp) {
-        // Local → FTP: upload
+        // Local → FTP: upload via TransferManager
         const destConn = getFtpConnName(currentPath);
         const destBase = getFtpRemotePath(currentPath).replace(/\/+$/, '');
-        for (const entry of entries) {
-          const remotePath = destBase + '/' + entry.name;
-          await invoke('ftp_upload', { connName: destConn, localPath: entry.path, remotePath });
-          showToast(`Uploading ${entry.name}...`);
+        const dirs = entries.filter((e: any) => e.is_dir);
+        const files = entries.filter((e: any) => !e.is_dir);
+
+        let totalQueued = 0;
+
+        // Upload folders as batch uploads
+        for (const dir of dirs) {
+          await invoke('ftp_upload_folder', {
+            connName: destConn,
+            localPath: dir.path,
+            remotePath: `${destBase}/${dir.name}`,
+            moveMode: operation === 'cut',
+          });
+          totalQueued++;
         }
+
+        // Upload files as individual transfers
+        if (files.length > 0) {
+          const tasks = files.map((entry: any) => ({
+            op_type: 'ftp-upload' as const,
+            source: entry.path,
+            destination: `ftp://${destConn}${destBase}/${entry.name}`,
+            total_bytes: 0,
+            conn_name: destConn,
+          }));
+          const ids = await transfer.enqueueTransfers(tasks);
+          totalQueued += ids.length;
+        }
+
+        if (totalQueued > 0) {
+          showToast(`Queued ${totalQueued} upload(s)`);
+          showTransfer = true;
+        }
+
         if (operation === 'cut') {
-          // Delete local source after upload
-          for (const entry of entries) {
-            await invoke('delete_file_async', { path: entry.path, permanent: true }).catch(() => {});
+          const delEntries = entries.filter((e: any) => !e.is_dir);
+          if (delEntries.length > 0) {
+            const delTasks = delEntries.map((entry: any) => ({
+              op_type: 'delete' as const,
+              source: entry.path,
+              destination: '',
+              total_bytes: entry.size || 0,
+            }));
+            await transfer.enqueueTransfers(delTasks);
+          }
+          // Directories in cut mode: delete locally after enqueuing upload batch
+          for (const dir of dirs) {
+            await invoke('delete_file', { path: dir.path }).catch(() => {});
           }
         }
       } else if (srcIsFtp && destIsFtp) {
@@ -785,25 +857,20 @@
 
     if (resolvedSources.length === 0) return;
 
-    // Phase 2: execute async
-    if (operation === 'copy') {
-      // Batch copy for multiple files
-      if (resolvedSources.length > 1) {
-        await invoke('copy_file_async', { sources: resolvedSources, destDir });
-        showToast(`Copying ${resolvedSources.length} items...`);
-      } else {
-        await invoke('copy_file_async', { sources: resolvedSources, destDir });
-        showToast('Copying...');
-      }
-    } else {
-      // Move: handle one by one through async
-      for (const src of resolvedSources) {
-        const name = src.split(/[/\\]/).pop() || src;
-        const destPath = destDir + '\\' + name;
-        await invoke('move_file_async', { source: src, destination: destPath });
-      }
-      showToast(`Moving ${resolvedSources.length} items...`);
-    }
+    // Phase 2: execute via TransferManager
+    const tasks = resolvedSources.map((src: string) => {
+      // Find the original entry to get its size
+      const origEntry = entries.find((e: any) => e.path === src);
+      return {
+        op_type: operation === 'copy' ? 'copy' : 'move',
+        source: src,
+        destination: destDir + '\\' + (src.split(/[/\\]/).pop() || src),
+        total_bytes: origEntry?.size || 0,
+      };
+    });
+    const ids = await transfer.enqueueTransfers(tasks);
+    showToast(`Queued ${ids.length} transfer(s)`);
+    if (ids.length > 0) showTransfer = true;
 
     // Cut: clear clipboard since source files no longer exist
     if (operation === 'cut') {
@@ -1029,6 +1096,19 @@
       event.preventDefault();
       showHelp = true;
       return;
+    }
+
+    // Ctrl+T to toggle Transfer Manager
+    if (event.ctrlKey && event.key === 't' && !waitingForWindowKey) {
+      const canToggle = !showCommandPalette && !showFileSearch
+        && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
+        && !$layout.fullscreenTerminalOpen
+        && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+      if (canToggle) {
+        event.preventDefault();
+        showTransfer = !showTransfer;
+        return;
+      }
     }
 
     // Ctrl+L to manually restore focus (skip if Ctrl+W prefix is active)
@@ -1516,6 +1596,37 @@
           return;
         }
       }
+      // transfer slots command
+      if (q === 'transfer slots') {
+        invoke<[number, number]>('transfer_get_slots').then(([ftp, local]) => {
+          showToast(`Transfer slots: FTP=${ftp}, Local=${local}`);
+        });
+        showCommandPalette = false;
+        return;
+      }
+      if (q.startsWith('transfer slots ftp ')) {
+        const n = parseInt(q.substring(19).trim());
+        if (n >= 1 && n <= 8) {
+          invoke('transfer_set_ftp_slots', { n });
+          showToast(`FTP slots set to ${n}`);
+        } else {
+          showToast('FTP slots: 1–8');
+        }
+        showCommandPalette = false;
+        return;
+      }
+      if (q.startsWith('transfer slots local ')) {
+        const n = parseInt(q.substring(21).trim());
+        if (n >= 1 && n <= 8) {
+          invoke('transfer_set_local_slots', { n });
+          showToast(`Local slots set to ${n}`);
+        } else {
+          showToast('Local slots: 1–8');
+        }
+        showCommandPalette = false;
+        return;
+      }
+
       // Clip command - show clipboard contents
       if (q === 'clip') {
         let clipState: any;
@@ -1797,8 +1908,11 @@
     onClose={handleCloseTerminal}
   />
 
-  <!-- File Operation Progress -->
-  <FileOpProgress />
+  <!-- Transfer Manager -->
+  <TransferManager
+    visible={showTransfer}
+    onClose={() => showTransfer = false}
+  />
 
   <!-- Status Bar -->
   <div class="status-bar">
@@ -1807,6 +1921,9 @@
     <span class="status-prefix">{$layout.keyPrefix || ''}</span>
     {#if $clipboardSummary}
       <span class="status-clipboard">{$clipboardSummary}</span>
+    {/if}
+    {#if $activeTransferCount > 0}
+      <span class="status-transfer" onclick={() => showTransfer = true} title="Click to open Transfer Manager">↑↓ {$activeTransferCount}</span>
     {/if}
     <button class="theme-toggle" class:light={$theme === 'dark'} class:dark={$theme === 'light'} onclick={() => theme.toggle()}>
       {$theme === 'dark' ? 'LGT' : 'DRK'}
