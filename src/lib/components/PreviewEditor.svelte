@@ -16,7 +16,7 @@
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler } from '$lib/utils/vim-commands';
+  import { createVimCommandHandler, setupVimRegCommand } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
 
@@ -330,6 +330,20 @@
   // When tab changes, ensure only the active tab's slot is visible
   $effect(() => {
     showTabSlot(currentTabId);
+  });
+
+  // Re-focus overlay after mouse selection (mouseup may fire outside editor panel)
+  $effect(() => {
+    if (mode !== 'editor-normal' || !overlayElement) return;
+    function handleDocMouseUp() {
+      requestAnimationFrame(() => {
+        if (overlayElement && mode === 'editor-normal' && activeColumn === 'preview' && document.activeElement !== overlayElement) {
+          overlayElement.focus();
+        }
+      });
+    }
+    document.addEventListener('mouseup', handleDocMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocMouseUp);
   });
 
   // Auto-focus output panel when it becomes visible
@@ -1038,6 +1052,11 @@
     editorView = new EditorView({ state, parent: editorContainer });
     savedContent = editorView.state.doc.toString();
     isModified = false;
+
+    setupVimRegCommand((text) => {
+      outputText = text;
+      outputVisible = true;
+    });
     // Tab switch restore: use cached scroll position, skip scrollIntoView.
     // Double rAF ensures CodeMirror's internal measure cycles complete first.
     if (pendingEditorScrollTop >= 0) {

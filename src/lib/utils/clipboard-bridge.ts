@@ -18,6 +18,7 @@ export function initClipboardBridge(editorView: EditorView, overlayElement?: HTM
   rc.pushText = (registerName: string | null | undefined, operator: string, text: string, linewise?: boolean, blockwise?: boolean) => {
     origPushText(registerName, operator, text, linewise, blockwise);
     if (supportsClipboard && (!registerName || registerName === '"' || registerName === '+' || registerName === '*')) {
+      clipboardCache = text;
       navigator.clipboard.writeText(text).catch(() => {});
     }
   };

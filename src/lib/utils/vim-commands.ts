@@ -1,6 +1,7 @@
 import { ViewPlugin, type ViewUpdate } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { invoke } from '@tauri-apps/api/core';
+import { Vim } from '@replit/codemirror-vim';
 
 export interface VimCommandCallbacks {
   save: () => Promise<void>;
@@ -94,5 +95,30 @@ export function createVimCommandHandler(
         invoke('set_ime_enabled', { enabled: true }).catch(() => {});
       },
     };
+  });
+}
+
+let regCommandSetup = false;
+
+export function setupVimRegCommand(onOutput: (text: string) => void) {
+  if (regCommandSetup) return;
+  regCommandSetup = true;
+
+  Vim.defineEx('reg', 'reg', (_cm, _params) => {
+    const rc = Vim.getRegisterController() as any;
+    const lines: string[] = [];
+
+    const unnamedText = rc.unnamedRegister?.toString() ?? '';
+    lines.push(`""   ${unnamedText.replace(/\n/g, '^J') || '<empty>'}`);
+
+    const regs = rc.registers || {};
+    for (const name of Object.keys(regs).sort()) {
+      const text = regs[name]?.toString() ?? '';
+      if (text && name !== '"') {
+        lines.push(`"${name}   ${String(text).replace(/\n/g, '^J')}`);
+      }
+    }
+
+    onOutput(lines.join('\n'));
   });
 }

@@ -8,7 +8,7 @@
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler } from '$lib/utils/vim-commands';
+  import { createVimCommandHandler, setupVimRegCommand } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
 
@@ -188,6 +188,9 @@
       saveFile().then(() => { onClose(); });
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
       saveFile().then(() => { onClose(); });
+    } else if (editorView) {
+      const cm = getCM(editorView);
+      if (cm) { Vim.handleEx(cm as any, trimmed); }
     }
   }
 
@@ -298,6 +301,20 @@
     } else if (!overlayVisible && editorView) {
       editorView.focus();
     }
+  });
+
+  // Re-focus overlay after mouse selection (mouseup may fire outside editor panel)
+  $effect(() => {
+    if (!overlayVisible || !overlayElement) return;
+    function handleDocMouseUp() {
+      requestAnimationFrame(() => {
+        if (overlayElement && overlayVisible && document.activeElement !== overlayElement) {
+          overlayElement.focus();
+        }
+      });
+    }
+    document.addEventListener('mouseup', handleDocMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocMouseUp);
   });
 
   // Auto-focus output panel when it becomes visible
@@ -426,6 +443,11 @@
     editorView = new EditorView({
       state,
       parent: editorContainer,
+    });
+
+    setupVimRegCommand((text) => {
+      outputText = text;
+      outputVisible = true;
     });
 
     if (initialLine > 0 && editorView) {
