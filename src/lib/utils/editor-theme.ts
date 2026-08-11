@@ -70,6 +70,25 @@ export const gruvboxTheme = EditorView.theme({
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
   '.cm-matchingBracket': { backgroundColor: 'var(--bg-tertiary)', outline: '1px solid var(--text-secondary)' },
   '.cm-lineNumbers .cm-gutterElement': { color: 'var(--text-muted)' },
+  '.cm-tooltip-autocomplete': {
+    backgroundColor: 'var(--bg-primary)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-primary)',
+  },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+    backgroundColor: 'var(--bg-active)',
+    color: 'var(--text-primary)',
+  },
+  '.cm-completionLabel': {
+    color: 'var(--text-primary)',
+  },
+  '.cm-completionMatchedText': {
+    color: 'var(--accent)',
+    fontWeight: 'bold',
+  },
+  '.cm-completionDetail': {
+    color: 'var(--text-muted)',
+  },
 });
 
 // Override CodeMirror's hideNativeSelection (Prec.highest) which sets focused ::selection to Highlight.
