@@ -1,16 +1,27 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { EditorView, basicSetup } from 'codemirror';
+  import { EditorView } from 'codemirror';
   import { EditorState, Compartment } from '@codemirror/state';
-  import { keymap } from '@codemirror/view';
-  import { indentUnit } from '@codemirror/language';
+  import {
+    keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
+    drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine,
+  } from '@codemirror/view';
+  import {
+    indentUnit, foldGutter, indentOnInput, bracketMatching,
+    syntaxHighlighting, defaultHighlightStyle, foldKeymap,
+  } from '@codemirror/language';
+  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
+  import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
+  import { lintKeymap } from '@codemirror/lint';
+  import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler, setupVimRegCommand } from '$lib/utils/vim-commands';
+  import { createVimCommandHandler, setupAllVimCommands } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
+  import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
 
   let {
     filePath = null,
@@ -338,7 +349,14 @@
 
     const language = getLanguage(filePath);
     const extensions = [
-      basicSetup,
+      highlightActiveLineGutter(), highlightSpecialChars(), history(),
+      foldGutter(), drawSelection(), dropCursor(), autocompletion(),
+      bracketMatching(), closeBrackets(), crosshairCursor(),
+      highlightActiveLine(), highlightSelectionMatches(), indentOnInput(),
+      rectangularSelection(),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
+      lineNumberCompartment.of(lineNumbers()),
       EditorView.lineWrapping,
       indentUnit.of('    '),
       keymap.of([{
@@ -445,7 +463,8 @@
       parent: editorContainer,
     });
 
-    setupVimRegCommand((text) => {
+    setupVimLineNumbers(lineNumberCompartment, editorView);
+    setupAllVimCommands((text) => {
       outputText = text;
       outputVisible = true;
     });

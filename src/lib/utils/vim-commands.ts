@@ -2,6 +2,7 @@ import { ViewPlugin, type ViewUpdate } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { invoke } from '@tauri-apps/api/core';
 import { Vim } from '@replit/codemirror-vim';
+import { vimOptions } from './vim-options';
 
 export interface VimCommandCallbacks {
   save: () => Promise<void>;
@@ -121,4 +122,10 @@ export function setupVimRegCommand(onOutput: (text: string) => void) {
 
     onOutput(lines.join('\n'));
   });
+}
+
+export function setupAllVimCommands(onOutput: (text: string) => void): void {
+  setupVimRegCommand(onOutput);
+  vimOptions.setupSetCommand(onOutput);
+  vimOptions.load();
 }

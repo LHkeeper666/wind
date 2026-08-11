@@ -7,18 +7,28 @@
   import type { VideoMeta, TocHeading } from '$lib/previewers';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
-  import { EditorView, basicSetup } from 'codemirror';
+  import { EditorView } from 'codemirror';
   import { EditorState, StateField, StateEffect, Compartment } from '@codemirror/state';
-  import { keymap, Decoration } from '@codemirror/view';
-  import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
-  import { indentUnit } from '@codemirror/language';
+  import {
+    keymap, Decoration, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
+    drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine,
+  } from '@codemirror/view';
+  import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel, highlightSelectionMatches, searchKeymap } from '@codemirror/search';
+  import {
+    indentUnit, foldGutter, indentOnInput, bracketMatching,
+    syntaxHighlighting, defaultHighlightStyle, foldKeymap,
+  } from '@codemirror/language';
+  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
+  import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
+  import { lintKeymap } from '@codemirror/lint';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler, setupVimRegCommand } from '$lib/utils/vim-commands';
+  import { createVimCommandHandler, setupAllVimCommands } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
+  import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -987,7 +997,15 @@
     editorFilePath = filePath;
     const language = getLanguage(filePath);
     const extensions = [
-      basicSetup, search({ top: true }), sMatchField, EditorView.lineWrapping,
+      highlightActiveLineGutter(), highlightSpecialChars(), history(),
+      foldGutter(), drawSelection(), dropCursor(), autocompletion(),
+      bracketMatching(), closeBrackets(), crosshairCursor(),
+      highlightActiveLine(), highlightSelectionMatches(), indentOnInput(),
+      rectangularSelection(),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
+      lineNumberCompartment.of(lineNumbers()),
+      search({ top: true }), sMatchField, EditorView.lineWrapping,
       indentUnit.of('    '),
       keymap.of([{
         key: 'Tab',
@@ -1053,7 +1071,8 @@
     savedContent = editorView.state.doc.toString();
     isModified = false;
 
-    setupVimRegCommand((text) => {
+    setupVimLineNumbers(lineNumberCompartment, editorView);
+    setupAllVimCommands((text) => {
       outputText = text;
       outputVisible = true;
     });

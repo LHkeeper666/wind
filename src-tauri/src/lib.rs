@@ -1016,6 +1016,39 @@ fn is_leap(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+fn config_dir() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\"))
+        .join("wind")
+}
+
+fn config_path() -> std::path::PathBuf {
+    config_dir().join("windrc.json")
+}
+
+#[tauri::command]
+fn read_config() -> Result<serde_json::Value, String> {
+    let path = config_path();
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config: {}", e))
+}
+
+#[tauri::command]
+fn write_config(options: serde_json::Value) -> Result<(), String> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    let content = serde_json::to_string_pretty(&options)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(config_path(), content)
+        .map_err(|e| format!("Failed to write config: {}", e))
+}
+
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
     open::that(&path)
@@ -2301,6 +2334,8 @@ pub fn run() {
             cancel_search,
             check_search_tools,
             set_ime_enabled,
+            read_config,
+            write_config,
             pdf::get_pdf_info,
             pdf::render_pdf_page,
             pdf::search_pdf_text,
