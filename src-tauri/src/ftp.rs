@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use suppaftp::tokio::AsyncRustlsFtpStream;
+use suppaftp::types::FileType;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,12 @@ impl FtpManager {
             eprintln!("[FTP] connect '{}': OPTS UTF8 ON failed (ignored): {}", name, e);
         }
 
+        // Force binary transfer mode to prevent file corruption
+        client.transfer_type(FileType::Binary).await.map_err(|e| {
+            eprintln!("[FTP] connect '{}': TYPE I failed: {}", name, e);
+            format!("Failed to set binary transfer mode: {}", e)
+        })?;
+
         eprintln!("[FTP] connect '{}': authenticated successfully", name);
 
         let config = FtpConnectionConfig {
@@ -152,6 +159,10 @@ impl FtpManager {
         if let Err(e) = client.opts("UTF8", Some("ON")).await {
             eprintln!("[FTP] independent session: OPTS UTF8 ON failed (ignored): {}", e);
         }
+        client.transfer_type(FileType::Binary).await.map_err(|e| {
+            eprintln!("[FTP] independent session: TYPE I failed: {}", e);
+            format!("Failed to set binary transfer mode: {}", e)
+        })?;
         eprintln!("[FTP] created independent session for '{name}'");
         Ok(Arc::new(Mutex::new(FtpSession { client })))
     }
@@ -177,6 +188,11 @@ impl FtpManager {
                 eprintln!("[FTP] reconnect '{}': login failed: {}", name, e);
                 format!("Re-login failed: {}", e)
             })?;
+
+        client.transfer_type(FileType::Binary).await.map_err(|e| {
+            eprintln!("[FTP] reconnect '{}': TYPE I failed: {}", name, e);
+            format!("Failed to set binary transfer mode: {}", e)
+        })?;
 
         eprintln!("[FTP] reconnect '{}': re-authenticated", name);
         self.sessions.insert(name.to_string(), Arc::new(Mutex::new(FtpSession { client })));
