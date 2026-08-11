@@ -147,12 +147,21 @@ class VimOptionStore {
         const entry = this.options.get(name);
         if (entry && value !== undefined) {
           entry.value = value;
-          this.notify(name, value);
         }
       }
     } catch {
       // Config read failure is non-fatal — use defaults
     }
+  }
+
+  // Pre-load config at app startup. Once loaded, returns immediately.
+  preload(): void {
+    if (this.loaded) return;
+    this.load();
+  }
+
+  isLoaded(): boolean {
+    return this.loaded;
   }
 
   setupSetCommand(onOutput: (text: string) => void): void {

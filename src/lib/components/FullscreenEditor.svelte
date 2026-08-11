@@ -463,6 +463,8 @@
       parent: editorContainer,
     });
 
+    requestAnimationFrame(() => editorView?.requestMeasure());
+
     setupVimLineNumbers(lineNumberCompartment, editorView);
     setupAllVimCommands((text) => {
       outputText = text;

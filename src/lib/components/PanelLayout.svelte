@@ -6,6 +6,7 @@
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab } from '$lib/stores/tabs';
+  import { vimOptions } from '$lib/utils/vim-options';
   import DirectoryPanel from './DirectoryPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
@@ -288,6 +289,9 @@
   );
 
   onMount(async () => {
+    // Pre-load vim config so options are ready before first editor init
+    vimOptions.preload();
+
     // Register global listeners in capturing phase
     window.addEventListener('keydown', handleGlobalKeydown, true);
     window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });

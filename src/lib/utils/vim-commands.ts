@@ -127,5 +127,5 @@ export function setupVimRegCommand(onOutput: (text: string) => void) {
 export function setupAllVimCommands(onOutput: (text: string) => void): void {
   setupVimRegCommand(onOutput);
   vimOptions.setupSetCommand(onOutput);
-  vimOptions.load();
+  // Config loading is handled by setupVimLineNumbers (called before this)
 }

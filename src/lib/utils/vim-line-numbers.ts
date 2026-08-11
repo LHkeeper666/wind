@@ -57,6 +57,11 @@ export function setupVimLineNumbers(comp: Compartment, view: EditorView): void {
     vimOptions.onChange('relativenumber', () => rebuild());
   }
 
-  // Sync editor with current option state (handles tab switch re-init)
+  // Sync editor with current option state. On first init, config may not be
+  // loaded yet, so rebuild uses defaults. Once config loads, a final rebuild
+  // applies persisted values (safe: compartment reconfigure only affects gutter).
   rebuild();
+  vimOptions.load().then(() => {
+    if (viewRef === view && compRef === comp) rebuild();
+  });
 }

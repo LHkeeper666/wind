@@ -662,7 +662,7 @@
       }
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => { if (meta.modified !== cached.fileMtime && mode === 'global-normal') { tabEditorCache.delete(currentTabId); loadFile(path); } })
+        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabEditorCache.delete(currentTabId); loadFile(path); } })
         .catch(() => {});
       return;
     }
@@ -1071,6 +1071,10 @@
     savedContent = editorView.state.doc.toString();
     isModified = false;
 
+    // Ensure editor layout is recalculated after tab switch (container may have
+    // been display:none, causing CodeMirror to measure 0 dimensions on creation)
+    requestAnimationFrame(() => editorView?.requestMeasure());
+
     setupVimLineNumbers(lineNumberCompartment, editorView);
     setupAllVimCommands((text) => {
       outputText = text;
@@ -1464,6 +1468,17 @@
     try {
       await invoke('write_file', { path: filePath, content });
       savedContent = content; isModified = false;
+      // Get actual file mtime after save so metadata check doesn't
+      // falsely invalidate cached content on tab switch
+      const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
+      currentFileMtime = meta.modified;
+      const cached = tabEditorCache.get(currentTabId);
+      if (cached && cached.filePath === filePath) {
+        cached.content = content;
+        cached.savedContent = savedContent;
+        cached.isModified = false;
+        cached.fileMtime = meta.modified;
+      }
       const saveSlot = getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
     } catch (error) { console.error('Failed to save file:', error); }
