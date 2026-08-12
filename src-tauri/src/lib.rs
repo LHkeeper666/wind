@@ -1107,6 +1107,12 @@ fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
 
 /// Decode bytes to String: strict UTF-8 first, then chardetng + encoding_rs
 fn decode_text(bytes: &[u8]) -> String {
+    // Strip UTF-8 BOM if present (EF BB BF)
+    let bytes = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        bytes
+    };
     if let Ok(s) = String::from_utf8(bytes.to_vec()) {
         return s;
     }
