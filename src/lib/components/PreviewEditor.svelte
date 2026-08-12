@@ -143,8 +143,8 @@
   let panelElement: HTMLElement | undefined = $state(undefined);
   let previewRouter: PreviewRouter | undefined;
   let directoryPreviewer: DirectoryPreviewer | undefined;
-  let editorView: EditorView | undefined;
-  let editorFilePath: string | null = null;
+  let editorView: EditorView | undefined = $state(undefined);
+  let editorFilePath: string | null = $state(null);
   let editorResizeObserver: ResizeObserver | null = null;
   let themeCompartment = new Compartment();
   let themeObserver: MutationObserver | null = null;
@@ -492,7 +492,6 @@
     if (mode === 'editor-normal' && overlayElement) { overlayElement.focus(); }
     else if (mode === 'editor-insert' && editorView) { editorView.focus(); }
     else if (mode === 'global-normal' && codeFileDirectEdit && filePath) {
-      codeFileDirectEdit = false;
       mode = 'editor-normal';
     }
   }
@@ -789,10 +788,27 @@
         ? await invoke<string>('read_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
         : await invoke<string>('read_file', { path });
       if (gen !== loadGeneration) return;
-      content = newContent; binaryContent = null; savedContent = newContent;
-      if (editorView) { editorView.destroy(); editorView = undefined; }
+      // Null bytes indicate binary data misread as text (from_utf8_lossy)
+      if (newContent.includes('\0')) {
+        try {
+          const base64 = usePartial
+            ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
+            : await invoke<string>('read_binary_file', { path });
+          if (gen !== loadGeneration) return;
+          const binary = atob(base64); const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          content = ''; binaryContent = bytes.buffer;
+        } catch {
+          if (gen !== loadGeneration) return;
+          content = ''; binaryContent = null;
+        }
+      } else {
+        content = newContent; binaryContent = null; savedContent = newContent;
+        if (editorView) { editorView.destroy(); editorView = undefined; }
+      }
     } catch {
       if (gen !== loadGeneration) return;
+      if (editorView) { editorView.destroy(); editorView = undefined; }
       try {
         const base64 = usePartial
           ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
@@ -810,19 +826,13 @@
     if (!isMarkdown && ext !== 'json' && ext !== 'ipynb' && !binaryContent && content) {
       codeFileDirectEdit = true;
       if (mode === 'editor-normal' || mode === 'editor-insert') {
-        if (editorView) {
-          editorView.dispatch({
-            changes: { from: 0, to: editorView.state.doc.length, insert: content }
-          });
-          savedContent = editorView.state.doc.toString();
-          isModified = false;
-        }
         editorFilePath = filePath;
       } else {
         mode = 'editor-normal';
       }
     } else {
       codeFileDirectEdit = false;
+      if (editorView) { editorView.destroy(); editorView = undefined; }
       mode = 'global-normal';
       renderPreview();
     }
@@ -1033,8 +1043,8 @@
       createVimCommandHandler(
         () => ({
           save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else await saveFile(); },
-          quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else mode = 'global-normal'; },
-          forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else { content = savedContent; isModified = false; mode = 'global-normal'; } },
+          quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!codeFileDirectEdit) mode = 'global-normal'; },
+          forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!codeFileDirectEdit) { content = savedContent; isModified = false; mode = 'global-normal'; } },
           isModified: () => isModified,
         }),
         (msg) => onToast(msg)

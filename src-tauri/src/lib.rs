@@ -1077,8 +1077,9 @@ fn read_file(path: String) -> Result<String, String> {
         return Err(format!("Path is a directory, not a file: {}", path));
     }
 
-    fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    let bytes = fs::read(file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[tauri::command]
@@ -1101,8 +1102,7 @@ fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))?;
     buffer.truncate(bytes_read);
 
-    String::from_utf8(buffer)
-        .map_err(|e| format!("File is not valid UTF-8: {}", e))
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 #[derive(Debug, Serialize)]
