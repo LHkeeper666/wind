@@ -6,6 +6,7 @@ import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
 import { PdfPreviewer } from './PdfPreviewer';
 import { VideoPreviewer } from './VideoPreviewer';
+import { IpynbPreviewer } from './IpynbPreviewer';
 
 export class PreviewRouter {
   private previewers: Previewer[] = [];
@@ -16,6 +17,7 @@ export class PreviewRouter {
   constructor() {
     this.previewers = [
       new ArchivePreviewer(),
+      new IpynbPreviewer(),
       new JsonPreviewer(),
       new MarkdownPreviewer(),
       new PdfPreviewer(),
