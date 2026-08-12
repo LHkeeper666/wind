@@ -10,7 +10,6 @@ export interface TabState {
   cursorIndex: number;
   scrollOffset: number;
   terminalVisible: boolean;
-  terminalMode: 'insert' | 'normal' | null;
   terminalHeight: number;
   fullscreenTerminalOpen: boolean;
   shellType: string;
@@ -42,7 +41,6 @@ function getDefaultTab(id: number): TabState {
     cursorIndex: 0,
     scrollOffset: 0,
     terminalVisible: false,
-    terminalMode: null,
     terminalHeight: 300,
     fullscreenTerminalOpen: false,
     shellType: 'git-bash',
@@ -195,7 +193,6 @@ function createTabsStore() {
           cursorIndex: extra?.cursorIndex ?? newTabs[idx].cursorIndex,
           scrollOffset: extra?.scrollOffset ?? newTabs[idx].scrollOffset,
           terminalVisible: layoutState.terminalVisible,
-          terminalMode: layoutState.terminalMode,
           terminalHeight: layoutState.terminalHeight,
           fullscreenTerminalOpen: layoutState.fullscreenTerminalOpen,
           editorMode: extra?.editorMode ?? newTabs[idx].editorMode,

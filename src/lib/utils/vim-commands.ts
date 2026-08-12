@@ -101,26 +101,30 @@ export function createVimCommandHandler(
 
 let regCommandSetup = false;
 
+export function getRegistersOutput(): string {
+  const rc = Vim.getRegisterController() as any;
+  const lines: string[] = [];
+
+  const unnamedText = rc.unnamedRegister?.toString() ?? '';
+  lines.push(`""   ${unnamedText.replace(/\n/g, '^J') || '<empty>'}`);
+
+  const regs = rc.registers || {};
+  for (const name of Object.keys(regs).sort()) {
+    const text = regs[name]?.toString() ?? '';
+    if (text && name !== '"') {
+      lines.push(`"${name}   ${String(text).replace(/\n/g, '^J')}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export function setupVimRegCommand(onOutput: (text: string) => void) {
   if (regCommandSetup) return;
   regCommandSetup = true;
 
   Vim.defineEx('reg', 'reg', (_cm, _params) => {
-    const rc = Vim.getRegisterController() as any;
-    const lines: string[] = [];
-
-    const unnamedText = rc.unnamedRegister?.toString() ?? '';
-    lines.push(`""   ${unnamedText.replace(/\n/g, '^J') || '<empty>'}`);
-
-    const regs = rc.registers || {};
-    for (const name of Object.keys(regs).sort()) {
-      const text = regs[name]?.toString() ?? '';
-      if (text && name !== '"') {
-        lines.push(`"${name}   ${String(text).replace(/\n/g, '^J')}`);
-      }
-    }
-
-    onOutput(lines.join('\n'));
+    onOutput(getRegistersOutput());
   });
 }
 

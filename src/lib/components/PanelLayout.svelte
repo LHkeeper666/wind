@@ -499,7 +499,6 @@
       currentPath: active.currentPath || '',
       selectedFile: active.selectedFile,
       terminalVisible: active.terminalVisible,
-      terminalMode: active.terminalVisible ? (active.terminalMode || 'insert') : null,
       terminalHeight: active.terminalHeight,
       fullscreenTerminalOpen: active.fullscreenTerminalOpen,
       leftMode: active.leftMode || 'auto',
@@ -1106,8 +1105,7 @@
     if (event.ctrlKey && event.key === 't' && !waitingForWindowKey) {
       const canToggle = !showCommandPalette && !showFileSearch
         && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-        && !$layout.fullscreenTerminalOpen
-        && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+        && !$layout.fullscreenTerminalOpen;
       if (canToggle) {
         event.preventDefault();
         showTransfer = !showTransfer;
@@ -1119,8 +1117,7 @@
     if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
       const canRestore = !showCommandPalette && !showFileSearch
         && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-        && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
-        && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+        && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen;
       if (canRestore) {
         event.preventDefault();
         focusPanel($layout.activeColumn);
@@ -1167,11 +1164,12 @@
     }
 
     // Ctrl+W prefix for vim-style window navigation
-    // Skip when terminal is in insert mode (Ctrl+W should go to shell)
     // Skip when fullscreen terminal is open (no panel switching in fullscreen)
-    // Skip when TOC is focused (let PreviewEditor handle Ctrl+W h)
-    if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')) {
+    if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen) {
       event.preventDefault();
+      if ($layout.activeColumn === 'terminal') {
+        event.stopPropagation(); // prevent Ctrl+W from reaching xterm.js
+      }
       waitingForWindowKey = true;
       layout.setKeyPrefix('^W');
       if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
@@ -1228,14 +1226,13 @@
     }
 
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal') && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert');
+    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
 
     // t prefix for tab operations (global)
     // Works when: no modal open, not in terminal insert, not in editor insert
     const canUseTabPrefix = !showCommandPalette && !showFileSearch
       && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
       && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
-      && !($layout.activeColumn === 'terminal' && $layout.terminalMode === 'insert')
       && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
 
     // Handle second key when waiting for t prefix
@@ -1695,6 +1692,28 @@
     return panelLayout ? panelLayout.contains(active) : false;
   }
 
+  function handleAppFocusIn(event: FocusEvent) {
+    const target = event.target as HTMLElement;
+    if (!target) return;
+    const column = target.closest('.parent-panel, .current-panel, .preview-panel');
+    if (column) {
+      let panel: 'parent' | 'current' | 'preview';
+      if (column.classList.contains('parent-panel')) panel = 'parent';
+      else if (column.classList.contains('current-panel')) panel = 'current';
+      else if (column.classList.contains('preview-panel')) panel = 'preview';
+      else return;
+      if ($layout.activeColumn !== panel) {
+        layout.setActiveColumn(panel);
+      }
+      return;
+    }
+    if (target.closest('.terminal-containers')) {
+      if ($layout.activeColumn !== 'terminal') {
+        layout.setActiveColumn('terminal');
+      }
+    }
+  }
+
   function handleWindowFocusChanged(focused: boolean) {
     if (!focused || !windowReady) return;
     if (isPanelFocused()) return;
@@ -1740,7 +1759,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
-<div class="app-layout" role="application" aria-label="Wind Panel Layout">
+<div class="app-layout" role="application" aria-label="Wind Panel Layout" onfocusin={handleAppFocusIn}>
 
   <TabBar onSwitchTab={handleTabSwitch} />
 
@@ -1920,7 +1939,7 @@
 
   <!-- Status Bar -->
   <div class="status-bar">
-    <span class="status-mode">{$layout.activeColumn === 'terminal' ? `TERMINAL-${($layout.terminalMode || 'insert').toUpperCase()}` : $layout.activeColumn.toUpperCase()}</span>
+    <span class="status-mode">{$layout.activeColumn.toUpperCase()}</span>
     <span class="status-path">{currentPath || 'No path'}</span>
     <span class="status-prefix">{$layout.keyPrefix || ''}</span>
     {#if $clipboardSummary}

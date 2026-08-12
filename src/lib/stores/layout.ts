@@ -18,9 +18,6 @@ export interface LayoutState {
   // Active column for focus
   activeColumn: 'parent' | 'current' | 'preview' | 'terminal';
 
-  // Terminal mode (null when terminal is hidden)
-  terminalMode: 'insert' | 'normal' | null;
-
   // Preview/Editor mode
   previewMode: 'global-normal' | 'editor-normal' | 'editor-insert';
 
@@ -62,7 +59,6 @@ const initialState: LayoutState = {
   leftPath: '',
   selectedFile: null,
   activeColumn: 'current',
-  terminalMode: null,
   previewMode: 'global-normal',
   fullscreenEditorOpen: false,
   fullscreenImageViewerOpen: false,
@@ -89,7 +85,6 @@ function createLayoutStore() {
       currentPath: string;
       selectedFile: string | null;
       terminalVisible: boolean;
-      terminalMode: 'insert' | 'normal' | null;
       terminalHeight: number;
       fullscreenTerminalOpen: boolean;
       leftMode?: 'auto' | 'manual';
@@ -119,7 +114,6 @@ function createLayoutStore() {
           parentPath,
           selectedFile: partial.selectedFile,
           terminalVisible: partial.terminalVisible,
-          terminalMode: partial.terminalMode,
           terminalHeight: partial.terminalHeight,
           fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
           leftMode: partial.leftMode ?? state.leftMode,
@@ -184,11 +178,6 @@ function createLayoutStore() {
     // Set active column
     setActiveColumn(column: 'parent' | 'current' | 'preview' | 'terminal') {
       update(state => ({ ...state, activeColumn: column }));
-    },
-
-    // Set terminal mode
-    setTerminalMode(mode: 'insert' | 'normal' | null) {
-      update(state => ({ ...state, terminalMode: mode }));
     },
 
     // Set terminal height
@@ -295,7 +284,6 @@ function createLayoutStore() {
       update(state => ({
         ...state,
         terminalVisible: !state.terminalVisible,
-        terminalMode: !state.terminalVisible ? 'insert' : null,
         activeColumn: !state.terminalVisible ? 'terminal'
           : state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
         preTerminalColumn: !state.terminalVisible ? state.activeColumn : state.preTerminalColumn,
@@ -307,7 +295,6 @@ function createLayoutStore() {
       update(state => ({
         ...state,
         terminalVisible: true,
-        terminalMode: 'insert',
         activeColumn: 'terminal',
         preTerminalColumn: state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
       }));
@@ -323,7 +310,6 @@ function createLayoutStore() {
       update(state => ({
         ...state,
         terminalVisible: false,
-        terminalMode: null,
         activeColumn: state.activeColumn === 'terminal' ? state.preTerminalColumn : state.activeColumn,
       }));
     },

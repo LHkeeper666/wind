@@ -10,7 +10,6 @@ export interface TerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
   unlisten: (() => void) | null;
-  mode: 'normal' | 'insert';
   container: HTMLDivElement;
   shellType: string;
   shellIntegration: ShellIntegration;
@@ -123,8 +122,18 @@ export class TerminalManager {
 
     terminal.open(container);
 
-    // Ctrl+C/V clipboard integration
+    // Block browser paste event from reaching xterm.js.
+    // Ctrl+V pasting is handled in the custom key handler below.
+    container.addEventListener('paste', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+
+    // Ctrl+C/V clipboard integration.
+    // Guard event.type === 'keydown' because xterm.js may call this handler
+    // for both keydown and keypress events, causing double paste/copy.
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
       if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
         if (event.key === 'c' || event.key === 'C') {
           const selection = terminal.getSelection();
@@ -133,7 +142,6 @@ export class TerminalManager {
             terminal.clearSelection();
             return false;
           }
-          // No selection: let xterm send SIGINT
           return true;
         }
         if (event.key === 'v' || event.key === 'V') {
@@ -153,7 +161,6 @@ export class TerminalManager {
       terminal,
       fitAddon,
       unlisten: null,
-      mode: 'insert',
       container,
       shellType,
       shellIntegration,
@@ -162,9 +169,7 @@ export class TerminalManager {
     };
 
     terminal.onData((data) => {
-      if (instance.mode === 'insert') {
-        invoke('terminal_input', { tabId, data }).catch(console.error);
-      }
+      invoke('terminal_input', { tabId, data }).catch(console.error);
     });
 
     terminal.onResize(({ cols, rows }) => {
@@ -248,17 +253,6 @@ export class TerminalManager {
 
     instance.shellType = newShell;
     await this.startShell(tabId, newShell, cwd);
-  }
-
-  setMode(tabId: number, newMode: 'normal' | 'insert') {
-    const instance = this.instances.get(tabId);
-    if (!instance) return;
-
-    instance.mode = newMode;
-
-    if (instance.terminal) {
-      instance.terminal.options.disableStdin = newMode === 'normal';
-    }
   }
 
   focus(tabId: number) {

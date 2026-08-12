@@ -25,7 +25,7 @@
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler, setupAllVimCommands } from '$lib/utils/vim-commands';
+  import { createVimCommandHandler, setupAllVimCommands, getRegistersOutput } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
@@ -402,7 +402,13 @@
       if (previewWithToc) previewWithToc.style.display = 'none';
       if (editorContainer) editorContainer.style.display = 'block';
       if (editorContainer && filePath && (!editorView || editorFilePath !== filePath)) {
-        initEditor();
+        const targetFilePath = filePath;
+        requestAnimationFrame(() => {
+          if (mode !== 'editor-normal' && mode !== 'editor-insert') return;
+          if (editorContainer && filePath === targetFilePath && (!editorView || editorFilePath !== filePath)) {
+            initEditor();
+          }
+        });
       } else if (editorView && editorTargetLine >= 0 && changed) {
         moveCursorToLine(editorTargetLine);
       }
@@ -801,7 +807,7 @@
       }
     }
     // Code files go directly to editor mode (no Shiki preview)
-    if (!isMarkdown && ext !== 'json' && !binaryContent && content) {
+    if (!isMarkdown && ext !== 'json' && ext !== 'ipynb' && !binaryContent && content) {
       codeFileDirectEdit = true;
       if (mode === 'editor-normal' || mode === 'editor-insert') {
         if (editorView) {
@@ -1318,6 +1324,10 @@
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
       if (batchRenameTempPath) onBatchRenameSave(content);
       else saveFile().then(() => { mode = 'global-normal'; });
+    } else if (trimmed === 'reg' || trimmed === 'registers') {
+      const regOutput = getRegistersOutput();
+      outputText = regOutput;
+      outputVisible = true;
     } else if (editorView) {
       const cm = getCM(editorView);
       if (cm) { Vim.handleEx(cm as any, trimmed); editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); }
@@ -1877,6 +1887,176 @@
   }
   .output-exitcode {
     color: var(--warning);
+  }
+
+  /* Notebook Preview (.ipynb) */
+  :global(.preview-ipynb) {
+    font-family: var(--font-mono);
+  }
+  :global(.ipynb-meta) {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 0 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  :global(.ipynb-cell) {
+    margin-bottom: 4px;
+    border: 1px solid var(--border);
+    background-color: var(--bg-secondary);
+  }
+  :global(.ipynb-cell-header) {
+    padding: 2px 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+  }
+  :global(.ipynb-badge) {
+    font-size: 10px;
+    padding: 0 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--bg-primary);
+  }
+  :global(.ipynb-badge-markdown) { background-color: #458588; }
+  :global(.ipynb-badge-code) { background-color: var(--accent); }
+  :global(.ipynb-badge-raw) { background-color: var(--text-muted); }
+  :global(.ipynb-cell-body) {
+    padding: 8px 12px;
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  :global(.ipynb-cell-body h1), :global(.ipynb-cell-body h2), :global(.ipynb-cell-body h3),
+  :global(.ipynb-cell-body h4), :global(.ipynb-cell-body h5), :global(.ipynb-cell-body h6) {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--accent);
+    margin: 0.6em 0 0.3em;
+  }
+  :global(.ipynb-cell-body h1) { font-size: 1.4em; }
+  :global(.ipynb-cell-body h2) { font-size: 1.25em; }
+  :global(.ipynb-cell-body h3) { font-size: 1.1em; }
+  :global(.ipynb-cell-body h1:first-child), :global(.ipynb-cell-body h2:first-child),
+  :global(.ipynb-cell-body h3:first-child) { margin-top: 0; }
+  :global(.ipynb-cell-body p) { margin: 0.4em 0; }
+  :global(.ipynb-cell-body code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.1em 0.3em;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    color: var(--warning);
+  }
+  :global(.ipynb-cell-body pre) {
+    margin: 0.4em 0;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow-x: auto;
+  }
+  :global(.ipynb-cell-body pre code) {
+    padding: 0;
+    background: none;
+    color: var(--text-primary);
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  :global(.ipynb-cell-body ul), :global(.ipynb-cell-body ol) {
+    padding-left: 1.5em;
+    margin: 0.3em 0;
+  }
+  :global(.ipynb-cell-body a) {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  :global(.ipynb-cell-body table) {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.4em 0;
+    font-size: 0.9em;
+  }
+  :global(.ipynb-cell-body th), :global(.ipynb-cell-body td) {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  :global(.ipynb-cell-body th) { background: var(--bg-tertiary); }
+  :global(.ipynb-cell-body img) { max-width: 100%; }
+  :global(.ipynb-cell-body blockquote) {
+    margin: 0.4em 0;
+    padding: 4px 12px;
+    border-left: 3px solid var(--accent);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  :global(.ipynb-cell-input) {
+    padding: 4px 8px 0;
+  }
+  :global(.ipynb-exec-label) {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  :global(.ipynb-code) {
+    margin-top: 2px;
+  }
+  :global(.ipynb-code .shiki) {
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    font-size: 0.85em;
+    line-height: 1.5;
+    overflow-x: auto;
+  }
+  :global(.ipynb-code .shiki code) {
+    font-family: var(--font-mono);
+    counter-reset: step;
+  }
+  :global(.ipynb-outputs) {
+    border-top: 1px solid var(--border);
+    padding: 4px 8px;
+  }
+  :global(.ipynb-output) {
+    margin-bottom: 4px;
+  }
+  :global(.ipynb-output .ipynb-exec-label) {
+    display: block;
+    margin-bottom: 2px;
+  }
+  :global(.ipynb-output pre) {
+    margin: 2px 0;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    font-size: 0.85em;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+  }
+  :global(.ipynb-output-img) {
+    max-width: 100%;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  :global(.ipynb-output-error pre) {
+    color: var(--error, #e74c3c);
+  }
+  :global(.ipynb-error-banner) {
+    padding: 8px 12px;
+    background: var(--error, #e74c3c);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  :global(.ipynb-cell-raw pre) {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-secondary);
+    font-size: 0.9em;
   }
 
   /* JSON Preview */

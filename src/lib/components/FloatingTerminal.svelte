@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { get } from 'svelte/store';
   import { terminalManager } from '$lib/terminal/terminal-manager';
   import type { TerminalInstance } from '$lib/terminal/terminal-manager';
   import { layout } from '$lib/stores/layout';
@@ -25,7 +24,6 @@
   } = $props();
 
   let terminalWrapper: HTMLDivElement | undefined = $state(undefined);
-  let overlayElement: HTMLDivElement | undefined = $state(undefined);
   let terminalRoot: HTMLDivElement | undefined = $state(undefined);
   let terminalHeight: number = $state(300);
   let isDragging: boolean = $state(false);
@@ -34,7 +32,6 @@
   let zoomDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let isZooming = false;
   let activeTabId: number = currentTabId;
-  let mode: 'normal' | 'insert' = $state('insert');
 
   $effect(() => {
     terminalManager.setZoom(zoomLevel);
@@ -45,16 +42,6 @@
       window.dispatchEvent(new CustomEvent('terminal:directory-change', {
         detail: { directory }
       }));
-    });
-  });
-
-  $effect(() => {
-    terminalManager.setShellStateChangeHandler((_tabId, _state) => {
-      // Trigger Svelte reactivity by reassigning
-      const inst = terminalManager.get(activeTabId);
-      if (inst) {
-        layout.setTerminalMode(inst.mode);
-      }
     });
   });
 
@@ -74,33 +61,17 @@
     if (!terminalManager.has(activeTabId)) {
       terminalManager.createContainer(activeTabId, terminalWrapper);
       terminalManager.create(activeTabId, shellTypeProp);
-      // Sync mode from layout store (restoreTabAndFocus may have set it)
-      const storeMode = get(layout).terminalMode;
-      if (storeMode) {
-        mode = storeMode;
-        terminalManager.setMode(activeTabId, storeMode);
-      }
       terminalManager.startShell(activeTabId, shellTypeProp, currentPath);
     } else {
-      // Sync mode from the existing terminal instance
-      const instance = terminalManager.get(activeTabId);
-      if (instance) {
-        mode = instance.mode;
-      }
       terminalManager.setContainerVisible(activeTabId, true);
       // Fit after becoming visible
       setTimeout(() => terminalManager.fit(activeTabId), 50);
     }
 
-    // Restore focus based on terminal mode (deferred to ensure DOM is ready)
-    // Only if terminal is visible (hidden terminals shouldn't steal focus)
-    if (prevTabId !== activeTabId && visible) {
+    // Restore focus on tab switch (only when terminal is the active column)
+    if (prevTabId !== activeTabId && visible && $layout.activeColumn === 'terminal') {
       requestAnimationFrame(() => {
-        if (mode === 'normal' && overlayElement) {
-          overlayElement.focus();
-        } else {
-          terminalManager.focus(activeTabId);
-        }
+        terminalManager.focus(activeTabId);
       });
     }
   });
@@ -120,26 +91,6 @@
     }
   });
 
-  // Focus overlay when switching to normal mode (backup for tab restore)
-  $effect(() => {
-    if (mode === 'normal' && overlayElement) {
-      requestAnimationFrame(() => overlayElement?.focus());
-    }
-  });
-
-  onMount(() => {
-    // Add capture-phase Escape handler on terminal wrapper to intercept before xterm
-    if (terminalWrapper) {
-      terminalWrapper.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Escape' && mode === 'insert') {
-          e.preventDefault();
-          e.stopPropagation();
-          setMode('normal');
-        }
-      }, true); // capture phase
-    }
-  });
-
   onDestroy(() => {
     if (zoomDebounceTimer) {
       clearTimeout(zoomDebounceTimer);
@@ -148,11 +99,7 @@
   });
 
   export function focus() {
-    if (mode === 'normal' && overlayElement) {
-      overlayElement.focus();
-    } else {
-      terminalManager.focus(activeTabId);
-    }
+    terminalManager.focus(activeTabId);
   }
 
   export function toggle() {
@@ -171,29 +118,6 @@
 
   export function clear() {
     terminalManager.clear(activeTabId);
-  }
-
-  export function setMode(newMode: 'normal' | 'insert') {
-    mode = newMode;
-    terminalManager.setMode(activeTabId, newMode);
-    layout.setTerminalMode(newMode);
-    if (newMode === 'normal') {
-      const instance = terminalManager.get(activeTabId);
-      if (instance) {
-        instance.terminal.blur();
-      }
-      // Focus overlay after Svelte renders it into the DOM
-      requestAnimationFrame(() => {
-        overlayElement?.focus();
-      });
-    } else {
-      terminalManager.focus(activeTabId);
-    }
-  }
-
-  export function getMode() {
-    const instance = terminalManager.get(activeTabId);
-    return instance?.mode || 'insert';
   }
 
   export function setSuppressAutoFocus(_value: boolean) {
@@ -320,23 +244,6 @@
     </div>
   </div>
   <div class="terminal-containers" bind:this={terminalWrapper}>
-    {#if mode === 'normal'}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div class="terminal-overlay" bind:this={overlayElement} onkeydown={(e) => {
-        if (e.key === 'i' && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          setMode('insert');
-          return;
-        }
-        // All other keys (t, n, etc.) bubble to PanelLayout's global handler
-        // Refocus overlay after event processing to prevent xterm from stealing focus
-        requestAnimationFrame(() => {
-          if (mode === 'normal') {
-            overlayElement?.focus();
-          }
-        });
-      }} tabindex="0"></div>
-    {/if}
   </div>
 </div>
 
@@ -456,14 +363,6 @@
     inset: 0;
     padding: 4px;
     overflow: hidden;
-  }
-
-  .terminal-containers :global(.terminal-overlay) {
-    position: absolute;
-    inset: 0;
-    background: transparent;
-    z-index: 10;
-    cursor: default;
   }
 
   :global(.xterm-viewport) {
