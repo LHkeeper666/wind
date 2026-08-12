@@ -40,4 +40,6 @@ trash = "4"
 open = "5"
 notify = "6"
 suppaftp = { version = "8", default-features = false, features = ["tokio-rustls-aws-lc-rs"] }
+chardetng = "0.1"
+encoding_rs = "0.8"
 

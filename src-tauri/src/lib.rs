@@ -1079,7 +1079,7 @@ fn read_file(path: String) -> Result<String, String> {
 
     let bytes = fs::read(file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(decode_text(&bytes))
 }
 
 #[tauri::command]
@@ -1102,7 +1102,19 @@ fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))?;
     buffer.truncate(bytes_read);
 
-    Ok(String::from_utf8_lossy(&buffer).into_owned())
+    Ok(decode_text(&buffer))
+}
+
+/// Decode bytes to String: strict UTF-8 first, then chardetng + encoding_rs
+fn decode_text(bytes: &[u8]) -> String {
+    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+        return s;
+    }
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, true);
+    let (decoded, _had_errors) = encoding.decode_without_bom_handling(bytes);
+    decoded.into_owned()
 }
 
 #[derive(Debug, Serialize)]
