@@ -148,7 +148,12 @@
   let editorResizeObserver: ResizeObserver | null = null;
   let themeCompartment = new Compartment();
   let themeObserver: MutationObserver | null = null;
-  let codeFileDirectEdit: boolean = $state(false);
+  let codeFileDirectEdit = $derived(
+    !!filePath &&
+    !!content &&
+    !binaryContent &&
+    !['md', 'markdown', 'json', 'ipynb'].includes((filePath?.split('.').pop() || '').toLowerCase())
+  );
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   let loadGeneration: number = 0;
@@ -823,15 +828,13 @@
       }
     }
     // Code files go directly to editor mode (no Shiki preview)
-    if (!isMarkdown && ext !== 'json' && ext !== 'ipynb' && !binaryContent && content) {
-      codeFileDirectEdit = true;
+    if (codeFileDirectEdit) {
       if (mode === 'editor-normal' || mode === 'editor-insert') {
         editorFilePath = filePath;
       } else {
         mode = 'editor-normal';
       }
     } else {
-      codeFileDirectEdit = false;
       if (editorView) { editorView.destroy(); editorView = undefined; }
       mode = 'global-normal';
       renderPreview();

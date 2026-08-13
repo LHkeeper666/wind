@@ -453,18 +453,23 @@
   }
 
   function handleTabSwitch(tabId: number) {
+    if (tabId === getTabsState().activeTabId) return;
     saveCurrentTabState();
     tabs.switchTab(tabId);
     restoreTabAndFocus();
   }
 
   function handleTabSwitchRelative(delta: number) {
+    if (getTabsState().tabs.length <= 1) return;
     saveCurrentTabState();
     tabs.switchTabRelative(delta);
     restoreTabAndFocus();
   }
 
   function handleTabSwitchByIndex(index: number) {
+    const state = getTabsState();
+    if (index < 0 || index >= state.tabs.length) return;
+    if (index === state.tabs.findIndex((t: any) => t.id === state.activeTabId)) return;
     saveCurrentTabState();
     tabs.switchTabByIndex(index);
     restoreTabAndFocus();
