@@ -416,7 +416,6 @@
   function saveCurrentTabState() {
     // Cache full editor state for tab restore
     const state = getTabsState();
-    // Snapshot BEFORE cacheTabState — cacheTabState sets mode to global-normal
     const snapshot = previewEditor?.getEditorStateSnapshot();
     previewEditor?.cacheTabState(state.activeTabId);
 
@@ -478,6 +477,11 @@
   function restoreTabAndFocus() {
     const active = getActiveTab();
     if (!active) return;
+    // Deactivate the outgoing tab's editor before restoring the target tab's
+    // selectedFile. Must run synchronously before selectedFile assignment so
+    // the filePath $effect-triggered loadFile sees mode=global-normal (no stale
+    // editor content during async load). Do NOT move into setTimeout/rAF.
+    previewEditor?.deactivateTab();
     // Set pending cursor/scroll BEFORE path change — for cached dirs, loadDirectory
     // completes synchronously, so pending must be set first
     if (active.cursorIndex > 0 || active.scrollOffset > 0) {

@@ -274,10 +274,9 @@
 
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
-    const savedMode = mode;
     tabEditorCache.set(tabId, {
       filePath, content, savedContent, binaryContent,
-      mode: savedMode,
+      mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
@@ -286,10 +285,12 @@
       tocExpandedLines: collectExpandedLines(tocHeadings),
       tocFocused, tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
     });
-    if (savedMode !== 'global-normal') {
-      mode = 'global-normal';
-      if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
-    }
+  }
+
+  export function deactivateTab() {
+    // Visual cleanup only: reset mode so the editor is hidden during tab
+    // switch. editorView is NOT destroyed here — teardown is loadFile's job.
+    mode = 'global-normal';
   }
 
   export function getEditorStateSnapshot(): {
@@ -659,9 +660,7 @@
         }
         tocHeadings = cached.tocHeadings;
       }
-      if (cached.mode !== 'global-normal') {
-        if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
-      }
+      if (editorView) { editorView.destroy(); editorView = undefined; editorFilePath = null; }
       mode = cached.mode;
       if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
         pendingEditorPos = cached.editorCursorPos;
@@ -1473,7 +1472,7 @@
       return;
     }
     if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); waitingForTabKey = true; layout.setKeyPrefix('t'); setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000); return; }
-    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
+    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }
     else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(-40); }

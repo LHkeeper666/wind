@@ -253,7 +253,7 @@
   }
 
   export function refresh() {
-    return loadDirectory(path, true, isFocused);
+    return loadDirectory(path, true);
   }
 
   function handleFocus() {
@@ -272,8 +272,7 @@
       selectedIndex = -1;
       selectedPathInternal = null;
       selectedPaths = new Set();
-      const _wasFocused = isFocused;
-      untrack(() => loadDirectory(path, false, _wasFocused));
+      untrack(() => loadDirectory(path, false));
     }
   });
 
@@ -361,7 +360,7 @@
 
   let loadingGen = 0;
 
-  async function loadDirectory(dirPath: string, forceRefresh: boolean = false, wasFocused: boolean = false) {
+  async function loadDirectory(dirPath: string, forceRefresh: boolean = false) {
     const gen = ++loadingGen;
     isLoading = true;
     errorMessage = '';
@@ -383,9 +382,6 @@
       selectInitialEntry();
       applyPendingRestore();
       isLoading = false;
-      if (wasFocused) {
-        requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; });
-      }
       return;
     }
 
@@ -426,7 +422,6 @@
     } finally {
       if (gen === loadingGen) {
         isLoading = false;
-        if (wasFocused) { requestAnimationFrame(() => { panelElement?.focus(); isFocused = true; }); }
       }
     }
   }
