@@ -3,6 +3,7 @@ import { layout } from './layout';
 
 export interface TabState {
   id: number;
+  lastUsedAt: number;
   name: string;
   parentPath: string;
   currentPath: string;
@@ -34,6 +35,7 @@ interface TabsState {
 function getDefaultTab(id: number): TabState {
   return {
     id,
+    lastUsedAt: 0,
     name: 'home',
     parentPath: '',
     currentPath: '',
@@ -73,6 +75,8 @@ function createTabsStore() {
     nextId: 2,
   });
 
+  let usageCounter = 0;
+
   return {
     subscribe,
 
@@ -103,6 +107,7 @@ function createTabsStore() {
             newTab.name = getDirName(currentTab.currentPath);
           }
         }
+        newTab.lastUsedAt = ++usageCounter;
         return {
           ...state,
           tabs: [...state.tabs, newTab],
@@ -124,7 +129,10 @@ function createTabsStore() {
           const newIdx = Math.min(idx, newTabs.length - 1);
           newActiveId = newTabs[newIdx].id;
         }
-        return { ...state, tabs: newTabs, activeTabId: newActiveId };
+        const bumped = newActiveId === state.activeTabId
+          ? newTabs
+          : newTabs.map(t => t.id === newActiveId ? { ...t, lastUsedAt: ++usageCounter } : t);
+        return { ...state, tabs: bumped, activeTabId: newActiveId };
       });
     },
 
@@ -132,7 +140,11 @@ function createTabsStore() {
       update(state => {
         if (!state.tabs.find(t => t.id === tabId)) return state;
         if (state.activeTabId === tabId) return state;
-        return { ...state, activeTabId: tabId };
+        return {
+          ...state,
+          activeTabId: tabId,
+          tabs: state.tabs.map(t => t.id === tabId ? { ...t, lastUsedAt: ++usageCounter } : t),
+        };
       });
     },
 
@@ -141,15 +153,32 @@ function createTabsStore() {
         const idx = state.tabs.findIndex(t => t.id === state.activeTabId);
         if (idx === -1) return state;
         const newIdx = (idx + delta + state.tabs.length) % state.tabs.length;
-        return { ...state, activeTabId: state.tabs[newIdx].id };
+        const newId = state.tabs[newIdx].id;
+        if (newId === state.activeTabId) return state;
+        return {
+          ...state,
+          activeTabId: newId,
+          tabs: state.tabs.map(t => t.id === newId ? { ...t, lastUsedAt: ++usageCounter } : t),
+        };
       });
     },
 
     switchTabByIndex(index: number) {
       update(state => {
         if (index < 0 || index >= state.tabs.length) return state;
-        return { ...state, activeTabId: state.tabs[index].id };
+        const newId = state.tabs[index].id;
+        if (newId === state.activeTabId) return state;
+        return {
+          ...state,
+          activeTabId: newId,
+          tabs: state.tabs.map(t => t.id === newId ? { ...t, lastUsedAt: ++usageCounter } : t),
+        };
       });
+    },
+
+    getMruOrder() {
+      const state = get({ subscribe });
+      return [...state.tabs].sort((a, b) => b.lastUsedAt - a.lastUsedAt);
     },
 
     renameTab(tabId: number, name: string) {

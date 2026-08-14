@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tabs } from '$lib/stores/tabs';
 
-  let { onSwitchTab }: { onSwitchTab?: (tabId: number) => void } = $props();
+  let { onSwitchTab, switcherActive = false, switcherSelectionId = -1 }:
+    { onSwitchTab?: (tabId: number) => void; switcherActive?: boolean; switcherSelectionId?: number } = $props();
 
   function handleTabClick(tabId: number) {
     // Defer to next task so the browser finishes processing
@@ -25,6 +26,7 @@
     <div
       class="tab-item"
       class:active={tab.id === $tabs.activeTabId}
+      class:preview-selected={switcherActive && tab.id === switcherSelectionId}
       onmousedown={() => handleTabClick(tab.id)}
       onkeydown={() => {}}
       role="tab"
@@ -75,6 +77,11 @@
     color: var(--text-primary);
     border-bottom: 1px solid var(--accent);
     margin-bottom: -1px;
+  }
+
+  .tab-item.preview-selected {
+    box-shadow: inset 0 0 0 2px var(--accent);
+    color: var(--text-primary);
   }
 
   .tab-index {

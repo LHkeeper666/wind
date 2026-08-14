@@ -309,6 +309,21 @@
     };
   }
 
+  export function reloadFile() {
+    if (!filePath) return;
+    const prevMode = mode;
+    loadFile(filePath);
+    // loadFile's cache-hit branch destroys editorView and restores mode from
+    // cache. When the preview phase already left mode at editor-normal, mode
+    // does NOT change, so the mode $effect won't fire initEditor. Rebuild the
+    // editor directly here (restores cursor from pendingEditorPos) without
+    // flipping mode to global-normal, which would trigger the code-preview
+    // render and flash the wrong UI.
+    if ((mode === 'editor-normal' || mode === 'editor-insert') && mode === prevMode && !editorView) {
+      initEditor();
+    }
+  }
+
   function startWatching(path: string) {
     stopWatching();
     invoke('start_watch_file', { path }).catch(e => console.error('[PreviewEditor] start_watch_file error:', e));
@@ -1400,14 +1415,19 @@
 
     // t prefix for tab operations (editor-normal, only when vim has no pending operator)
     if (tPending) {
+      if (event.repeat) return; // ignore key repeat while holding t
+      const code = event.code; const key = event.key;
+      // n/p keep the prefix active for continuous MRU switching (commit on keyup).
+      // tTimeout is left running as a fallback to clear tPending after 1s.
+      if (code === 'KeyN' || code === 'KeyP') {
+        onTabCommand(code === 'KeyN' ? 'switcher-next' : 'switcher-prev');
+        return;
+      }
       tPending = false;
       if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; }
       layout.clearKeyPrefix();
-      const code = event.code; const key = event.key;
       if (code === 'KeyT') onTabCommand('new');
       else if (code === 'KeyC') onTabCommand('close');
-      else if (code === 'KeyN' || code === 'BracketRight') onTabCommand('next');
-      else if (code === 'KeyP' || code === 'BracketLeft') onTabCommand('prev');
       else if (code === 'Comma') onTabCommand('swap-prev');
       else if (code === 'Period') onTabCommand('swap-next');
       else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
@@ -1421,7 +1441,7 @@
       }
       return;
     }
-    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey && mode === 'editor-normal') {
+    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && mode === 'editor-normal') {
       if (editorView) {
         const cm = getCM(editorView);
         if (cm) {
@@ -1461,19 +1481,20 @@
     if (mode !== 'global-normal') return;
     if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
     if (waitingForTabKey) {
+      if (event.repeat) { event.preventDefault(); return; }
       waitingForTabKey = false; layout.clearKeyPrefix();
       const code = event.code; const key = event.key; event.preventDefault();
       if (code === 'KeyT') onTabCommand('new');
       else if (code === 'KeyC') onTabCommand('close');
       else if (code === 'KeyR') onTabCommand('rename-hint');
-      else if (code === 'KeyN' || code === 'BracketRight') onTabCommand('next');
-      else if (code === 'KeyP' || code === 'BracketLeft') onTabCommand('prev');
+      else if (code === 'KeyN') onTabCommand('next');
+      else if (code === 'KeyP') onTabCommand('prev');
       else if (code === 'Comma') onTabCommand('swap-prev');
       else if (code === 'Period') onTabCommand('swap-next');
       else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
       return;
     }
-    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); waitingForTabKey = true; layout.setKeyPrefix('t'); setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000); return; }
+    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); waitingForTabKey = true; layout.setKeyPrefix('t'); setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000); return; }
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }

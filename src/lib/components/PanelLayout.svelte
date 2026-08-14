@@ -5,7 +5,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
-  import { tabs, activeTab } from '$lib/stores/tabs';
+  import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
   import { vimOptions } from '$lib/utils/vim-options';
   import DirectoryPanel from './DirectoryPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
@@ -61,6 +61,14 @@
   // t prefix state for tab operations (global, not per-panel)
   let waitingForTabKey: boolean = $state(false);
   let tabKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+  // t-hold state for MRU tab switcher (alt+tab style)
+  let tHeld: boolean = $state(false);
+  let switcherActive: boolean = $state(false);
+  let switcherSelectionId: number = $state(-1);
+  let switcherOriginTabId: number = $state(-1);
+  let switcherMruIds: number[] = $state([]);
+  let switcherPhysicalIds: number[] = $state([]);
+  let switcherTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Focus restore state
   let windowReady: boolean = $state(false);
@@ -81,9 +89,15 @@
     } else if (cmd === 'rename-hint') {
       showToast('Double-click tab name to rename');
     } else if (cmd === 'next') {
-      handleTabSwitchRelative(1);
+      handleTabSwitchMru(1);
     } else if (cmd === 'prev') {
-      handleTabSwitchRelative(-1);
+      handleTabSwitchMru(-1);
+    } else if (cmd === 'switcher-next') {
+      if (switcherActive) moveSwitcherIn(switcherMruIds, 1);
+      else startSwitcher('mru');
+    } else if (cmd === 'switcher-prev') {
+      if (switcherActive) moveSwitcherIn(switcherPhysicalIds, 1);
+      else startSwitcher('physical');
     } else if (cmd === 'swap-prev') {
       tabs.swapTab(-1);
     } else if (cmd === 'swap-next') {
@@ -294,6 +308,7 @@
 
     // Register global listeners in capturing phase
     window.addEventListener('keydown', handleGlobalKeydown, true);
+    window.addEventListener('keyup', handleGlobalKeyup, true);
     window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });
 
     // Register Tauri window focus listener for auto-restore
@@ -342,6 +357,7 @@
   onDestroy(() => {
     fileOpUnlistens.forEach(fn => fn());
     window.removeEventListener('keydown', handleGlobalKeydown, true);
+    window.removeEventListener('keyup', handleGlobalKeyup, true);
     window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
     if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
   });
@@ -366,6 +382,10 @@
     const unsubscribe = layout.subscribe(state => {
       currentPath = state.currentPath;
       selectedFile = state.selectedFile;
+      // During MRU switcher preview, layout temporarily shows another tab's
+      // content without changing activeTabId — skip auto-rename so the origin
+      // tab's name isn't clobbered by the previewed tab's directory/file name.
+      if (switcherActive) return;
       // Auto-name active tab: file name if selected, otherwise directory name
       const name = state.selectedFile
         ? (state.selectedFile.split(/[/\\]/).pop() || state.selectedFile)
@@ -458,11 +478,71 @@
     restoreTabAndFocus();
   }
 
-  function handleTabSwitchRelative(delta: number) {
-    if (getTabsState().tabs.length <= 1) return;
+  function handleTabSwitchMru(delta: number) {
+    const order = tabs.getMruOrder();
+    if (order.length <= 1) return;
+    const state = getTabsState();
+    const idx = order.findIndex((t: TabState) => t.id === state.activeTabId);
+    if (idx === -1) return;
+    const newIdx = (idx + delta + order.length) % order.length;
     saveCurrentTabState();
-    tabs.switchTabRelative(delta);
+    tabs.switchTab(order[newIdx].id);
     restoreTabAndFocus();
+  }
+
+  function startSwitcher(mode: 'mru' | 'physical') {
+    const state = getTabsState();
+    if (state.tabs.length <= 1) return;
+    saveCurrentTabState();
+    switcherOriginTabId = state.activeTabId;
+    switcherMruIds = tabs.getMruOrder().map((t: TabState) => t.id);
+    switcherPhysicalIds = state.tabs.map((t: TabState) => t.id);
+    switcherSelectionId = state.activeTabId;
+    switcherActive = true;
+    if (mode === 'physical') {
+      moveSwitcherIn(switcherPhysicalIds, 1);
+    } else {
+      moveSwitcherIn(switcherMruIds, 1);
+    }
+  }
+
+  function moveSwitcherIn(ids: number[], direction: 1 | -1) {
+    const idx = ids.indexOf(switcherSelectionId);
+    if (idx === -1) return;
+    const newIdx = (idx + direction + ids.length) % ids.length;
+    switcherSelectionId = ids[newIdx];
+    const tab = getTabsState().tabs.find((t: TabState) => t.id === switcherSelectionId);
+    if (tab) restoreTabContent(tab);
+    // Only schedule a fallback commit when t was tapped (not held) — the
+    // keyup handler commits when t is physically held down.
+    if (!tHeld) {
+      if (switcherTimeout) { clearTimeout(switcherTimeout); switcherTimeout = null; }
+      switcherTimeout = setTimeout(() => { commitSwitcher(); }, 1000);
+    }
+  }
+
+  function commitSwitcher() {
+    if (!switcherActive) return;
+    if (switcherTimeout) { clearTimeout(switcherTimeout); switcherTimeout = null; }
+    const selectionId = switcherSelectionId;
+    const originId = switcherOriginTabId;
+    switcherActive = false;
+    switcherSelectionId = -1;
+    switcherOriginTabId = -1;
+    switcherMruIds = [];
+    switcherPhysicalIds = [];
+    if (selectionId !== originId && selectionId >= 0) {
+      tabs.switchTab(selectionId);
+      // The preview phase loaded selection with the origin's currentTabId, so
+      // its editor cursor/scroll were never restored from cache. Reload after
+      // the activeTabId prop has propagated so loadFile reads the right cache.
+      setTimeout(() => previewEditor?.reloadFile(), 0);
+    }
+    // selectionId === originId is a no-op: the last moveSwitcherIn already
+    // restored origin's content (it called restoreTabContent + loadFile with
+    // the correct currentTabId). Do NOT call restoreTabContent again here —
+    // its deactivateTab would flip mode to global-normal while selectedFile is
+    // unchanged, so loadFile never fires and code files get stuck in preview.
   }
 
   function handleTabSwitchByIndex(index: number) {
@@ -474,9 +554,8 @@
     restoreTabAndFocus();
   }
 
-  function restoreTabAndFocus() {
-    const active = getActiveTab();
-    if (!active) return;
+  function restoreTabContent(tab: TabState) {
+    if (!tab) return;
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
     // the filePath $effect-triggered loadFile sees mode=global-normal (no stale
@@ -484,43 +563,43 @@
     previewEditor?.deactivateTab();
     // Set pending cursor/scroll BEFORE path change — for cached dirs, loadDirectory
     // completes synchronously, so pending must be set first
-    if (active.cursorIndex > 0 || active.scrollOffset > 0) {
-      currentDirectoryPanel?.setPendingRestore(active.cursorIndex, active.scrollOffset);
+    if (tab.cursorIndex > 0 || tab.scrollOffset > 0) {
+      currentDirectoryPanel?.setPendingRestore(tab.cursorIndex, tab.scrollOffset);
     }
     // Set activeColumn BEFORE restoreTabState so the editor's activeColumn
     // $effect sees the correct value when mode is restored to editor-normal,
     // preventing it from redirecting focus to the directory panel.
-    const targetPanel = (active.activeColumn === 'terminal' && active.terminalVisible)
+    const targetPanel = (tab.activeColumn === 'terminal' && tab.terminalVisible)
       ? 'terminal'
-      : (active.activeColumn !== 'terminal' ? active.activeColumn : 'current');
+      : (tab.activeColumn !== 'terminal' ? tab.activeColumn : 'current');
     // If the tab was in editor mode AND the user hadn't explicitly switched
     // focus away (activeColumn was preview), keep focus on preview panel.
-    const wasInEditor = active.editorMode === 'editor-normal' || active.editorMode === 'editor-insert';
-    const actualPanel = wasInEditor && active.activeColumn === 'preview'
+    const wasInEditor = tab.editorMode === 'editor-normal' || tab.editorMode === 'editor-insert';
+    const actualPanel = wasInEditor && tab.activeColumn === 'preview'
       ? 'preview'
       : targetPanel;
     layout.setActiveColumn(actualPanel);
     // Sync PanelLayout local state
-    currentPath = active.currentPath;
-    selectedFile = active.selectedFile;
+    currentPath = tab.currentPath;
+    selectedFile = tab.selectedFile;
     // Batch all layout store updates into one to avoid cascading reactive triggers
     layout.restoreTabState({
-      currentPath: active.currentPath || '',
-      selectedFile: active.selectedFile,
-      terminalVisible: active.terminalVisible,
-      terminalHeight: active.terminalHeight,
-      fullscreenTerminalOpen: active.fullscreenTerminalOpen,
-      leftMode: active.leftMode || 'auto',
-      leftPath: active.leftPath || '',
+      currentPath: tab.currentPath || '',
+      selectedFile: tab.selectedFile,
+      terminalVisible: tab.terminalVisible,
+      terminalHeight: tab.terminalHeight,
+      fullscreenTerminalOpen: tab.fullscreenTerminalOpen,
+      leftMode: tab.leftMode || 'auto',
+      leftPath: tab.leftPath || '',
     });
     // Re-assert activeColumn — restoreTabState may have triggered reactive
     // effects that changed it (e.g. tab rename callback → layout subscription)
     layout.setActiveColumn(actualPanel);
     // Refresh FTP panels on tab switch (may be stale after cross-tab operations)
-    if (active.currentPath.startsWith('ftp://')) {
+    if (tab.currentPath.startsWith('ftp://')) {
       currentDirectoryPanel?.refresh();
     }
-    if (active.leftMode === 'manual' && active.leftPath.startsWith('ftp://')) {
+    if (tab.leftMode === 'manual' && tab.leftPath.startsWith('ftp://')) {
       parentDirectoryPanel?.refresh();
     }
     // Apply DOM focus (async, after state is fully restored)
@@ -540,6 +619,10 @@
         }
       }
     });
+  }
+
+  function restoreTabAndFocus() {
+    restoreTabContent(getActiveTab());
   }
 
   function getActiveTab() {
@@ -1072,6 +1155,12 @@
       if (event.key !== 'Escape' && !event.ctrlKey) return;
     }
 
+    // Track physical t key state globally so the MRU switcher can commit on
+    // keyup regardless of which panel (directory or editor) owns the prefix.
+    if (event.code === 'KeyT' && !event.repeat) {
+      tHeld = true;
+    }
+
     // Tab / Shift+Tab: prevent native focus switching
     // Skip when command palette is open (Tab = path completion)
     if (event.key === 'Tab' && !showCommandPalette) {
@@ -1244,8 +1333,26 @@
       && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
       && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
 
+    // While in switcher mode, only n/p move selection; all other keys ignored
+    if (switcherActive) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'KeyN') {
+        moveSwitcherIn(switcherMruIds, 1);
+      } else if (event.code === 'KeyP') {
+        moveSwitcherIn(switcherPhysicalIds, 1);
+      }
+      return;
+    }
+
     // Handle second key when waiting for t prefix
     if (waitingForTabKey) {
+      // Ignore keyboard repeat while holding t (e.g. holding t for MRU switch)
+      if (event.repeat) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       waitingForTabKey = false;
       layout.clearKeyPrefix();
       if (tabKeyTimeout) { clearTimeout(tabKeyTimeout); tabKeyTimeout = null; }
@@ -1259,10 +1366,10 @@
         handleTabNew();
       } else if (code === 'KeyC') {
         handleTabClose();
-      } else if (code === 'KeyN' || code === 'BracketRight') {
-        handleTabSwitchRelative(1);
-      } else if (code === 'KeyP' || code === 'BracketLeft') {
-        handleTabSwitchRelative(-1);
+      } else if (code === 'KeyN') {
+        startSwitcher('mru');
+      } else if (code === 'KeyP') {
+        startSwitcher('physical');
       } else if (code === 'Comma') {
         tabs.swapTab(-1);
       } else if (code === 'Period') {
@@ -1277,13 +1384,14 @@
     }
 
     // Start t prefix
-    if (event.code === 'KeyT' && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
       event.preventDefault();
       event.stopPropagation();
       waitingForTabKey = true;
+      tHeld = true;
       layout.setKeyPrefix('t');
       if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
-      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000);
+      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; tHeld = false; layout.clearKeyPrefix(); }, 1000);
       return;
     }
 
@@ -1312,6 +1420,15 @@
       const homeDir = await invoke<string>('get_home_dir');
       fileSearchHomeDir = homeDir;
       showFileSearch = true;
+    }
+  }
+
+  function handleGlobalKeyup(event: KeyboardEvent) {
+    if (event.code === 'KeyT') {
+      tHeld = false;
+      if (switcherActive) {
+        commitSwitcher();
+      }
     }
   }
 
@@ -1724,7 +1841,13 @@
   }
 
   function handleWindowFocusChanged(focused: boolean) {
-    if (!focused || !windowReady) return;
+    if (!focused) {
+      // Window lost focus mid-switcher — commit to avoid a stuck preview state
+      if (switcherActive) commitSwitcher();
+      tHeld = false;
+      return;
+    }
+    if (!windowReady) return;
     if (isPanelFocused()) return;
     focusPanel($layout.activeColumn);
     showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
@@ -1770,7 +1893,7 @@
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
 <div class="app-layout" role="application" aria-label="Wind Panel Layout" onfocusin={handleAppFocusIn}>
 
-  <TabBar onSwitchTab={handleTabSwitch} />
+  <TabBar onSwitchTab={handleTabSwitch} switcherActive={switcherActive} switcherSelectionId={switcherSelectionId} />
 
   <div class="panel-layout" style="
     grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
