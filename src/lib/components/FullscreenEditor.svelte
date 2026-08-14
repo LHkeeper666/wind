@@ -428,8 +428,10 @@
             overlayVisible = true;
           }
           update.view.dom.classList.toggle('vim-visual', !!vimState.visualMode);
+          update.view.dom.classList.toggle('cm-insert-selecting', !!vimState.insertMode && !update.state.selection.main.empty);
         } else {
           update.view.dom.classList.remove('vim-visual');
+          update.view.dom.classList.remove('cm-insert-selecting');
         }
       }),
     ];

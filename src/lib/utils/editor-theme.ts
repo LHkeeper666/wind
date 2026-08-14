@@ -65,6 +65,8 @@ export const gruvboxTheme = EditorView.theme({
   '.cm-activeLine': { backgroundColor: 'var(--bg-secondary)' },
   '&.vim-visual .cm-activeLine': { backgroundColor: 'transparent' },
   '&.vim-visual .cm-activeLineGutter': { backgroundColor: 'transparent' },
+  '&.cm-insert-selecting .cm-activeLine': { backgroundColor: 'transparent' },
+  '&.cm-insert-selecting .cm-activeLineGutter': { backgroundColor: 'transparent' },
   '.cm-cursor': { borderLeftColor: 'var(--text-primary)' },
   '.cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
   '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--bg-active)' },
