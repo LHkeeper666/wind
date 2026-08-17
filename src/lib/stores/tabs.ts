@@ -24,6 +24,8 @@ export interface TabState {
   leftPath: string;
   leftCursorIndex: number;
   leftScrollOffset: number;
+  currentDirectoryVersion: number;
+  leftDirectoryVersion: number;
 }
 
 interface TabsState {
@@ -56,6 +58,8 @@ function getDefaultTab(id: number): TabState {
     leftPath: '',
     leftCursorIndex: 0,
     leftScrollOffset: 0,
+    currentDirectoryVersion: 0,
+    leftDirectoryVersion: 0,
   };
 }
 
@@ -197,6 +201,19 @@ function createTabsStore() {
         const newTabs = [...state.tabs];
         [newTabs[idx], newTabs[targetIdx]] = [newTabs[targetIdx], newTabs[idx]];
         return { ...state, tabs: newTabs };
+      });
+    },
+
+    setActivePanelDirectoryVersion(panel: 'current' | 'left', version: number) {
+      update(state => {
+        const index = state.tabs.findIndex(tab => tab.id === state.activeTabId);
+        if (index === -1) return state;
+        const tabs = [...state.tabs];
+        const tab = tabs[index];
+        tabs[index] = panel === 'current'
+          ? { ...tab, currentDirectoryVersion: version }
+          : { ...tab, leftDirectoryVersion: version };
+        return { ...state, tabs };
       });
     },
 

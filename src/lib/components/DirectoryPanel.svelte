@@ -9,6 +9,7 @@
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
   import { directoryCache } from '$lib/utils/directory-cache';
+  import { normalizeDirectoryKey, type DirectoryKey } from '$lib/utils/directory-refresh';
 
   interface FileEntry {
     name: string;
@@ -34,6 +35,8 @@
     onTabCommand = (cmd: string) => {},
     onToast = (message: string) => {},
     onBatchRenameStart = (_files: { path: string; name: string }[]) => {},
+    getDirectoryVersion = (_directory: DirectoryKey) => 0,
+    onDirectorySynchronized = (_directory: DirectoryKey, _version: number) => {},
   }: {
     type: 'parent' | 'current';
     path: string;
@@ -48,6 +51,8 @@
     onTabCommand?: (cmd: string) => void;
     onToast?: (message: string) => void;
     onBatchRenameStart?: (files: { path: string; name: string }[]) => void;
+    getDirectoryVersion?: (directory: DirectoryKey) => number;
+    onDirectorySynchronized?: (directory: DirectoryKey, version: number) => void;
   } = $props();
 
   let files: FileEntry[] = $state([]);
@@ -252,8 +257,16 @@
     }
   }
 
+  export function getDirectoryKey(): DirectoryKey {
+    return normalizeDirectoryKey(path);
+  }
+
   export function refresh() {
     return loadDirectory(path, true);
+  }
+
+  export function synchronize(version: number) {
+    return loadDirectory(path, false, version);
   }
 
   function handleFocus() {
@@ -360,7 +373,12 @@
 
   let loadingGen = 0;
 
-  async function loadDirectory(dirPath: string, forceRefresh: boolean = false) {
+  function markDirectorySynchronized(dirPath: string, version?: number) {
+    const directory = normalizeDirectoryKey(dirPath);
+    onDirectorySynchronized(directory, version ?? getDirectoryVersion(directory));
+  }
+
+  async function loadDirectory(dirPath: string, forceRefresh: boolean = false, version?: number): Promise<boolean> {
     const gen = ++loadingGen;
     isLoading = true;
     errorMessage = '';
@@ -378,11 +396,12 @@
       // Safety dedup
       const seen = new Set<string>();
       files = files.filter(f => { if (seen.has(f.path)) return false; seen.add(f.path); return true; });
-      if (gen !== loadingGen) return;
+      if (gen !== loadingGen) return false;
       selectInitialEntry();
       applyPendingRestore();
+      markDirectorySynchronized(dirPath, version);
       isLoading = false;
-      return;
+      return true;
     }
 
     try {
@@ -409,16 +428,19 @@
       });
 
       // Discard stale results from superseded concurrent calls
-      if (gen !== loadingGen) return;
+      if (gen !== loadingGen) return false;
 
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
       selectInitialEntry();
       applyPendingRestore();
+      markDirectorySynchronized(dirPath, version);
+      return true;
     } catch (error) {
-      if (gen !== loadingGen) return;
+      if (gen !== loadingGen) return false;
       console.error('Failed to load directory:', error);
       errorMessage = `Failed to load: ${error}`;
+      return false;
     } finally {
       if (gen === loadingGen) {
         isLoading = false;

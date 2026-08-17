@@ -1,4 +1,5 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+import type { DirectoryMutationOutcome, LegacyTransferTerminalEvent } from '$lib/utils/directory-refresh';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -100,6 +101,17 @@ interface EnqueueTask {
 function createTransferStore() {
   const { subscribe, set, update } = writable<TransferEntry[]>([]);
   let unlistens: (() => void)[] = [];
+  const terminalListeners = new Set<(event: LegacyTransferTerminalEvent, outcome: DirectoryMutationOutcome) => void>();
+
+  function notifyTerminal(payload: Record<string, unknown>, outcome: DirectoryMutationOutcome) {
+    const event: LegacyTransferTerminalEvent = {
+      batch_id: payload.batch_id as number,
+      op_type: payload.op_type as LegacyTransferTerminalEvent['op_type'],
+      source: payload.source as string,
+      destination: payload.destination as string,
+    };
+    terminalListeners.forEach(listener => listener(event, outcome));
+  }
 
   function init() {
     Promise.all([
@@ -150,6 +162,7 @@ function createTransferStore() {
           };
           return newEntries;
         });
+        notifyTerminal(p, 'completed');
       }),
 
       listen<Record<string, unknown>>('transfer-failed', (event) => {
@@ -161,6 +174,7 @@ function createTransferStore() {
           newEntries[idx] = { ...newEntries[idx], status: 'failed' as const, error: p.error as string };
           return newEntries;
         });
+        notifyTerminal(p, 'failed');
       }),
 
       listen<Record<string, unknown>>('transfer-cancelled', (event) => {
@@ -172,6 +186,7 @@ function createTransferStore() {
           newEntries[idx] = { ...newEntries[idx], status: 'cancelled' as const };
           return newEntries;
         });
+        notifyTerminal(p, 'cancelled');
       }),
 
       listen<Record<string, unknown>>('transfer-cancelled-batch', (event) => {
@@ -294,6 +309,18 @@ function createTransferStore() {
     }
   }
 
+  function onTerminal(listener: (event: LegacyTransferTerminalEvent, outcome: DirectoryMutationOutcome) => void) {
+    terminalListeners.add(listener);
+    return () => terminalListeners.delete(listener);
+  }
+
+  function isBatchSettled(batchId: number): boolean {
+    const entries = get({ subscribe }).filter(entry => entry.batchId === batchId);
+    return entries.length > 0 && entries.every(entry =>
+      entry.status === 'done' || entry.status === 'failed' || entry.status === 'cancelled'
+    );
+  }
+
   // Initialize listeners
   init();
 
@@ -307,6 +334,8 @@ function createTransferStore() {
     reorderTransfers,
     loadHistory,
     clearHistory,
+    onTerminal,
+    isBatchSettled,
     util: { shortPath, formatSize, formatSpeed, opTypeLabel },
   };
 }

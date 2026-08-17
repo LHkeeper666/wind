@@ -23,6 +23,12 @@
   import TransferManager from './TransferManager.svelte';
   import { transfer, activeTransferCount } from '$lib/stores/transfer';
   import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
+  import { directoryCache } from '$lib/utils/directory-cache';
+  import {
+    adaptLegacyTransferEvent,
+    DirectoryRefreshCoordinator,
+    type DirectoryKey,
+  } from '$lib/utils/directory-refresh';
 
   let currentPath: string = $state('');
   let leftPanelPath: string = $derived($layout.leftMode === 'manual' ? $layout.leftPath : $layout.parentPath);
@@ -41,6 +47,7 @@
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
+  let refreshCoordinator: DirectoryRefreshCoordinator | null = null;
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
 
@@ -308,7 +315,35 @@
       : commands
   );
 
+  function getDirectoryVersion(directory: DirectoryKey): number {
+    return refreshCoordinator?.getVersion(directory) ?? 0;
+  }
+
+  function handleDirectorySynchronized(panel: 'current' | 'left', _directory: DirectoryKey, version: number) {
+    tabs.setActivePanelDirectoryVersion(panel, version);
+  }
+
+  function getRefreshPanels() {
+    return [
+      currentDirectoryPanel ? {
+        getDirectoryKey: () => currentDirectoryPanel!.getDirectoryKey(),
+        getObservedVersion: () => $activeTab.currentDirectoryVersion,
+        synchronize: (version: number) => currentDirectoryPanel!.synchronize(version),
+      } : undefined,
+      parentDirectoryPanel ? {
+        getDirectoryKey: () => parentDirectoryPanel!.getDirectoryKey(),
+        getObservedVersion: () => $activeTab.leftDirectoryVersion,
+        synchronize: (version: number) => parentDirectoryPanel!.synchronize(version),
+      } : undefined,
+    ];
+  }
+
   onMount(async () => {
+    refreshCoordinator = new DirectoryRefreshCoordinator({
+      cache: directoryCache,
+      getActivePanels: getRefreshPanels,
+    });
+
     // Pre-load vim config so options are ready before first editor init
     vimOptions.preload();
 
@@ -344,15 +379,13 @@
       console.error('Failed to get home directory:', error);
     }
 
-    // Listen to file operation events to auto-refresh current directory
-    const refreshCurrentDir = () => {
-      currentDirectoryPanel?.refresh();
-    };
-    fileOpUnlistens.push(
-      await listen('transfer-complete', refreshCurrentDir),
-      await listen('transfer-cancelled', refreshCurrentDir),
-      await listen('transfer-failed', refreshCurrentDir),
-    );
+    fileOpUnlistens.push(transfer.onTerminal((event, outcome) => {
+      const mutation = adaptLegacyTransferEvent(event, outcome);
+      refreshCoordinator?.acceptMutation(mutation);
+      if (transfer.isBatchSettled(mutation.batchId)) {
+        refreshCoordinator?.settleBatch(mutation.batchId);
+      }
+    }));
 
     // Listen for transfer panel open requests from child components
     window.addEventListener('transfer:open', () => { showTransfer = true; });
@@ -362,6 +395,8 @@
 
   onDestroy(() => {
     fileOpUnlistens.forEach(fn => fn());
+    refreshCoordinator?.dispose();
+    refreshCoordinator = null;
     window.removeEventListener('keydown', handleGlobalKeydown, true);
     window.removeEventListener('keyup', handleGlobalKeyup, true);
     window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
@@ -601,15 +636,9 @@
     // Re-assert activeColumn — restoreTabState may have triggered reactive
     // effects that changed it (e.g. tab rename callback → layout subscription)
     layout.setActiveColumn(actualPanel);
-    // Refresh FTP panels on tab switch (may be stale after cross-tab operations)
-    if (tab.currentPath.startsWith('ftp://')) {
-      currentDirectoryPanel?.refresh();
-    }
-    if (tab.leftMode === 'manual' && tab.leftPath.startsWith('ftp://')) {
-      parentDirectoryPanel?.refresh();
-    }
-    // Apply DOM focus (async, after state is fully restored)
+    // Apply DOM focus after the panel paths and active tab state are restored.
     requestAnimationFrame(() => {
+      void refreshCoordinator?.synchronizeActivePanels();
       if (actualPanel === 'terminal' && floatingTerminal) {
         floatingTerminal.focus();
       } else if (actualPanel === 'parent' && parentDirectoryPanel) {
@@ -2124,6 +2153,8 @@
         onSwitchPanel={handleSwitchPanel}
         onTabCommand={handleTabCommand}
         onToast={showToast}
+        getDirectoryVersion={getDirectoryVersion}
+        onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('left', directory, version)}
       />
     </div>
 
@@ -2163,6 +2194,8 @@
         onTabCommand={handleTabCommand}
         onToast={showToast}
         onBatchRenameStart={handleBatchRenameStart}
+        getDirectoryVersion={getDirectoryVersion}
+        onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('current', directory, version)}
       />
     </div>
 

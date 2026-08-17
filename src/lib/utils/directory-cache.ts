@@ -1,3 +1,5 @@
+import { directoryKeyId, type DirectoryKey } from './directory-refresh';
+
 export interface DirCacheEntry {
   name: string;
   path: string;
@@ -8,5 +10,26 @@ export interface DirCacheEntry {
   created?: number | null;
 }
 
-/** Shared directory listing cache used by DirectoryPanel and DirectoryPreviewer */
-export const directoryCache: Map<string, DirCacheEntry[]> = new Map();
+class DirectoryCache extends Map<string, DirCacheEntry[]> {
+  override has(path: string): boolean {
+    return super.has(directoryKeyId(path));
+  }
+
+  override get(path: string): DirCacheEntry[] | undefined {
+    return super.get(directoryKeyId(path));
+  }
+
+  override set(path: string, entries: DirCacheEntry[]): this {
+    return super.set(directoryKeyId(path), entries);
+  }
+
+  override delete(path: string): boolean {
+    return super.delete(directoryKeyId(path));
+  }
+
+  invalidate(directory: DirectoryKey): void {
+    super.delete(directoryKeyId(directory));
+  }
+}
+
+export const directoryCache = new DirectoryCache();
