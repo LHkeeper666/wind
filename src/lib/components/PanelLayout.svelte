@@ -567,23 +567,17 @@
     if (switcherTimeout) { clearTimeout(switcherTimeout); switcherTimeout = null; }
     const selectionId = switcherSelectionId;
     const originId = switcherOriginTabId;
+    // Commit the active tab before clearing switcher state. PreviewEditor is
+    // already rendering into selectionId's slot, so no delayed reload is
+    // needed (and a reload can race an in-flight Markdown render).
+    if (selectionId !== originId && selectionId >= 0) {
+      tabs.switchTab(selectionId);
+    }
     switcherActive = false;
     switcherSelectionId = -1;
     switcherOriginTabId = -1;
     switcherMruIds = [];
     switcherPhysicalIds = [];
-    if (selectionId !== originId && selectionId >= 0) {
-      tabs.switchTab(selectionId);
-      // The preview phase loaded selection with the origin's currentTabId, so
-      // its editor cursor/scroll were never restored from cache. Reload after
-      // the activeTabId prop has propagated so loadFile reads the right cache.
-      setTimeout(() => previewEditor?.reloadFile(), 0);
-    }
-    // selectionId === originId is a no-op: the last moveSwitcherIn already
-    // restored origin's content (it called restoreTabContent + loadFile with
-    // the correct currentTabId). Do NOT call restoreTabContent again here —
-    // its deactivateTab would flip mode to global-normal while selectedFile is
-    // unchanged, so loadFile never fires and code files get stuck in preview.
   }
 
   function handleTabSwitchByIndex(index: number) {
@@ -2226,6 +2220,7 @@
         bind:this={previewEditor}
         filePath={selectedFile}
         currentTabId={$activeTab.id}
+        previewTabId={switcherActive ? switcherSelectionId : $activeTab.id}
         activeColumn={$layout.activeColumn}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}

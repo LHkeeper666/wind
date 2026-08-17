@@ -106,6 +106,7 @@
   let {
     filePath = null,
     currentTabId = 0,
+    previewTabId = undefined,
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
@@ -118,6 +119,7 @@
   }: {
     filePath: string | null;
     currentTabId?: number;
+    previewTabId?: number;
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
@@ -128,6 +130,10 @@
     onBatchRenameCancel?: () => void;
     activeColumn?: string;
   } = $props();
+
+  // During t+n/t+p the selected tab is previewed before activeTabId commits.
+  // Keep preview state keyed by that target tab instead of the origin tab.
+  let renderTabId = $derived(previewTabId ?? currentTabId);
 
   let content: string = $state('');
   let savedContent: string = $state('');
@@ -156,6 +162,7 @@
   );
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
+  const tabRenderVersions = new Map<number, number>();
   let loadGeneration: number = 0;
   let waitingForTabKey: boolean = false;
 
@@ -235,7 +242,7 @@
   const tabSlots = new Map<number, HTMLDivElement>();
 
   function getActiveSlot(): HTMLDivElement | undefined {
-    return tabSlots.get(currentTabId);
+    return tabSlots.get(renderTabId);
   }
 
   function getOrCreateSlot(tabId: number): HTMLDivElement {
@@ -261,10 +268,12 @@
     }
   }
 
-  let isRendering: boolean = false;
+  let renderInFlight: boolean = false;
+  let renderQueued: boolean = false;
 
   export function clearTabCache(tabId: number) {
     tabEditorCache.delete(tabId);
+    tabRenderVersions.delete(tabId);
     const slot = tabSlots.get(tabId);
     if (slot) {
       slot.remove();
@@ -279,7 +288,7 @@
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
-      previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
+      previewScrollTop: tabSlots.get(tabId)?.scrollTop ?? 0,
       isModified, pdfCurrentPage, pdfPageCount, fileMtime: currentFileMtime,
       tocOpen, tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
@@ -309,21 +318,6 @@
     };
   }
 
-  export function reloadFile() {
-    if (!filePath) return;
-    const prevMode = mode;
-    loadFile(filePath);
-    // loadFile's cache-hit branch destroys editorView and restores mode from
-    // cache. When the preview phase already left mode at editor-normal, mode
-    // does NOT change, so the mode $effect won't fire initEditor. Rebuild the
-    // editor directly here (restores cursor from pendingEditorPos) without
-    // flipping mode to global-normal, which would trigger the code-preview
-    // render and flash the wrong UI.
-    if ((mode === 'editor-normal' || mode === 'editor-insert') && mode === prevMode && !editorView) {
-      initEditor();
-    }
-  }
-
   function startWatching(path: string) {
     stopWatching();
     invoke('start_watch_file', { path }).catch(e => console.error('[PreviewEditor] start_watch_file error:', e));
@@ -339,8 +333,8 @@
     const b = filePath.replace(/\//g, '\\').toLowerCase();
     if (a !== b) return;
     if (mode !== 'global-normal') return;
-    tabEditorCache.delete(currentTabId);
-    const slot = tabSlots.get(currentTabId);
+    tabEditorCache.delete(renderTabId);
+    const slot = tabSlots.get(renderTabId);
     if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
     await loadFile(filePath);
   }
@@ -358,9 +352,9 @@
     }
   });
 
-  // When tab changes, ensure only the active tab's slot is visible
+  // When the active/preview tab changes, ensure only that tab's slot is visible
   $effect(() => {
-    showTabSlot(currentTabId);
+    showTabSlot(renderTabId);
   });
 
   // Re-focus overlay after mouse selection (mouseup may fire outside editor panel)
@@ -388,13 +382,14 @@
   });
 
   // Load file when filePath changes
-  let _prevFilePath: string | null = null;
+  let _prevLoadKey: string | null = null;
   $effect(() => {
-    if (filePath === _prevFilePath) return;
-    _prevFilePath = filePath;
+    const loadKey = filePath ? `${renderTabId}:${filePath}` : null;
+    if (loadKey === _prevLoadKey) return;
+    _prevLoadKey = loadKey;
     if (filePath) {
-      getOrCreateSlot(currentTabId);
-      showTabSlot(currentTabId);
+      getOrCreateSlot(renderTabId);
+      showTabSlot(renderTabId);
       loadFile(filePath);
     }
   });
@@ -493,8 +488,8 @@
   });
 
   function renderSimpleCodePreview() {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
     if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath) return;
     slot.innerHTML = '';
     slot.dataset.filePath = filePath || '';
@@ -651,7 +646,8 @@
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
-    const cached = tabEditorCache.get(currentTabId);
+    const loadTabId = renderTabId;
+    const cached = tabEditorCache.get(loadTabId);
     if (cached && cached.filePath === path) {
       if (gen !== loadGeneration) return;
       content = cached.content;
@@ -686,7 +682,7 @@
       }
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabEditorCache.delete(currentTabId); loadFile(path); } })
+        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabEditorCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
         .catch(() => {});
       return;
     }
@@ -856,69 +852,104 @@
     startWatching(path);
   }
 
+  function requestTabRender(tabId: number): number {
+    const version = (tabRenderVersions.get(tabId) ?? 0) + 1;
+    tabRenderVersions.set(tabId, version);
+    return version;
+  }
+
+  function isCurrentTabRender(tabId: number, path: string, version: number): boolean {
+    return renderTabId === tabId
+      && filePath === path
+      && tabRenderVersions.get(tabId) === version;
+  }
+
   async function renderPreview() {
     if (!previewArea || !filePath) return;
-    if (isRendering) return;
-    isRendering = true;
-    try {
-      const slot = getOrCreateSlot(currentTabId);
-      showTabSlot(currentTabId);
+    requestTabRender(renderTabId);
 
-      // Skip if slot already holds fresh render of the same file
-      if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath
-          && slot.dataset.fileMtime === String(currentFileMtime)) {
-        // Scroll position is already preserved since the slot DOM hasn't
-        // changed — avoid setting scrollTop which forces a full layout pass
-        // (~400ms on large DOMs like markdown with many KaTeX formulas).
-        pendingRestoreScrollTop = -1;
-        if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
-        if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
-          requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
-        }
-        return;
-      }
-
-      slot.innerHTML = '';
-      slot.dataset.filePath = filePath;
-
-      const requestId = ++renderRequestId;
-      if (thumbnailMeta) {
-        slot.dataset.thumbWidth = String(thumbnailMeta.width);
-        slot.dataset.thumbHeight = String(thumbnailMeta.height);
-        slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
-        slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
-      } else {
-        delete slot.dataset.thumbWidth; delete slot.dataset.thumbHeight;
-        delete slot.dataset.thumbOriginalSize; delete slot.dataset.thumbIsThumbnail;
-      }
-      if (originalFileSize > 0) { slot.dataset.originalFileSize = String(originalFileSize); }
-      else { delete slot.dataset.originalFileSize; }
-
-      const previewContent: string | ArrayBuffer = binaryContent ?? content;
-      await getPreviewRouter().preview(filePath, previewContent, slot);
-      if (requestId !== renderRequestId) return;
-
-      slot.dataset.rendered = 'true';
-      slot.dataset.fileMtime = String(currentFileMtime);
-
-      const savedScroll2 = pendingRestoreScrollTop;
-      pendingRestoreScrollTop = -1;
-      if (savedScroll2 >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll2; }); }
-      if (pendingTocExpanded && tocHeadings.length > 0) {
-        restoreExpandedLines(tocHeadings, pendingTocExpanded);
-        pendingTocExpanded = null; tocHeadings = [...tocHeadings];
-      }
-      if (tocFocused && tocOpen) {
-        requestAnimationFrame(() => {
-          if (pendingTocSelectedIndex >= 0) { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; }
-          tocSidebar?.focus();
-        });
-      }
-      if (isPdfFile(filePath) && pdfPageCount > 0) { addPdfInfoBar(slot); }
-      if (isMarkdown) { setupScrollObserver(); }
-    } finally {
-      isRendering = false;
+    // PreviewRouter and MarkdownPreviewer keep instance-local mutable state.
+    // Serialize work instead of dropping a render while another tab is pending;
+    // the queue always renders the newest tab/file context next.
+    if (renderInFlight) {
+      renderQueued = true;
+      return;
     }
+
+    renderInFlight = true;
+    try {
+      do {
+        renderQueued = false;
+        await renderPreviewOnce();
+      } while (renderQueued);
+    } finally {
+      renderInFlight = false;
+      // A render request may arrive between the loop condition and finally.
+      if (renderQueued) {
+        renderQueued = false;
+        void renderPreview();
+      }
+    }
+  }
+
+  async function renderPreviewOnce() {
+    if (!previewArea || !filePath) return;
+
+    const tabId = renderTabId;
+    const path = filePath;
+    const tabVersion = tabRenderVersions.get(tabId) ?? requestTabRender(tabId);
+    const slot = getOrCreateSlot(tabId);
+    showTabSlot(tabId);
+
+    // Skip if this tab's slot already holds a fresh render of the same file.
+    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === path
+        && slot.dataset.fileMtime === String(currentFileMtime)) {
+      pendingRestoreScrollTop = -1;
+      if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
+      if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
+        requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
+      }
+      return;
+    }
+
+    slot.innerHTML = '';
+    slot.dataset.filePath = path;
+
+    const requestId = ++renderRequestId;
+    if (thumbnailMeta) {
+      slot.dataset.thumbWidth = String(thumbnailMeta.width);
+      slot.dataset.thumbHeight = String(thumbnailMeta.height);
+      slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
+      slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
+    } else {
+      delete slot.dataset.thumbWidth; delete slot.dataset.thumbHeight;
+      delete slot.dataset.thumbOriginalSize; delete slot.dataset.thumbIsThumbnail;
+    }
+    if (originalFileSize > 0) { slot.dataset.originalFileSize = String(originalFileSize); }
+    else { delete slot.dataset.originalFileSize; }
+
+    const previewContent: string | ArrayBuffer = binaryContent ?? content;
+    await getPreviewRouter().preview(path, previewContent, slot);
+    if (requestId !== renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) return;
+
+    slot.dataset.rendered = 'true';
+    slot.dataset.fileMtime = String(currentFileMtime);
+
+    const savedScroll2 = pendingRestoreScrollTop;
+    pendingRestoreScrollTop = -1;
+    if (savedScroll2 >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll2; }); }
+    if (pendingTocExpanded && tocHeadings.length > 0) {
+      restoreExpandedLines(tocHeadings, pendingTocExpanded);
+      pendingTocExpanded = null; tocHeadings = [...tocHeadings];
+    }
+    if (tocFocused && tocOpen) {
+      requestAnimationFrame(() => {
+        if (pendingTocSelectedIndex >= 0) { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; }
+        tocSidebar?.focus();
+      });
+    }
+    if (isPdfFile(path) && pdfPageCount > 0) { addPdfInfoBar(slot); }
+    if (isMarkdown) { setupScrollObserver(); }
   }
 
   function scrollPreview(deltaY: number, deltaX: number = 0) {
@@ -991,8 +1022,8 @@
   }
 
   async function renderDirectoryPreview() {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
     if (!filePath) return;
     const requestId = ++renderRequestId;
     const previewer = getDirectoryPreviewer();
@@ -1002,8 +1033,8 @@
   }
 
   async function renderArchivePreview(path: string) {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
     const requestId = ++renderRequestId;
     slot.dataset.filePath = path;
     await getPreviewRouter().preview(path, '', slot);
@@ -1517,7 +1548,7 @@
       // falsely invalidate cached content on tab switch
       const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
       currentFileMtime = meta.modified;
-      const cached = tabEditorCache.get(currentTabId);
+      const cached = tabEditorCache.get(renderTabId);
       if (cached && cached.filePath === filePath) {
         cached.content = content;
         cached.savedContent = savedContent;
