@@ -35,15 +35,16 @@ The system SHALL allow users to resize the Transfer Manager panel via a drag han
 - **AND** the height is remembered for the session
 
 ### Requirement: Transfer progress display
-The system SHALL display each transfer operation with source, destination, progress, and status.
+The system SHALL display each transfer operation with source, destination, progress, status, speed, and estimated time remaining (ETA).
 
 #### Scenario: Running transfer shows progress bar
 - **WHEN** a transfer is in the "running" state
-- **THEN** the panel displays: drag handle, direction icon, source → destination, percentage, mini progress bar, bytes done/total, speed, and cancel button on a single line
+- **THEN** the panel displays: drag handle, direction icon, source → destination, percentage, mini progress bar, bytes done/total, speed, estimated time remaining (ETA), and cancel button on a single line
 
 #### Scenario: Queued transfer shows file size
 - **WHEN** a transfer is in the "queued" state
 - **THEN** the panel displays: drag handle, waiting icon, source → destination, file size, and "queued" label
+- **AND** for a local directory copy/move, the file size reflects the recursive total size of the directory contents
 
 #### Scenario: Completed transfer shows compact single line
 - **WHEN** a transfer completes successfully
@@ -53,6 +54,21 @@ The system SHALL display each transfer operation with source, destination, progr
 - **WHEN** a transfer fails
 - **THEN** the panel displays: cross icon, source → destination, and error message on a single line
 - **AND** hovering over the error shows the full error detail in a tooltip
+
+### Requirement: Estimated time remaining (ETA)
+The system SHALL compute and display an estimated time remaining for running transfers.
+
+#### Scenario: ETA shown when speed available
+- **WHEN** a transfer is running with a known total size and a measurable transfer speed
+- **THEN** the panel displays an estimated time remaining based on remaining bytes divided by a rolling-average speed
+
+#### Scenario: ETA hidden when speed unavailable
+- **WHEN** a transfer is running but the measured speed is zero or the total size is unknown
+- **THEN** no ETA is displayed
+
+#### Scenario: ETA for local transfers
+- **WHEN** a local copy, move, or delete is running
+- **THEN** the ETA is computed from frontend-observed progress, regardless of backend-emitted speed
 
 ### Requirement: Batch grouping with dividers
 The system SHALL group transfers by batch using divider lines, with the most recent batch at the bottom.
@@ -66,7 +82,7 @@ The system SHALL group transfers by batch using divider lines, with the most rec
 - **THEN** a divider line shows "Now" with operation type and progress summary (e.g., "Uploading (2/5 done)")
 
 ### Requirement: Transfer cancellation
-The system SHALL allow users to cancel queued and running transfers individually.
+The system SHALL allow users to cancel transfers individually, and to cancel all queued and running transfers atomically via a single backend call.
 
 #### Scenario: Cancel running transfer via button
 - **WHEN** user clicks the cancel button on a running transfer
@@ -76,9 +92,81 @@ The system SHALL allow users to cancel queued and running transfers individually
 - **WHEN** user selects a queued transfer and presses `c`
 - **THEN** the transfer is removed from the queue with "cancelled" status
 
-#### Scenario: Cancel all transfers
+#### Scenario: Cancel all transfers atomically
 - **WHEN** user clicks "Cancel All" in the Transfer Manager header
-- **THEN** all queued transfers are cancelled immediately and running transfers are requested to cancel
+- **THEN** the UI invokes a single backend cancel-all command
+- **AND** all queued transfers are removed and marked cancelled without being dispatched or promoted to running
+- **AND** all running transfers have their cancel flag set
+- **AND** the panel updates once rather than once per cancelled transfer
+
+### Requirement: Transfer conflict detection
+The system SHALL detect filename conflicts (files only, not directories) before copying or moving directories, and before FTP uploads/downloads, so that existing destination files are not silently overwritten. Directories always merge into existing directories or are created if absent.
+
+#### Scenario: Local directory copy detects internal conflicts
+- **WHEN** user pastes (copies/moves) a directory into a target directory that already contains a file with the same name inside it
+- **THEN** the system detects the conflicting files by comparing the directory trees
+- **AND** presents a summary confirmation (overwrite / skip / abort) before transferring
+
+#### Scenario: Directories merge without conflict
+- **WHEN** user copies/moves a directory into a target that already contains a same-named directory but no same-named files inside it
+- **THEN** the system merges into the existing directory without prompting a conflict
+- **AND** only file-name collisions inside trigger conflict prompts
+
+#### Scenario: Skip conflicts still copies non-conflicting files
+- **WHEN** user chooses "skip" on a directory with internal conflicts
+- **THEN** the system copies only the non-conflicting files and skips the conflicting files, preserving existing destination files
+
+#### Scenario: Force paste skips conflict confirmation
+- **WHEN** user presses `P` (shift+p) to force paste
+- **THEN** the transfer proceeds without conflict confirmation and overwrites existing files
+
+#### Scenario: FTP upload detects remote conflicts
+- **WHEN** user uploads a file or directory to an FTP target that already contains a same-named entry
+- **THEN** the system lists the remote target directory and detects the conflict
+- **AND** presents a confirmation before overwriting
+
+#### Scenario: FTP download detects local conflicts
+- **WHEN** user downloads a file or directory from FTP to a local target that already contains a same-named entry
+- **THEN** the system detects the conflict via local file existence and presents a confirmation
+
+### Requirement: Cancel cleanup for partial directory transfers
+The system SHALL clean up partially transferred content when a directory copy/move is cancelled.
+
+#### Scenario: Cancel directory copy to new target rolls back
+- **WHEN** user cancels a directory copy/move whose target directory did not exist before the transfer
+- **THEN** the system removes the entire target directory, including all partially copied files and created subdirectories
+
+#### Scenario: Cancel directory copy over existing target removes only new files
+- **WHEN** user cancels a directory copy/move whose target directory already existed before the transfer
+- **THEN** the system removes only the files written by this transfer, preserving pre-existing destination content
+
+### Requirement: Streaming conflict resolution
+The system SHALL detect directory copy/move conflicts incrementally during a background scan, prompt the user on each conflict as it is found, and support applying a choice to all remaining conflicts.
+
+#### Scenario: Prompt on first conflict without waiting for full scan
+- **WHEN** user pastes (copies/moves) a directory into a target with conflicting files
+- **THEN** the system scans in the background and prompts the user as soon as the first conflict is found
+- **AND** the user does not have to wait for the entire directory tree to be scanned
+
+#### Scenario: Apply to all conflicts
+- **WHEN** user chooses "overwrite all" or "skip all" on a conflict prompt
+- **THEN** the system applies that choice to all remaining conflicts without prompting again
+
+#### Scenario: Apply to current file only
+- **WHEN** user chooses "overwrite" or "skip" (without "all") on a conflict prompt
+- **THEN** the system applies the choice only to the current file and prompts for the next conflict
+
+#### Scenario: Skip conflicts still copies non-conflicting files
+- **WHEN** user skips conflicting files during a directory copy/move
+- **THEN** the system copies the non-conflicting files and skips the conflicting ones, reusing the existing skip list mechanism
+
+#### Scenario: FTP transfers use streaming conflict prompts
+- **WHEN** user pastes into or from an FTP target with conflicting files (upload or download)
+- **THEN** the system scans and prompts on each conflict incrementally, with the same apply-to-all behavior as local transfers
+
+#### Scenario: Loading indicator during conflict scan
+- **WHEN** user presses paste and the system starts scanning for conflicts
+- **THEN** the system shows a loading indicator ("checking conflicts…") until the scan completes and the transfer begins
 
 ### Requirement: Transfer retry
 The system SHALL allow users to retry failed transfers.
