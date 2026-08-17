@@ -136,11 +136,7 @@
   }
 
   async function cancelAll() {
-    for (const entry of entries) {
-      if (entry.status === 'queued' || entry.status === 'running') {
-        await transfer.cancelTransfer(entry.id);
-      }
-    }
+    await transfer.cancelAllTransfers();
   }
 
   function scrollToBottom() {
@@ -313,6 +309,9 @@
                 <span class="size-text">{transfer.util.formatSize(entry.bytesDone)}/{transfer.util.formatSize(entry.totalBytes)}</span>
                 {#if entry.speedBps > 0}
                   <span class="speed-text">{transfer.util.formatSpeed(entry.speedBps)}</span>
+                {/if}
+                {#if entry.etaSecs && entry.etaSecs > 0}
+                  <span class="eta-text">ETA {formatElapsed(entry.etaSecs * 1000)}</span>
                 {/if}
               {:else if entry.status === 'queued'}
                 <span class="size-text">{transfer.util.formatSize(entry.totalBytes)}</span>
@@ -586,6 +585,14 @@
     color: var(--text-muted);
     font-size: 11px;
     width: 70px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .eta-text {
+    color: var(--text-muted);
+    font-size: 11px;
+    width: 80px;
     text-align: right;
     flex-shrink: 0;
   }

@@ -807,6 +807,234 @@ async fn transfer_cancel(
 }
 
 #[tauri::command]
+async fn transfer_cancel_all(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    Ok(scheduler.cancel_all())
+}
+
+#[tauri::command]
+async fn check_transfer_conflicts(
+    tasks: Vec<transfer::EnqueueTask>,
+) -> Result<Vec<String>, String> {
+    Ok(transfer::check_transfer_conflicts(&tasks))
+}
+
+#[tauri::command]
+async fn scan_transfer_conflicts(
+    tasks: Vec<transfer::EnqueueTask>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        for task in &tasks {
+            if task.op_type != transfer::TransferType::Copy && task.op_type != transfer::TransferType::Move {
+                continue;
+            }
+            let src = std::path::Path::new(&task.source);
+            let dst = std::path::Path::new(&task.destination);
+            if src.is_dir() {
+                transfer::scan_dir_conflicts(src, dst, src, &app);
+            }
+        }
+        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_ftp_upload_conflicts(
+    conn_name: String,
+    sources: Vec<String>,
+    remote_dir: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.create_independent(&conn_name).await
+        .map_err(|e| format!("Failed to create FTP session for conflict check: {e}"))?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir).await
+        .map_err(|e| format!("Failed to list remote directory: {e}"))?;
+    let _ = ftp.client.quit().await;
+    drop(ftp);
+
+    use std::collections::HashSet;
+    let remote_base = remote_dir.trim_end_matches('/');
+    let mut remote_names: HashSet<String> = HashSet::new();
+    for (remote_full, _size, _is_dir) in &remote_entries {
+        let rel = remote_full.strip_prefix(remote_base)
+            .unwrap_or(remote_full)
+            .trim_start_matches('/');
+        remote_names.insert(rel.to_string());
+    }
+
+    let mut conflicts = Vec::new();
+    for src in &sources {
+        let path = std::path::Path::new(src);
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if !path.is_dir() {
+            // Only files conflict at the top level; directories always merge into
+            // an existing directory (or get created if absent).
+            if remote_names.contains(&name) {
+                conflicts.push(name.clone());
+            }
+        }
+        if path.is_dir() {
+            let mut local: Vec<(String, u64, bool)> = Vec::new();
+            let _ = transfer::walk_local_dir(&path.to_path_buf(), path, &mut local);
+            for (full, _size, is_dir) in &local {
+                if *is_dir { continue; } // only files conflict inside a directory
+                let rel = full.strip_prefix(&path.to_string_lossy().to_string())
+                    .map(|p| p.trim_start_matches('\\').trim_start_matches('/').to_string())
+                    .unwrap_or_default();
+                if rel.is_empty() { continue; }
+                let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
+                if remote_names.contains(&remote_rel) {
+                    conflicts.push(remote_rel);
+                }
+            }
+        }
+    }
+    Ok(conflicts)
+}
+
+#[tauri::command]
+async fn scan_ftp_upload_conflicts(
+    conn_name: String,
+    sources: Vec<String>,
+    remote_dir: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.create_independent(&conn_name).await
+        .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir).await
+        .map_err(|e| format!("Failed to list remote directory: {e}"))?;
+    let _ = ftp.client.quit().await;
+    drop(ftp);
+
+    use std::collections::HashSet;
+    let remote_base = remote_dir.trim_end_matches('/').to_string();
+    let mut remote_names: HashSet<String> = HashSet::new();
+    for (remote_full, _size, _is_dir) in &remote_entries {
+        let rel = remote_full.strip_prefix(&remote_base)
+            .unwrap_or(remote_full)
+            .trim_start_matches('/');
+        remote_names.insert(rel.to_string());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        for src in &sources {
+            let path = std::path::Path::new(src);
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if !path.is_dir() {
+                if remote_names.contains(&name) {
+                    let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                        "kind": "file",
+                        "dir_source": "",
+                        "rel_path": name,
+                        "source": src,
+                        "destination": format!("ftp://{conn_name}{remote_base}/{name}"),
+                    }));
+                }
+            } else {
+                let mut local: Vec<(String, u64, bool)> = Vec::new();
+                let _ = transfer::walk_local_dir(&path.to_path_buf(), path, &mut local);
+                for (full, _size, is_dir) in &local {
+                    if *is_dir { continue; }
+                    let rel = full.strip_prefix(&path.to_string_lossy().to_string())
+                        .map(|p| p.trim_start_matches('\\').trim_start_matches('/').to_string())
+                        .unwrap_or_default();
+                    if rel.is_empty() { continue; }
+                    let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
+                    if remote_names.contains(&remote_rel) {
+                        let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                            "kind": "dir",
+                            "dir_source": src,
+                            "rel_path": rel.replace('\\', "/"),
+                            "source": full,
+                            "destination": format!("ftp://{conn_name}{remote_base}/{remote_rel}"),
+                        }));
+                    }
+                }
+            }
+        }
+        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn scan_ftp_download_conflicts(
+    conn_name: String,
+    files: Vec<String>,
+    dirs: Vec<String>,
+    local_dir: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mgr = state.ftp_manager.lock().await;
+    let session = mgr.create_independent(&conn_name).await
+        .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
+    drop(mgr);
+
+    let mut ftp = session.lock().await;
+    let mut dir_trees: Vec<(String, Vec<(String, u64, bool)>)> = Vec::new();
+    for dir in &dirs {
+        let remote_path = parse_ftp_url(dir).map(|(_, p)| p.to_string()).unwrap_or_default();
+        let entries = ftp::list_dir_recursive(&mut ftp.client, &remote_path).await
+            .map_err(|e| format!("Failed to list remote directory {dir}: {e}"))?;
+        dir_trees.push((dir.clone(), entries));
+    }
+    let _ = ftp.client.quit().await;
+    drop(ftp);
+
+    tokio::task::spawn_blocking(move || {
+        for f in &files {
+            let name = f.rsplit('/').next().unwrap_or(f.as_str());
+            let local = std::path::Path::new(&local_dir).join(name);
+            if local.exists() {
+                let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                    "kind": "file",
+                    "dir_source": "",
+                    "rel_path": name,
+                    "source": f,
+                    "destination": local.to_string_lossy(),
+                }));
+            }
+        }
+        for (dir, entries) in &dir_trees {
+            let dir_name = dir.rsplit('/').next().unwrap_or(dir.as_str());
+            let remote_base = parse_ftp_url(dir).map(|(_, p)| p.to_string()).unwrap_or_default();
+            for (remote_full, _size, is_dir) in entries {
+                if *is_dir { continue; }
+                let rel = remote_full.strip_prefix(&remote_base)
+                    .unwrap_or(remote_full)
+                    .trim_start_matches('/');
+                let local = std::path::Path::new(&local_dir).join(dir_name).join(rel.replace('/', "\\"));
+                if local.exists() {
+                    let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                        "kind": "dir",
+                        "dir_source": dir,
+                        "rel_path": rel,
+                        "source": remote_full,
+                        "destination": local.to_string_lossy(),
+                    }));
+                }
+            }
+        }
+        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+    });
+    Ok(())
+}
+
+#[tauri::command]
 async fn transfer_reorder(
     ids: Vec<u64>,
     state: State<'_, AppState>,
@@ -2156,9 +2384,10 @@ async fn ftp_download_folder(
     remote_path: String,
     local_path: String,
     move_mode: bool,
+    skip_rel_paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    eprintln!("[FTP] command ftp_download_folder: conn={conn_name} remote={remote_path} → local={local_path} move={move_mode}");
+    eprintln!("[FTP] command ftp_download_folder: conn={conn_name} remote={remote_path} → local={local_path} move={move_mode} skip={}", skip_rel_paths.len());
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
     let (total_bytes, ids) = scheduler.enqueue_ftp_folder_download(
@@ -2167,6 +2396,7 @@ async fn ftp_download_folder(
         &remote_path,
         &local_path,
         move_mode,
+        skip_rel_paths,
     ).await?;
     Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
 }
@@ -2177,9 +2407,10 @@ async fn ftp_upload_folder(
     local_path: String,
     remote_path: String,
     move_mode: bool,
+    skip_rel_paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    eprintln!("[FTP] command ftp_upload_folder: local={local_path} → conn={conn_name} remote={remote_path} move={move_mode}");
+    eprintln!("[FTP] command ftp_upload_folder: local={local_path} → conn={conn_name} remote={remote_path} move={move_mode} skip={}", skip_rel_paths.len());
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
     let (total_bytes, ids) = scheduler.enqueue_ftp_folder_upload(
@@ -2188,6 +2419,7 @@ async fn ftp_upload_folder(
         &local_path,
         &remote_path,
         move_mode,
+        skip_rel_paths,
     ).await?;
     Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
 }
@@ -2324,6 +2556,12 @@ pub fn run() {
             check_copy_conflicts,
             transfer_enqueue,
             transfer_cancel,
+            transfer_cancel_all,
+            check_transfer_conflicts,
+            check_ftp_upload_conflicts,
+            scan_transfer_conflicts,
+            scan_ftp_upload_conflicts,
+            scan_ftp_download_conflicts,
             transfer_reorder,
             transfer_get_history,
             transfer_clear_history,

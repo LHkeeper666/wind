@@ -48,6 +48,8 @@ pub struct TransferTask {
     pub conn_name: Option<String>,
     #[serde(skip)]
     pub cancel_flag: Option<Arc<AtomicBool>>,
+    #[serde(skip)]
+    pub skip_rel_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,8 @@ pub struct EnqueueTask {
     pub destination: String,
     pub total_bytes: u64,
     pub conn_name: Option<String>,
+    #[serde(default)]
+    pub skip_rel_paths: Vec<String>,
 }
 
 struct ActiveTask {
@@ -156,6 +160,8 @@ impl TransferScheduler {
                         let path = Path::new(&task.source);
                         if path.is_file() {
                             path.metadata().map(|m| m.len()).unwrap_or(0)
+                        } else if path.is_dir() {
+                            dir_size(path)
                         } else {
                             0
                         }
@@ -173,6 +179,7 @@ impl TransferScheduler {
                 bytes_done: 0,
                 conn_name: task.conn_name.clone(),
                 cancel_flag: None,
+                skip_rel_paths: task.skip_rel_paths.clone(),
             };
             // Emit queued event so frontend creates the entry immediately
             let _ = self.app.emit("transfer-progress", serde_json::json!({
@@ -208,7 +215,6 @@ impl TransferScheduler {
                 status: TaskStatus::Cancelled, error_message: None,
                 started_at: 0, completed_at: now_secs(), avg_speed_bps: None,
             });
-            self.free_slot_direct(op_type, &task.source, &task.destination);
             self.dispatch_pending(sched);
             return true;
         }
@@ -223,6 +229,40 @@ impl TransferScheduler {
         }
 
         false
+    }
+
+    pub fn cancel_all(&mut self) -> usize {
+        let mut cancelled_ids: Vec<u64> = Vec::new();
+
+        // Cancel queued tasks directly — they never took a slot, so no
+        // free_slot_direct and no dispatch (which would otherwise promote
+        // the next queued task into running just to be cancelled).
+        while let Some(task) = self.queue.pop_front() {
+            let op_type = task.op_type;
+            let source = task.source.clone();
+            let dest = task.destination.clone();
+            cancelled_ids.push(task.id);
+            self.save_to_history(&TransferHistoryRecord {
+                id: task.id, batch_id: task.batch_id, transfer_type: op_type,
+                source, destination: dest,
+                total_bytes: task.total_bytes, bytes_transferred: 0,
+                status: TaskStatus::Cancelled, error_message: None,
+                started_at: 0, completed_at: now_secs(), avg_speed_bps: None,
+            });
+        }
+
+        // Cancel active tasks by setting their flag; workers clean up their own slots.
+        for (id, active) in &self.active {
+            active.cancel_flag.store(true, Ordering::Relaxed);
+            cancelled_ids.push(*id);
+        }
+
+        // Emit a single batch event so the frontend re-renders once.
+        let _ = self.app.emit("transfer-cancelled-batch", serde_json::json!({
+            "ids": cancelled_ids,
+        }));
+
+        cancelled_ids.len()
     }
 
     pub fn reorder(&mut self, ids: Vec<u64>) {
@@ -457,6 +497,7 @@ impl TransferScheduler {
         remote_dir_path: &str,
         local_target_dir: &str,
         move_mode: bool,
+        skip_rel_paths: Vec<String>,
     ) -> Result<(u64, Vec<u64>), String> {
         eprintln!("[transfer] enqueue_ftp_folder_download: conn={conn_name} remote={remote_dir_path} → local={local_target_dir}");
 
@@ -480,6 +521,7 @@ impl TransferScheduler {
         let remote_base = remote_dir_path.trim_end_matches('/');
         let local_base = Path::new(local_target_dir);
 
+        let skip_set: std::collections::HashSet<String> = skip_rel_paths.iter().cloned().collect();
         let mut total_bytes: u64 = 0;
         let mut file_paths: Vec<(String, String, u64)> = Vec::new(); // (remote_path, local_path, size)
 
@@ -492,7 +534,7 @@ impl TransferScheduler {
             if *is_dir {
                 fs::create_dir_all(&local_full)
                     .map_err(|e| format!("Failed to create local directory '{}': {}", local_full.display(), e))?;
-            } else {
+            } else if !skip_set.contains(relative) {
                 total_bytes += size;
                 file_paths.push((remote_full.clone(), local_full.to_string_lossy().to_string(), *size));
             }
@@ -515,6 +557,7 @@ impl TransferScheduler {
                 destination: local.clone(),
                 total_bytes: *size,
                 conn_name: Some(conn_name.to_string()),
+                skip_rel_paths: Vec::new(),
             }
         }).collect();
 
@@ -536,6 +579,7 @@ impl TransferScheduler {
         local_dir_path: &str,
         remote_target_dir: &str,
         move_mode: bool,
+        skip_rel_paths: Vec<String>,
     ) -> Result<(u64, Vec<u64>), String> {
         eprintln!("[transfer] enqueue_ftp_folder_upload: local={local_dir_path} → conn={conn_name} remote={remote_target_dir}");
 
@@ -592,9 +636,18 @@ impl TransferScheduler {
         drop(ftp);
 
         // 3. Build and enqueue file tasks
+        let skip_set: std::collections::HashSet<String> = skip_rel_paths.iter().cloned().collect();
         let mut total_bytes: u64 = 0;
         let tasks: Vec<EnqueueTask> = entries.iter()
             .filter(|(_, _, is_dir)| !*is_dir)
+            .filter(|(local_full, _, _)| {
+                let relative = local_full.strip_prefix(&local_base.to_string_lossy().to_string())
+                    .unwrap_or(local_full)
+                    .trim_start_matches('/')
+                    .trim_start_matches('\\')
+                    .replace('\\', "/");
+                !skip_set.contains(&relative)
+            })
             .map(|(local_full, size, _)| {
                 total_bytes += size;
                 let relative = local_full.strip_prefix(&local_base.to_string_lossy().to_string())
@@ -608,6 +661,7 @@ impl TransferScheduler {
                     destination: format!("ftp://{conn_name}{remote_full}"),
                     total_bytes: *size,
                     conn_name: Some(conn_name.to_string()),
+                    skip_rel_paths: Vec::new(),
                 }
             })
             .collect();
@@ -658,6 +712,86 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+fn dir_size(path: &Path) -> u64 {
+    let mut total: u64 = 0;
+    collect_dir_size(path, &mut total);
+    total
+}
+
+fn collect_dir_size(dir: &Path, total: &mut u64) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_dir_size(&path, total);
+            } else if let Ok(meta) = path.metadata() {
+                *total += meta.len();
+            }
+        }
+    }
+}
+
+/// Recursively collect conflicts between a source directory tree and its
+/// destination. Returns relative paths (relative to `root`) of entries that
+/// already exist at `dst`.
+fn collect_dir_conflicts(src: &Path, dst: &Path, root: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(src) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let dst_path = dst.join(&name);
+        let rel = path.strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| name.to_string_lossy().to_string());
+        if path.is_dir() {
+            collect_dir_conflicts(&path, &dst_path, root, out);
+        } else if dst_path.exists() {
+            out.push(rel);
+        }
+    }
+}
+
+/// Recursively scan a source directory tree and emit a
+/// `transfer-conflict-found` event for each conflicting file.
+pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle) {
+    let Ok(entries) = fs::read_dir(src) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let dst_path = dst.join(&name);
+        let rel = path.strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| name.to_string_lossy().to_string());
+        if path.is_dir() {
+            scan_dir_conflicts(&path, &dst_path, root, app);
+        } else if dst_path.exists() {
+            let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                "kind": "dir",
+                "dir_source": root.to_string_lossy().to_string(),
+                "source": path.to_string_lossy(),
+                "destination": dst_path.to_string_lossy(),
+                "rel_path": rel,
+            }));
+        }
+    }
+}
+
+/// Check conflicts for a batch of transfer tasks (local copy/move directories).
+pub fn check_transfer_conflicts(tasks: &[EnqueueTask]) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    for task in tasks {
+        if task.op_type != TransferType::Copy && task.op_type != TransferType::Move {
+            continue;
+        }
+        let src = Path::new(&task.source);
+        let dst = Path::new(&task.destination);
+        if src.is_dir() {
+            collect_dir_conflicts(src, dst, src, &mut conflicts);
+        }
+    }
+    conflicts
+}
+
 fn extract_ftp_conn(path: &str) -> Option<String> {
     if path.starts_with("ftp://") {
         let rest = &path[6..];
@@ -668,7 +802,7 @@ fn extract_ftp_conn(path: &str) -> Option<String> {
 }
 
 /// Recursively walk a local directory, collecting (full_path, size, is_dir).
-fn walk_local_dir(
+pub fn walk_local_dir(
     current: &PathBuf,
     base: &Path,
     out: &mut Vec<(String, u64, bool)>,
@@ -1094,7 +1228,27 @@ async fn execute_local_copy(
         let src = src.to_path_buf();
         let dst = dst.to_path_buf();
         move || {
-            local_copy_blocking(&src, &dst, &cancel, &app, &task_clone)
+            let mut task_corrected = task_clone;
+            // Runtime fallback: if enqueue didn't compute the directory size,
+            // compute it here (on the blocking thread) and emit the correct total.
+            if src.is_dir() && task_corrected.total_bytes == 0 {
+                let actual_total = dir_size(&src);
+                if actual_total > 0 {
+                    task_corrected.total_bytes = actual_total;
+                    let _ = app.emit("transfer-progress", serde_json::json!({
+                        "id": task_corrected.id,
+                        "batch_id": task_corrected.batch_id,
+                        "op_type": task_corrected.op_type,
+                        "status": "running",
+                        "bytes_done": 0,
+                        "total_bytes": actual_total,
+                        "speed_bps": 0,
+                        "source": task_corrected.source,
+                        "destination": task_corrected.destination,
+                    }));
+                }
+            }
+            local_copy_blocking(&src, &dst, &cancel, &app, &task_corrected)
         }
     }).await
     .map_err(|e| format!("Join error: {}", e))?
@@ -1109,11 +1263,21 @@ fn local_copy_blocking(
 ) -> Result<u64, String> {
     let mut total: u64 = 0;
     let mut last_emit = Instant::now();
+    let dst_existed = dst.exists();
+    let mut created: Vec<PathBuf> = Vec::new();
+    let skip: std::collections::HashSet<String> = task.skip_rel_paths.iter().cloned().collect();
 
-    if src.is_dir() {
-        copy_dir_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit)?;
+    let copy_result = if src.is_dir() {
+        copy_dir_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit, &mut created, &skip, src)
     } else {
-        copy_file_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit)?;
+        copy_file_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit)
+    };
+
+    if let Err(e) = copy_result {
+        if e == "Cancelled" && src.is_dir() {
+            cleanup_cancelled_dir(dst, dst_existed, &created);
+        }
+        return Err(e);
     }
 
     // If this is a move, delete source after copy
@@ -1126,6 +1290,16 @@ fn local_copy_blocking(
     }
 
     Ok(total)
+}
+
+fn cleanup_cancelled_dir(dst: &Path, dst_existed: bool, created: &[PathBuf]) {
+    if !dst_existed {
+        let _ = fs::remove_dir_all(dst);
+    } else {
+        for f in created {
+            let _ = fs::remove_file(f);
+        }
+    }
 }
 
 fn copy_file_with_progress(
@@ -1177,6 +1351,9 @@ fn copy_dir_with_progress(
     cancel_flag: &Arc<AtomicBool>,
     app: &AppHandle, task: &TransferTask,
     total: &mut u64, last_emit: &mut Instant,
+    created: &mut Vec<PathBuf>,
+    skip: &std::collections::HashSet<String>,
+    root: &Path,
 ) -> Result<(), String> {
     if !dst.exists() {
         fs::create_dir_all(dst)
@@ -1191,10 +1368,18 @@ fn copy_dir_with_progress(
         let path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
+        let rel = path.strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if skip.contains(&rel) {
+            continue;
+        }
+
         if path.is_dir() {
-            copy_dir_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit)?;
+            copy_dir_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit, created, skip, root)?;
         } else {
             copy_file_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit)?;
+            created.push(dst_path);
         }
     }
     Ok(())

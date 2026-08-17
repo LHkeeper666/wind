@@ -15,6 +15,7 @@ export interface TransferEntry {
   error?: string;
   startTime: number;
   elapsedMs?: number;
+  etaSecs?: number;
 }
 
 export interface TransferBatch {
@@ -60,12 +61,40 @@ function opTypeLabel(opType: string): string {
   }
 }
 
+const speedSamples = new Map<number, { lastBytes: number; lastTime: number; emaSpeed: number }>();
+
+function computeEta(id: number, bytesDone: number, totalBytes: number, status: string): number {
+  if (status !== 'running') {
+    speedSamples.delete(id);
+    return 0;
+  }
+  const now = Date.now();
+  const prev = speedSamples.get(id);
+  let emaSpeed = 0;
+  if (prev) {
+    const dt = now - prev.lastTime;
+    const db = bytesDone - prev.lastBytes;
+    if (dt > 0 && db >= 0) {
+      const inst = (db * 1000) / dt;
+      emaSpeed = prev.emaSpeed > 0 ? prev.emaSpeed * 0.7 + inst * 0.3 : inst;
+    } else {
+      emaSpeed = prev.emaSpeed;
+    }
+  }
+  speedSamples.set(id, { lastBytes: bytesDone, lastTime: now, emaSpeed });
+  if (emaSpeed > 0 && totalBytes > 0 && bytesDone < totalBytes) {
+    return Math.round((totalBytes - bytesDone) / emaSpeed);
+  }
+  return 0;
+}
+
 interface EnqueueTask {
   op_type: string;
   source: string;
   destination: string;
   total_bytes: number;
   conn_name?: string;
+  skip_rel_paths?: string[];
 }
 
 function createTransferStore() {
@@ -76,8 +105,12 @@ function createTransferStore() {
     Promise.all([
       listen<Record<string, unknown>>('transfer-progress', (event) => {
         const p = event.payload;
+        const id = p.id as number;
+        const bytesDone = p.bytes_done as number;
+        const totalBytes = p.total_bytes as number;
+        const status = p.status as TransferEntry['status'];
+        const etaSecs = computeEta(id, bytesDone, totalBytes, status);
         update(entries => {
-          const id = p.id as number;
           const idx = entries.findIndex(e => e.id === id);
           const updated = { ...(idx >= 0 ? entries[idx] : {}),
             id,
@@ -85,11 +118,12 @@ function createTransferStore() {
             opType: p.op_type as TransferEntry['opType'],
             source: p.source as string,
             destination: p.destination as string,
-            totalBytes: (p.total_bytes as number) || (idx >= 0 ? entries[idx].totalBytes : 0),
-            bytesDone: p.bytes_done as number,
+            totalBytes: totalBytes || (idx >= 0 ? entries[idx].totalBytes : 0),
+            bytesDone,
             speedBps: p.speed_bps as number,
-            status: (p.status as TransferEntry['status']) || (idx >= 0 ? entries[idx].status : 'queued'),
+            status: status || (idx >= 0 ? entries[idx].status : 'queued'),
             startTime: (idx >= 0 ? entries[idx].startTime : 0) || Date.now(),
+            etaSecs,
           } as TransferEntry;
           if (idx >= 0) {
             const newEntries = [...entries];
@@ -140,6 +174,13 @@ function createTransferStore() {
         });
       }),
 
+      listen<Record<string, unknown>>('transfer-cancelled-batch', (event) => {
+        const ids = event.payload.ids as number[];
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        const idSet = new Set(ids);
+        update(entries => entries.map(e => idSet.has(e.id) ? { ...e, status: 'cancelled' as const } : e));
+      }),
+
       listen<Record<string, unknown>>('transfer-queue-updated', (event) => {
         const ids = event.payload.ids as number[];
         update(entries => {
@@ -179,6 +220,14 @@ function createTransferStore() {
       await invoke('transfer_cancel', { id });
     } catch (e) {
       console.error('[transfer] cancel failed:', e);
+    }
+  }
+
+  async function cancelAllTransfers() {
+    try {
+      await invoke('transfer_cancel_all');
+    } catch (e) {
+      console.error('[transfer] cancel all failed:', e);
     }
   }
 
@@ -252,6 +301,7 @@ function createTransferStore() {
     subscribe,
     enqueueTransfers,
     cancelTransfer,
+    cancelAllTransfers,
     retryTransfer,
     clearTransfer,
     reorderTransfers,

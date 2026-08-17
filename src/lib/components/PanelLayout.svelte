@@ -49,6 +49,12 @@
   let confirmFileName: string = $state('');
   let pasteResolve: ((choice: 'overwrite' | 'skip' | 'abort') => void) | null = null;
 
+  // Streaming conflict prompt state
+  let streamConflictVisible: boolean = $state(false);
+  let streamConflictName: string = $state('');
+  let streamConflictResolve: ((choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') => void) | null = null;
+  let scanningConflicts: boolean = $state(false);
+
   // Unsaved changes confirm state
   let showUnsavedConfirm: boolean = $state(false);
   let pendingActionPath: string = $state('');
@@ -666,6 +672,93 @@
     });
   }
 
+  function promptConflictStream(fileName: string): Promise<'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort'> {
+    return new Promise(resolve => {
+      streamConflictName = fileName;
+      streamConflictVisible = true;
+      streamConflictResolve = resolve;
+    });
+  }
+
+  function resolveStreamConflict(choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') {
+    streamConflictVisible = false;
+    streamConflictResolve?.(choice);
+    streamConflictResolve = null;
+  }
+
+  async function scanConflicts(startScan: () => Promise<unknown>): Promise<{ dirSkipMap: Map<string, string[]>; fileSkipSet: Set<string> } | null> {
+    const dirSkipMap = new Map<string, string[]>();
+    const fileSkipSet = new Set<string>();
+    let applyToAll: 'overwrite' | 'skip' | null = null;
+    let queue: Array<{ kind: string; dir_source: string; rel_path: string }> = [];
+    let processing = false;
+    let finished = false;
+    let aborted = false;
+
+    const addSkip = (kind: string, dir_source: string, rel: string) => {
+      if (kind === 'dir') {
+        if (!dirSkipMap.has(dir_source)) dirSkipMap.set(dir_source, []);
+        dirSkipMap.get(dir_source)!.push(rel);
+      } else {
+        fileSkipSet.add(rel);
+      }
+    };
+
+    return new Promise((resolve) => {
+      let unlistenFound: (() => void) | null = null;
+      let unlistenDone: (() => void) | null = null;
+
+      const maybeFinish = () => {
+        if (finished && !processing && queue.length === 0) {
+          unlistenFound?.();
+          unlistenDone?.();
+          resolve(aborted ? null : { dirSkipMap, fileSkipSet });
+        }
+      };
+
+      const processQueue = async () => {
+        if (processing) return;
+        processing = true;
+        while (queue.length > 0 && !aborted) {
+          const c = queue.shift()!;
+          if (applyToAll === 'skip') {
+            addSkip(c.kind, c.dir_source, c.rel_path);
+          } else if (applyToAll === 'overwrite') {
+            // 覆盖所有：不 skip
+          } else {
+            const choice = await promptConflictStream(c.rel_path);
+            if (choice === 'skip') addSkip(c.kind, c.dir_source, c.rel_path);
+            else if (choice === 'overwrite-all') applyToAll = 'overwrite';
+            else if (choice === 'skip-all') { applyToAll = 'skip'; addSkip(c.kind, c.dir_source, c.rel_path); }
+            else if (choice === 'abort') aborted = true;
+          }
+        }
+        queue.length = 0;
+        processing = false;
+        maybeFinish();
+      };
+
+      Promise.all([
+        listen<Record<string, unknown>>('transfer-conflict-found', (event) => {
+          if (aborted) return;
+          queue.push(event.payload as any);
+          processQueue();
+        }),
+        listen('transfer-conflict-scan-done', () => {
+          finished = true;
+          maybeFinish();
+        }),
+      ]).then(([found, done]) => {
+        unlistenFound = found;
+        unlistenDone = done;
+        startScan().catch(() => {
+          finished = true;
+          maybeFinish();
+        });
+      });
+    });
+  }
+
   function handleConfirmOverwrite() {
     showConfirmModal = false;
     pasteResolve?.('overwrite');
@@ -766,27 +859,54 @@
       if (srcIsFtp && !destIsFtp) {
         // FTP → Local: download via TransferManager
         const destDir = currentPath.replace(/[\\\/]+$/, '');
+
         const dirs = entries.filter((e: any) => e.is_dir);
         const files = entries.filter((e: any) => !e.is_dir);
 
+        // Stream conflict detection on local targets
+        const skipFiles = new Set<string>();
+        const skipDirMap = new Map<string, string[]>();   // dir.path (ftp://) -> rel 列表
+        if (!force) {
+          scanningConflicts = true;
+          const result = await scanConflicts(() => invoke('scan_ftp_download_conflicts', {
+            connName: getFtpConnName(entries[0].path),
+            files: files.map((e: any) => e.path),
+            dirs: dirs.map((e: any) => e.path),
+            localDir: destDir,
+          }));
+          scanningConflicts = false;
+          if (result === null) {
+            showToast('Download aborted');
+            currentDirectoryPanel?.refresh();
+            return;
+          }
+          for (const [dirSource, rels] of result.dirSkipMap) {
+            skipDirMap.set(dirSource, rels);
+          }
+          for (const f of result.fileSkipSet) {
+            skipFiles.add(f);
+          }
+        }
+
         let totalQueued = 0;
 
-        // Download folders as batch downloads
+        // Download folders as batch downloads (skip internal conflicting files)
         for (const dir of dirs) {
-          const connName = getFtpConnName(dir.path);
-          const remotePath = getFtpRemotePath(dir.path);
+          const skipRel = skipDirMap.get(dir.path) || [];
           await invoke('ftp_download_folder', {
-            connName,
-            remotePath,
+            connName: getFtpConnName(dir.path),
+            remotePath: getFtpRemotePath(dir.path),
             localPath: destDir + '\\' + dir.name,
             moveMode: operation === 'cut',
+            skipRelPaths: skipRel,
           });
           totalQueued++;
         }
 
-        // Download files as individual transfers
-        if (files.length > 0) {
-          const tasks = files.map((entry: any) => ({
+        // Download files as individual transfers (skip conflicting files)
+        const downloadFiles = files.filter((f: any) => !skipFiles.has(f.name));
+        if (downloadFiles.length > 0) {
+          const tasks = downloadFiles.map((entry: any) => ({
             op_type: 'ftp-download' as const,
             source: entry.path,
             destination: destDir + '\\' + entry.name,
@@ -803,33 +923,69 @@
         }
 
         if (operation === 'cut') {
-          for (const entry of entries) {
+          // Delete remote sources, but preserve skipped files; skip whole dir if any file skipped
+          for (const entry of files) {
+            if (skipFiles.has(entry.name)) continue;
             await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
+          }
+          for (const dir of dirs) {
+            const hasSkipped = (skipDirMap.get(dir.path) || []).length > 0;
+            if (hasSkipped) continue;
+            await invoke('ftp_delete', { path: dir.path, permanent: true }).catch(() => {});
           }
         }
       } else if (!srcIsFtp && destIsFtp) {
         // Local → FTP: upload via TransferManager
         const destConn = getFtpConnName(currentPath);
         const destBase = getFtpRemotePath(currentPath).replace(/\/+$/, '');
+
         const dirs = entries.filter((e: any) => e.is_dir);
         const files = entries.filter((e: any) => !e.is_dir);
 
+        // Stream conflict detection on remote targets
+        const skipFiles = new Set<string>();                // 顶层文件冲突（basename）
+        const skipDirMap = new Map<string, string[]>();     // 目录名 -> 内部 skip 相对路径
+        if (!force) {
+          scanningConflicts = true;
+          const result = await scanConflicts(() => invoke('scan_ftp_upload_conflicts', {
+            connName: destConn,
+            sources: entries.map((e: any) => e.path),
+            remoteDir: destBase,
+          }));
+          scanningConflicts = false;
+          if (result === null) {
+            showToast('Upload aborted');
+            currentDirectoryPanel?.refresh();
+            return;
+          }
+          for (const [dirSource, rels] of result.dirSkipMap) {
+            const name = dirSource.split(/[/\\]/).pop() || dirSource;
+            skipDirMap.set(name, rels);
+          }
+          for (const f of result.fileSkipSet) {
+            skipFiles.add(f);
+          }
+        }
+
         let totalQueued = 0;
 
-        // Upload folders as batch uploads
+        // Upload folders as batch uploads (skip internal conflicting files)
         for (const dir of dirs) {
+          const skipRel = skipDirMap.get(dir.name) || [];
           await invoke('ftp_upload_folder', {
             connName: destConn,
             localPath: dir.path,
             remotePath: `${destBase}/${dir.name}`,
             moveMode: operation === 'cut',
+            skipRelPaths: skipRel,
           });
           totalQueued++;
         }
 
-        // Upload files as individual transfers
-        if (files.length > 0) {
-          const tasks = files.map((entry: any) => ({
+        // Upload files as individual transfers (skip conflicting files)
+        const uploadFiles = files.filter((f: any) => !skipFiles.has(f.name));
+        if (uploadFiles.length > 0) {
+          const tasks = uploadFiles.map((entry: any) => ({
             op_type: 'ftp-upload' as const,
             source: entry.path,
             destination: `ftp://${destConn}${destBase}/${entry.name}`,
@@ -846,7 +1002,7 @@
         }
 
         if (operation === 'cut') {
-          const delEntries = entries.filter((e: any) => !e.is_dir);
+          const delEntries = entries.filter((e: any) => !e.is_dir && !skipFiles.has(e.name));
           if (delEntries.length > 0) {
             const delTasks = delEntries.map((entry: any) => ({
               op_type: 'delete' as const,
@@ -856,8 +1012,12 @@
             }));
             await transfer.enqueueTransfers(delTasks);
           }
-          // Directories in cut mode: delete locally after enqueuing upload batch
+          // Directories in cut mode: delete locally after enqueuing upload batch.
+          // Skip directories that had internal conflicting files skipped, to avoid
+          // deleting files that were not uploaded.
           for (const dir of dirs) {
+            const hasSkipped = (skipDirMap.get(dir.name) || []).length > 0;
+            if (hasSkipped) continue;
             await invoke('delete_file', { path: dir.path }).catch(() => {});
           }
         }
@@ -913,9 +1073,44 @@
     let processed = 0;
     let firstPastedPath: string | null = null;
     const resolvedSources: string[] = [];
+    const skipMap = new Map<string, string[]>();
 
-    // Phase 1: resolve conflicts
-    for (const entry of entries) {
+    const dirEntries = entries.filter((e: any) => e.is_dir);
+    const fileEntries = entries.filter((e: any) => !e.is_dir);
+
+    // Phase 1a: directories — stream conflict detection
+    if (dirEntries.length > 0) {
+      if (force) {
+        for (const dir of dirEntries) {
+          resolvedSources.push(dir.path);
+          if (!firstPastedPath) firstPastedPath = destDir + '\\' + dir.name;
+        }
+      } else {
+        const dirTasks = dirEntries.map((entry: any) => ({
+          op_type: operation === 'copy' ? 'copy' : 'move',
+          source: entry.path,
+          destination: destDir + '\\' + entry.name,
+          total_bytes: 0,
+        }));
+        scanningConflicts = true;
+        const result = await scanConflicts(() => invoke('scan_transfer_conflicts', { tasks: dirTasks }));
+        scanningConflicts = false;
+        if (result === null) {
+          showToast('Paste aborted');
+          currentDirectoryPanel?.refresh();
+          return;
+        }
+        for (const dir of dirEntries) {
+          resolvedSources.push(dir.path);
+          if (!firstPastedPath) firstPastedPath = destDir + '\\' + dir.name;
+          const skip = result.dirSkipMap.get(dir.path);
+          if (skip) skipMap.set(dir.path, skip);
+        }
+      }
+    }
+
+    // Phase 1b: files — existing sync conflict check
+    for (const entry of fileEntries) {
       const destPath = destDir + '\\' + entry.name;
 
       let exists = false;
@@ -961,6 +1156,7 @@
         source: src,
         destination: destDir + '\\' + (src.split(/[/\\]/).pop() || src),
         total_bytes: origEntry?.size || 0,
+        skip_rel_paths: skipMap.get(src) || [],
       };
     });
     const ids = await transfer.enqueueTransfers(tasks);
@@ -2144,6 +2340,27 @@
     onAbort={handleConfirmAbort}
   />
 
+  <!-- Streaming Conflict Confirm Modal (per-file + apply-to-all) -->
+  <ConfirmModal
+    visible={streamConflictVisible}
+    title="Conflict"
+    fileName={streamConflictName}
+    buttons={[
+      { key: 'o', label: 'verwrite', action: () => resolveStreamConflict('overwrite'), style: 'danger' },
+      { key: 's', label: 'kip', action: () => resolveStreamConflict('skip') },
+      { key: 'a', label: 'll overwrite', action: () => resolveStreamConflict('overwrite-all'), style: 'danger' },
+      { key: 'i', label: 'gnore all', action: () => resolveStreamConflict('skip-all') },
+      { key: 'c', label: 'ancel', action: () => resolveStreamConflict('abort') },
+    ]}
+  />
+
+  <!-- Conflict scanning loading indicator -->
+  {#if scanningConflicts}
+    <div class="scanning-toast" role="status">
+      正在检查冲突…
+    </div>
+  {/if}
+
   <!-- Toast Notification -->
   {#if toastMessage}
     <div class="toast" role="alert">
@@ -2329,6 +2546,20 @@
     z-index: 2000;
     animation: toast-fade 3s ease-in-out;
     border: 1px solid var(--border);
+  }
+
+  .scanning-toast {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: var(--bg-tertiary);
+    color: var(--accent);
+    padding: 6px 16px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    z-index: 2000;
+    border: 1px solid var(--accent);
   }
 
   @keyframes toast-fade {
