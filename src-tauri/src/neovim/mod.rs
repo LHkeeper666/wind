@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use crate::tool_cache;
 
 pub struct Neovim {
     child: Arc<Mutex<Option<Child>>>,
@@ -22,14 +24,18 @@ impl Neovim {
         // Kill existing process if any
         self.kill();
 
-        let mut child = Command::new("nvim")
+        let nvim = tool_cache::nvim_path().ok_or_else(|| "Neovim not found in PATH".to_string())?;
+        let mut child = tool_cache::background_command(&nvim)
             .arg("--embed")
             .arg("--headless")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Failed to spawn Neovim: {}", e))?;
+            .map_err(|e| {
+                tool_cache::invalidate("nvim");
+                format!("Failed to spawn Neovim: {}", e)
+            })?;
 
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -82,24 +88,27 @@ impl Neovim {
 
     fn nvim_ui_attach(&self) -> Result<(), String> {
         // Send nvim_ui_attach with ext_linegrid option
-        let msg = self.create_request("nvim_ui_attach", vec![
-            rmpv::Value::Integer(80.into()),  // width
-            rmpv::Value::Integer(24.into()),  // height
-            rmpv::Value::Map(vec![
-                (
-                    rmpv::Value::String("ext_linegrid".into()),
-                    rmpv::Value::Boolean(true),
-                ),
-                (
-                    rmpv::Value::String("ext_multigrid".into()),
-                    rmpv::Value::Boolean(false),
-                ),
-                (
-                    rmpv::Value::String("rgb".into()),
-                    rmpv::Value::Boolean(true),
-                ),
-            ]),
-        ]);
+        let msg = self.create_request(
+            "nvim_ui_attach",
+            vec![
+                rmpv::Value::Integer(80.into()), // width
+                rmpv::Value::Integer(24.into()), // height
+                rmpv::Value::Map(vec![
+                    (
+                        rmpv::Value::String("ext_linegrid".into()),
+                        rmpv::Value::Boolean(true),
+                    ),
+                    (
+                        rmpv::Value::String("ext_multigrid".into()),
+                        rmpv::Value::Boolean(false),
+                    ),
+                    (
+                        rmpv::Value::String("rgb".into()),
+                        rmpv::Value::Boolean(true),
+                    ),
+                ]),
+            ],
+        );
 
         self.send_message(msg)
     }
@@ -110,7 +119,7 @@ impl Neovim {
         let msg_id = *id;
 
         rmpv::Value::Array(vec![
-            rmpv::Value::Integer(0.into()),  // Request type
+            rmpv::Value::Integer(0.into()), // Request type
             rmpv::Value::Integer(msg_id.into()),
             rmpv::Value::String(method.into()),
             rmpv::Value::Array(params),
@@ -136,9 +145,7 @@ impl Neovim {
     }
 
     pub fn send_input(&self, keys: &str) -> Result<(), String> {
-        let msg = self.create_request("nvim_input", vec![
-            rmpv::Value::String(keys.into()),
-        ]);
+        let msg = self.create_request("nvim_input", vec![rmpv::Value::String(keys.into())]);
         self.send_message(msg)
     }
 

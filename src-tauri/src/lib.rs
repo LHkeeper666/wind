@@ -1,24 +1,27 @@
-mod terminal;
-mod neovim;
-mod pdf;
-mod video;
 mod file_ops;
 mod file_watcher;
 mod ftp;
+mod neovim;
+mod pdf;
 mod python_completion;
+mod terminal;
+mod tool_cache;
 mod transfer;
+mod video;
 
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
-use std::fs::File;
 use tauri::{Emitter, Manager, State};
-use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus};
+use tokio::sync::Mutex as TokioMutex;
+use windows::Win32::UI::Input::Ime::{
+    ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
+};
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -122,7 +125,8 @@ struct FileMetadata {
 #[tauri::command]
 fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
     let metadata = fs::metadata(&path).map_err(|e| format!("Failed to read metadata: {}", e))?;
-    let modified = metadata.modified()
+    let modified = metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
@@ -134,8 +138,16 @@ fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
 }
 
 #[tauri::command]
-fn start_watch_file(path: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state.file_watcher.lock().map_err(|e| e.to_string())?.start(&path, app_handle);
+fn start_watch_file(
+    path: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .file_watcher
+        .lock()
+        .map_err(|e| e.to_string())?
+        .start(&path, app_handle);
     Ok(())
 }
 
@@ -193,16 +205,23 @@ async fn read_directory(
                             entry.metadata().ok().map(|m| m.len())
                         };
                         let is_hidden = file_name.starts_with('.')
-                            || entry.metadata().map(|m| {
-                                use std::os::windows::fs::MetadataExt;
-                                m.file_attributes() & 0x2 != 0  // FILE_ATTRIBUTE_HIDDEN
-                            }).unwrap_or(false);
+                            || entry
+                                .metadata()
+                                .map(|m| {
+                                    use std::os::windows::fs::MetadataExt;
+                                    m.file_attributes() & 0x2 != 0 // FILE_ATTRIBUTE_HIDDEN
+                                })
+                                .unwrap_or(false);
 
-                        let modified = entry.metadata().ok()
+                        let modified = entry
+                            .metadata()
+                            .ok()
                             .and_then(|m| m.modified().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs());
-                        let created = entry.metadata().ok()
+                        let created = entry
+                            .metadata()
+                            .ok()
                             .and_then(|m| m.created().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs());
@@ -246,13 +265,16 @@ async fn read_directory(
 #[tauri::command]
 fn list_archive_entries(path: String) -> Result<Vec<ArchiveEntry>, String> {
     let file = File::open(&path).map_err(|e| format!("Failed to open archive: {}", e))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read archive: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read archive: {}", e))?;
 
     let mut files = Vec::new();
     let mut dir_set = std::collections::HashSet::new();
 
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(|e| format!("Failed to read entry: {}", e))?;
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read entry: {}", e))?;
         let entry_path = entry
             .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
@@ -324,8 +346,7 @@ fn delete_file(path: String) -> Result<(), String> {
         return Err(format!("Path does not exist: {}", path));
     }
 
-    trash::delete(file_path)
-        .map_err(|e| format!("Failed to move to trash: {}", e))
+    trash::delete(file_path).map_err(|e| format!("Failed to move to trash: {}", e))
 }
 
 #[tauri::command]
@@ -340,8 +361,7 @@ fn permanent_delete(path: String) -> Result<(), String> {
         fs::remove_dir_all(file_path)
             .map_err(|e| format!("Failed to permanently delete directory: {}", e))
     } else {
-        fs::remove_file(file_path)
-            .map_err(|e| format!("Failed to permanently delete file: {}", e))
+        fs::remove_file(file_path).map_err(|e| format!("Failed to permanently delete file: {}", e))
     }
 }
 
@@ -353,17 +373,20 @@ fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
         return Err(format!("Path does not exist: {}", old_path));
     }
 
-    let parent = old.parent()
+    let parent = old
+        .parent()
         .ok_or_else(|| "Cannot get parent directory".to_string())?;
 
     let new_path = parent.join(&new_name);
 
     if new_path.exists() {
-        return Err(format!("A file or directory with name '{}' already exists", new_name));
+        return Err(format!(
+            "A file or directory with name '{}' already exists",
+            new_name
+        ));
     }
 
-    fs::rename(old, &new_path)
-        .map_err(|e| format!("Failed to rename: {}", e))?;
+    fs::rename(old, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
 
     Ok(new_path.to_string_lossy().to_string())
 }
@@ -437,8 +460,7 @@ fn create_file(path: String, is_dir: bool) -> Result<(), String> {
     }
 
     if is_dir {
-        fs::create_dir_all(file_path)
-            .map_err(|e| format!("Failed to create directory: {}", e))
+        fs::create_dir_all(file_path).map_err(|e| format!("Failed to create directory: {}", e))
     } else {
         // Create parent directories if they don't exist
         if let Some(parent) = file_path.parent() {
@@ -447,8 +469,7 @@ fn create_file(path: String, is_dir: bool) -> Result<(), String> {
                     .map_err(|e| format!("Failed to create parent directories: {}", e))?;
             }
         }
-        fs::write(file_path, "")
-            .map_err(|e| format!("Failed to create file: {}", e))
+        fs::write(file_path, "").map_err(|e| format!("Failed to create file: {}", e))
     }
 }
 
@@ -468,15 +489,19 @@ fn copy_file(source: String, destination: String) -> Result<(), String> {
     // Ensure destination parent directory exists
     if let Some(parent) = dst.parent() {
         if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create destination directory {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create destination directory {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
         }
     }
 
     if src.is_dir() {
         // Copy directory recursively
-        copy_dir_recursive(src, dst)
-            .map_err(|e| format!("Failed to copy directory: {}", e))
+        copy_dir_recursive(src, dst).map_err(|e| format!("Failed to copy directory: {}", e))
     } else {
         fs::copy(src, dst)
             .map_err(|e| format!("Failed to copy {} -> {}: {}", source, destination, e))?;
@@ -520,8 +545,13 @@ fn move_file(source: String, destination: String) -> Result<(), String> {
     // Ensure destination parent directory exists
     if let Some(parent) = dst.parent() {
         if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create destination directory {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create destination directory {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
         }
     }
 
@@ -530,19 +560,16 @@ fn move_file(source: String, destination: String) -> Result<(), String> {
     let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
 
     if src_drive == dst_drive {
-        fs::rename(src, dst).map_err(|e| format!("Failed to move {} -> {}: {}", source, destination, e))
+        fs::rename(src, dst)
+            .map_err(|e| format!("Failed to move {} -> {}: {}", source, destination, e))
     } else {
         // Cross-drive: copy then delete
         if src.is_dir() {
-            copy_dir_recursive(src, dst)
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
-            fs::remove_dir_all(src)
-                .map_err(|e| format!("Failed to remove source directory: {}", e))
+            copy_dir_recursive(src, dst).map_err(|e| format!("Failed to copy directory: {}", e))?;
+            fs::remove_dir_all(src).map_err(|e| format!("Failed to remove source directory: {}", e))
         } else {
-            fs::copy(src, dst)
-                .map_err(|e| format!("Failed to copy file: {}", e))?;
-            fs::remove_file(src)
-                .map_err(|e| format!("Failed to remove source file: {}", e))
+            fs::copy(src, dst).map_err(|e| format!("Failed to copy file: {}", e))?;
+            fs::remove_file(src).map_err(|e| format!("Failed to remove source file: {}", e))
         }
     }
 }
@@ -661,15 +688,12 @@ async fn move_file_async(
     let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
 
     if src_drive == dst_drive {
-        std::fs::rename(&source, &destination)
-            .map_err(|e| format!("Failed to move: {}", e))
+        std::fs::rename(&source, &destination).map_err(|e| format!("Failed to move: {}", e))
     } else {
         let app_clone = app.clone();
         tokio::task::spawn_blocking(move || {
-            let mut progress = file_ops::Progress::new(
-                file_ops::OpType::Move,
-                format!("Moving {}", source),
-            );
+            let mut progress =
+                file_ops::Progress::new(file_ops::OpType::Move, format!("Moving {}", source));
             let op_id = progress.op_id;
             let src_path = std::path::Path::new(&source);
             let dst_path = std::path::Path::new(&destination);
@@ -683,9 +707,11 @@ async fn move_file_async(
             file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
 
             let result = if src_path.is_dir() {
-                file_ops::copy_dir_chunked(src_path, dst_path, &mut progress, &app_clone).map(|_| ())
+                file_ops::copy_dir_chunked(src_path, dst_path, &mut progress, &app_clone)
+                    .map(|_| ())
             } else {
-                file_ops::copy_file_chunked(src_path, dst_path, &mut progress, &app_clone).map(|_| ())
+                file_ops::copy_file_chunked(src_path, dst_path, &mut progress, &app_clone)
+                    .map(|_| ())
             };
 
             match result {
@@ -729,10 +755,8 @@ async fn delete_file_async(
     let path_clone = path.clone();
 
     tokio::task::spawn_blocking(move || {
-        let mut progress = file_ops::Progress::new(
-            file_ops::OpType::Delete,
-            format!("Deleting {}", path_clone),
-        );
+        let mut progress =
+            file_ops::Progress::new(file_ops::OpType::Delete, format!("Deleting {}", path_clone));
         let op_id = progress.op_id;
         let p = std::path::Path::new(&path_clone);
 
@@ -752,7 +776,10 @@ async fn delete_file_async(
                     progress.file_done(&app_clone);
                     Ok(())
                 }
-                Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                Err(e) => Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )),
             }
         };
 
@@ -797,19 +824,14 @@ async fn transfer_enqueue(
 }
 
 #[tauri::command]
-async fn transfer_cancel(
-    id: u64,
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+async fn transfer_cancel(id: u64, state: State<'_, AppState>) -> Result<bool, String> {
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
     Ok(scheduler.cancel(id, sched.clone()))
 }
 
 #[tauri::command]
-async fn transfer_cancel_all(
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
+async fn transfer_cancel_all(state: State<'_, AppState>) -> Result<usize, String> {
     let mut scheduler = state.transfer_scheduler.lock().await;
     Ok(scheduler.cancel_all())
 }
@@ -828,7 +850,9 @@ async fn scan_transfer_conflicts(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         for task in &tasks {
-            if task.op_type != transfer::TransferType::Copy && task.op_type != transfer::TransferType::Move {
+            if task.op_type != transfer::TransferType::Copy
+                && task.op_type != transfer::TransferType::Move
+            {
                 continue;
             }
             let src = std::path::Path::new(&task.source);
@@ -850,12 +874,15 @@ async fn check_ftp_upload_conflicts(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let mgr = state.ftp_manager.lock().await;
-    let session = mgr.create_independent(&conn_name).await
+    let session = mgr
+        .create_independent(&conn_name)
+        .await
         .map_err(|e| format!("Failed to create FTP session for conflict check: {e}"))?;
     drop(mgr);
 
     let mut ftp = session.lock().await;
-    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir).await
+    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir)
+        .await
         .map_err(|e| format!("Failed to list remote directory: {e}"))?;
     let _ = ftp.client.quit().await;
     drop(ftp);
@@ -864,7 +891,8 @@ async fn check_ftp_upload_conflicts(
     let remote_base = remote_dir.trim_end_matches('/');
     let mut remote_names: HashSet<String> = HashSet::new();
     for (remote_full, _size, _is_dir) in &remote_entries {
-        let rel = remote_full.strip_prefix(remote_base)
+        let rel = remote_full
+            .strip_prefix(remote_base)
             .unwrap_or(remote_full)
             .trim_start_matches('/');
         remote_names.insert(rel.to_string());
@@ -873,7 +901,10 @@ async fn check_ftp_upload_conflicts(
     let mut conflicts = Vec::new();
     for src in &sources {
         let path = std::path::Path::new(src);
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !path.is_dir() {
             // Only files conflict at the top level; directories always merge into
             // an existing directory (or get created if absent).
@@ -885,11 +916,20 @@ async fn check_ftp_upload_conflicts(
             let mut local: Vec<(String, u64, bool)> = Vec::new();
             let _ = transfer::walk_local_dir(&path.to_path_buf(), path, &mut local);
             for (full, _size, is_dir) in &local {
-                if *is_dir { continue; } // only files conflict inside a directory
-                let rel = full.strip_prefix(&path.to_string_lossy().to_string())
-                    .map(|p| p.trim_start_matches('\\').trim_start_matches('/').to_string())
+                if *is_dir {
+                    continue;
+                } // only files conflict inside a directory
+                let rel = full
+                    .strip_prefix(&path.to_string_lossy().to_string())
+                    .map(|p| {
+                        p.trim_start_matches('\\')
+                            .trim_start_matches('/')
+                            .to_string()
+                    })
                     .unwrap_or_default();
-                if rel.is_empty() { continue; }
+                if rel.is_empty() {
+                    continue;
+                }
                 let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
                 if remote_names.contains(&remote_rel) {
                     conflicts.push(remote_rel);
@@ -909,12 +949,15 @@ async fn scan_ftp_upload_conflicts(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mgr = state.ftp_manager.lock().await;
-    let session = mgr.create_independent(&conn_name).await
+    let session = mgr
+        .create_independent(&conn_name)
+        .await
         .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
     drop(mgr);
 
     let mut ftp = session.lock().await;
-    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir).await
+    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir)
+        .await
         .map_err(|e| format!("Failed to list remote directory: {e}"))?;
     let _ = ftp.client.quit().await;
     drop(ftp);
@@ -923,7 +966,8 @@ async fn scan_ftp_upload_conflicts(
     let remote_base = remote_dir.trim_end_matches('/').to_string();
     let mut remote_names: HashSet<String> = HashSet::new();
     for (remote_full, _size, _is_dir) in &remote_entries {
-        let rel = remote_full.strip_prefix(&remote_base)
+        let rel = remote_full
+            .strip_prefix(&remote_base)
             .unwrap_or(remote_full)
             .trim_start_matches('/');
         remote_names.insert(rel.to_string());
@@ -932,26 +976,41 @@ async fn scan_ftp_upload_conflicts(
     tokio::task::spawn_blocking(move || {
         for src in &sources {
             let path = std::path::Path::new(src);
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             if !path.is_dir() {
                 if remote_names.contains(&name) {
-                    let _ = app.emit("transfer-conflict-found", serde_json::json!({
-                        "kind": "file",
-                        "dir_source": "",
-                        "rel_path": name,
-                        "source": src,
-                        "destination": format!("ftp://{conn_name}{remote_base}/{name}"),
-                    }));
+                    let _ = app.emit(
+                        "transfer-conflict-found",
+                        serde_json::json!({
+                            "kind": "file",
+                            "dir_source": "",
+                            "rel_path": name,
+                            "source": src,
+                            "destination": format!("ftp://{conn_name}{remote_base}/{name}"),
+                        }),
+                    );
                 }
             } else {
                 let mut local: Vec<(String, u64, bool)> = Vec::new();
                 let _ = transfer::walk_local_dir(&path.to_path_buf(), path, &mut local);
                 for (full, _size, is_dir) in &local {
-                    if *is_dir { continue; }
-                    let rel = full.strip_prefix(&path.to_string_lossy().to_string())
-                        .map(|p| p.trim_start_matches('\\').trim_start_matches('/').to_string())
+                    if *is_dir {
+                        continue;
+                    }
+                    let rel = full
+                        .strip_prefix(&path.to_string_lossy().to_string())
+                        .map(|p| {
+                            p.trim_start_matches('\\')
+                                .trim_start_matches('/')
+                                .to_string()
+                        })
                         .unwrap_or_default();
-                    if rel.is_empty() { continue; }
+                    if rel.is_empty() {
+                        continue;
+                    }
                     let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
                     if remote_names.contains(&remote_rel) {
                         let _ = app.emit("transfer-conflict-found", serde_json::json!({
@@ -980,15 +1039,20 @@ async fn scan_ftp_download_conflicts(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mgr = state.ftp_manager.lock().await;
-    let session = mgr.create_independent(&conn_name).await
+    let session = mgr
+        .create_independent(&conn_name)
+        .await
         .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
     drop(mgr);
 
     let mut ftp = session.lock().await;
     let mut dir_trees: Vec<(String, Vec<(String, u64, bool)>)> = Vec::new();
     for dir in &dirs {
-        let remote_path = parse_ftp_url(dir).map(|(_, p)| p.to_string()).unwrap_or_default();
-        let entries = ftp::list_dir_recursive(&mut ftp.client, &remote_path).await
+        let remote_path = parse_ftp_url(dir)
+            .map(|(_, p)| p.to_string())
+            .unwrap_or_default();
+        let entries = ftp::list_dir_recursive(&mut ftp.client, &remote_path)
+            .await
             .map_err(|e| format!("Failed to list remote directory {dir}: {e}"))?;
         dir_trees.push((dir.clone(), entries));
     }
@@ -1000,32 +1064,45 @@ async fn scan_ftp_download_conflicts(
             let name = f.rsplit('/').next().unwrap_or(f.as_str());
             let local = std::path::Path::new(&local_dir).join(name);
             if local.exists() {
-                let _ = app.emit("transfer-conflict-found", serde_json::json!({
-                    "kind": "file",
-                    "dir_source": "",
-                    "rel_path": name,
-                    "source": f,
-                    "destination": local.to_string_lossy(),
-                }));
+                let _ = app.emit(
+                    "transfer-conflict-found",
+                    serde_json::json!({
+                        "kind": "file",
+                        "dir_source": "",
+                        "rel_path": name,
+                        "source": f,
+                        "destination": local.to_string_lossy(),
+                    }),
+                );
             }
         }
         for (dir, entries) in &dir_trees {
             let dir_name = dir.rsplit('/').next().unwrap_or(dir.as_str());
-            let remote_base = parse_ftp_url(dir).map(|(_, p)| p.to_string()).unwrap_or_default();
+            let remote_base = parse_ftp_url(dir)
+                .map(|(_, p)| p.to_string())
+                .unwrap_or_default();
             for (remote_full, _size, is_dir) in entries {
-                if *is_dir { continue; }
-                let rel = remote_full.strip_prefix(&remote_base)
+                if *is_dir {
+                    continue;
+                }
+                let rel = remote_full
+                    .strip_prefix(&remote_base)
                     .unwrap_or(remote_full)
                     .trim_start_matches('/');
-                let local = std::path::Path::new(&local_dir).join(dir_name).join(rel.replace('/', "\\"));
+                let local = std::path::Path::new(&local_dir)
+                    .join(dir_name)
+                    .join(rel.replace('/', "\\"));
                 if local.exists() {
-                    let _ = app.emit("transfer-conflict-found", serde_json::json!({
-                        "kind": "dir",
-                        "dir_source": dir,
-                        "rel_path": rel,
-                        "source": remote_full,
-                        "destination": local.to_string_lossy(),
-                    }));
+                    let _ = app.emit(
+                        "transfer-conflict-found",
+                        serde_json::json!({
+                            "kind": "dir",
+                            "dir_source": dir,
+                            "rel_path": rel,
+                            "source": remote_full,
+                            "destination": local.to_string_lossy(),
+                        }),
+                    );
                 }
             }
         }
@@ -1035,10 +1112,7 @@ async fn scan_ftp_download_conflicts(
 }
 
 #[tauri::command]
-async fn transfer_reorder(
-    ids: Vec<u64>,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn transfer_reorder(ids: Vec<u64>, state: State<'_, AppState>) -> Result<(), String> {
     let mut scheduler = state.transfer_scheduler.lock().await;
     scheduler.reorder(ids);
     Ok(())
@@ -1053,45 +1127,44 @@ async fn transfer_get_history(
 }
 
 #[tauri::command]
-async fn transfer_clear_history(
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn transfer_clear_history(state: State<'_, AppState>) -> Result<(), String> {
     let mut scheduler = state.transfer_scheduler.lock().await;
     scheduler.clear_history();
     Ok(())
 }
 
 #[tauri::command]
-async fn transfer_set_ftp_slots(
-    n: usize,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn transfer_set_ftp_slots(n: usize, state: State<'_, AppState>) -> Result<(), String> {
     let mut scheduler = state.transfer_scheduler.lock().await;
     scheduler.set_ftp_max_slots(n);
     Ok(())
 }
 
 #[tauri::command]
-async fn transfer_set_local_slots(
-    n: usize,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn transfer_set_local_slots(n: usize, state: State<'_, AppState>) -> Result<(), String> {
     let mut scheduler = state.transfer_scheduler.lock().await;
     scheduler.set_local_max_slots(n);
     Ok(())
 }
 
 #[tauri::command]
-async fn transfer_get_slots(
-    state: State<'_, AppState>,
-) -> Result<(usize, usize), String> {
+async fn transfer_get_slots(state: State<'_, AppState>) -> Result<(usize, usize), String> {
     let scheduler = state.transfer_scheduler.lock().await;
     Ok(scheduler.get_slot_config())
 }
 
 #[tauri::command]
-fn terminal_spawn(tab_id: u32, shell: String, cwd: Option<String>, cols: u16, rows: u16, state: State<'_, AppState>) -> Result<(), String> {
-    state.terminal.spawn(tab_id, &shell, cwd.as_deref(), cols, rows)
+fn terminal_spawn(
+    tab_id: u32,
+    shell: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .terminal
+        .spawn(tab_id, &shell, cwd.as_deref(), cols, rows)
 }
 
 #[tauri::command]
@@ -1100,7 +1173,12 @@ fn terminal_input(tab_id: u32, data: String, state: State<'_, AppState>) -> Resu
 }
 
 #[tauri::command]
-fn terminal_resize(tab_id: u32, cols: u32, rows: u32, state: State<'_, AppState>) -> Result<(), String> {
+fn terminal_resize(
+    tab_id: u32,
+    cols: u32,
+    rows: u32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     state.terminal.resize(tab_id, cols, rows)
 }
 
@@ -1161,8 +1239,8 @@ fn get_file_info(path: String) -> Result<FileInfo, String> {
         return Err(format!("File does not exist: {}", path));
     }
 
-    let metadata = fs::metadata(&path)
-        .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+    let metadata =
+        fs::metadata(&path).map_err(|e| format!("Failed to get file metadata: {}", e))?;
 
     let name = file_path
         .file_name()
@@ -1230,14 +1308,33 @@ fn chrono_like(secs: u64) -> String {
     }
     let leap = is_leap(y);
     let month_days: [i64; 12] = [
-        31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut m = 0usize;
     while m < 12 && remaining_days >= month_days[m] {
         remaining_days -= month_days[m];
         m += 1;
     }
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m + 1, remaining_days + 1, hour, minute, second)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y,
+        m + 1,
+        remaining_days + 1,
+        hour,
+        minute,
+        second
+    )
 }
 
 fn is_leap(year: i64) -> bool {
@@ -1260,33 +1357,28 @@ fn read_config() -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config: {}", e))
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
 #[tauri::command]
 fn write_config(options: serde_json::Value) -> Result<(), String> {
     let dir = config_dir();
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
     let content = serde_json::to_string_pretty(&options)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(config_path(), content)
-        .map_err(|e| format!("Failed to write config: {}", e))
+    fs::write(config_path(), content).map_err(|e| format!("Failed to write config: {}", e))
 }
 
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
-    open::that(&path)
-        .map_err(|e| format!("Failed to open: {}", e))
+    open::that(&path).map_err(|e| format!("Failed to open: {}", e))
 }
 
 #[tauri::command]
 fn open_with_dialog(path: String) -> Result<(), String> {
     // Use rundll32 shell32.dll,OpenAs_RunDLL which is the standard Windows "Open With" dialog
-    std::process::Command::new("rundll32")
+    tool_cache::background_command("rundll32")
         .args(["shell32.dll,OpenAs_RunDLL", &path])
         .spawn()
         .map_err(|e| format!("Failed to open with dialog: {}", e))?;
@@ -1305,8 +1397,7 @@ fn read_file(path: String) -> Result<String, String> {
         return Err(format!("Path is a directory, not a file: {}", path));
     }
 
-    let bytes = fs::read(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(decode_text(&bytes))
 }
 
@@ -1323,10 +1414,10 @@ fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String> {
     }
 
     use std::io::Read;
-    let mut file = fs::File::open(file_path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut file = fs::File::open(file_path).map_err(|e| format!("Failed to open file: {}", e))?;
     let mut buffer = vec![0u8; max_bytes as usize];
-    let bytes_read = file.read(&mut buffer)
+    let bytes_read = file
+        .read(&mut buffer)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     buffer.truncate(bytes_read);
 
@@ -1372,8 +1463,7 @@ fn read_binary_file(path: String) -> Result<String, String> {
         return Err(format!("Path is a directory, not a file: {}", path));
     }
 
-    let bytes = fs::read(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
     Ok(STANDARD.encode(bytes))
 }
 
@@ -1390,10 +1480,10 @@ fn read_binary_file_partial(path: String, max_bytes: u64) -> Result<String, Stri
     }
 
     use std::io::Read;
-    let mut file = fs::File::open(file_path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut file = fs::File::open(file_path).map_err(|e| format!("Failed to open file: {}", e))?;
     let mut buffer = vec![0u8; max_bytes as usize];
-    let bytes_read = file.read(&mut buffer)
+    let bytes_read = file
+        .read(&mut buffer)
         .map_err(|e| format!("Failed to read file: {}", e))?;
     buffer.truncate(bytes_read);
 
@@ -1635,8 +1725,7 @@ fn write_file(path: String, content: String) -> Result<(), String> {
         }
     }
 
-    fs::write(file_path, content)
-        .map_err(|e| format!("Failed to write file: {}", e))
+    fs::write(file_path, content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1648,43 +1737,32 @@ pub struct SearchResult {
 }
 
 fn is_rg_available() -> bool {
-    std::process::Command::new("rg")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tool_cache::rg_path().is_some()
 }
 
 fn get_fd_path() -> Option<String> {
-    // 尝试从常见位置找 fd
-    let possible_paths = vec![
-        "fd".to_string(),
-        "D:\\Application\\fd\\fd-v10.2.0-x86_64-pc-windows-msvc\\fd.exe".to_string(),
-    ];
-
-    for path in possible_paths {
-        if std::process::Command::new(&path)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Some(path);
-        }
-    }
-    None
+    tool_cache::fd_path().map(|path| path.to_string_lossy().to_string())
 }
 
-fn search_with_fd(fd_path: &str, root: &str, pattern: &str, max: usize, max_depth: usize) -> Result<Vec<SearchResult>, String> {
-    let re = Regex::new(&format!("(?i){}", pattern)).map_err(|e| format!("Invalid regex: {}", e))?;
+fn search_with_fd(
+    fd_path: &str,
+    root: &str,
+    pattern: &str,
+    max: usize,
+    max_depth: usize,
+) -> Result<Vec<SearchResult>, String> {
+    let re =
+        Regex::new(&format!("(?i){}", pattern)).map_err(|e| format!("Invalid regex: {}", e))?;
     let depth_str = max_depth.to_string();
-    let mut child = std::process::Command::new(fd_path)
+    let mut child = tool_cache::background_command(fd_path)
         .args([
-            "-H",  // 包含隐藏文件/目录
-            "--no-ignore",  // 不遵守 .gitignore
-            "--max-results", &max.to_string(),
-            "--max-depth", &depth_str,
-            "-i",  // 大小写不敏感
+            "-H",          // 包含隐藏文件/目录
+            "--no-ignore", // 不遵守 .gitignore
+            "--max-results",
+            &max.to_string(),
+            "--max-depth",
+            &depth_str,
+            "-i", // 大小写不敏感
             pattern,
             root,
         ])
@@ -1692,7 +1770,10 @@ fn search_with_fd(fd_path: &str, root: &str, pattern: &str, max: usize, max_dept
         .stderr(std::process::Stdio::piped())
         .current_dir(root)
         .spawn()
-        .map_err(|e| format!("Failed to run fd: {}", e))?;
+        .map_err(|e| {
+            tool_cache::invalidate("fd");
+            format!("Failed to run fd: {}", e)
+        })?;
 
     let stdout = child.stdout.take().unwrap();
     let root_path = Path::new(root);
@@ -1747,13 +1828,12 @@ fn search_with_fd(fd_path: &str, root: &str, pattern: &str, max: usize, max_dept
     Ok(results)
 }
 
-fn search_with_rg(root: &str, pattern: &str, max: usize, max_depth: usize) -> Result<Vec<SearchResult>, String> {
-    // rg --files 只列出文件，不列出目录
-    // 改用 Rust 原生搜索，这样可以同时搜索文件和目录
-    search_with_rust(root, pattern, max, max_depth)
-}
-
-fn search_with_rust(root: &str, pattern: &str, max: usize, max_depth: usize) -> Result<Vec<SearchResult>, String> {
+fn search_with_rust(
+    root: &str,
+    pattern: &str,
+    max: usize,
+    max_depth: usize,
+) -> Result<Vec<SearchResult>, String> {
     let re = Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
     let root_path = Path::new(root);
     let mut results = Vec::new();
@@ -1883,11 +1963,10 @@ async fn search_files(
 
     // 在独立线程中执行搜索，不阻塞主线程
     tokio::task::spawn_blocking(move || {
-        // 优先使用 fd，然后 rg，最后 Rust 原生
+        // fd 是可选的加速器；没有 fd 时直接使用原生实现。
+        // rg 当前只用于显示可用性，不承担实际搜索，避免无意义的探测分支。
         if let Some(fd_path) = get_fd_path() {
             search_with_fd(&fd_path, &root_path, &pattern, max, max_depth)
-        } else if is_rg_available() {
-            search_with_rg(&root_path, &pattern, max, max_depth)
         } else {
             search_with_rust(&root_path, &pattern, max, max_depth)
         }
@@ -1911,7 +1990,8 @@ fn check_search_tools() -> serde_json::Value {
 
 /// Parse `ftp://<name>/<path>` into (connection_name, remote_path).
 fn parse_ftp_url(url: &str) -> Result<(&str, &str), String> {
-    let url = url.strip_prefix("ftp://")
+    let url = url
+        .strip_prefix("ftp://")
         .ok_or_else(|| format!("Not an FTP URL: {}", url))?;
     let slash_pos = url.find('/');
     let (name, path) = match slash_pos {
@@ -1938,7 +2018,10 @@ async fn ftp_connect(
     let port = port.unwrap_or(21);
     let user = user.unwrap_or_else(|| "anonymous".to_string());
     let password = password.unwrap_or_else(|| "anonymous".to_string());
-    eprintln!("[FTP] command ftp_connect: name={} host={}:{} user={}", name, host, port, user);
+    eprintln!(
+        "[FTP] command ftp_connect: name={} host={}:{} user={}",
+        name, host, port, user
+    );
     let mut mgr = state.ftp_manager.lock().await;
     mgr.connect(&name, &host, port, &user, &password).await?;
     Ok(format!("Connected to {}", name))
@@ -1958,14 +2041,20 @@ async fn ftp_read_directory(
     state: State<'_, AppState>,
 ) -> Result<Vec<FileEntry>, String> {
     let (conn_name, remote_path) = parse_ftp_url(&path)?;
-    eprintln!("[FTP] command ftp_read_directory: conn={} path={}", conn_name, remote_path);
+    eprintln!(
+        "[FTP] command ftp_read_directory: conn={} path={}",
+        conn_name, remote_path
+    );
 
     // Try listing; if session is stale, reconnect once and retry
     let mut mgr = state.ftp_manager.lock().await;
     let entries = match try_list_dir(&mgr, conn_name, remote_path).await {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("[FTP] read_directory: listing failed ({}), reconnecting...", e);
+            eprintln!(
+                "[FTP] read_directory: listing failed ({}), reconnecting...",
+                e
+            );
             mgr.ensure_connected(conn_name).await?;
             try_list_dir(&mgr, conn_name, remote_path).await?
         }
@@ -1989,7 +2078,12 @@ async fn try_list_dir(
             let mut entries = Vec::new();
             for line in &lines {
                 if let Some((name, is_dir, size, modified)) = ftp::parse_mld_line(line) {
-                    let full_path = format!("ftp://{}{}/{}", conn_name, remote_path.trim_end_matches('/'), name);
+                    let full_path = format!(
+                        "ftp://{}{}/{}",
+                        conn_name,
+                        remote_path.trim_end_matches('/'),
+                        name
+                    );
                     entries.push(FileEntry {
                         name,
                         path: full_path,
@@ -2002,18 +2096,31 @@ async fn try_list_dir(
                     });
                 }
             }
-            eprintln!("[FTP] read_directory: MLSD returned {} entries", entries.len());
+            eprintln!(
+                "[FTP] read_directory: MLSD returned {} entries",
+                entries.len()
+            );
             entries
         }
         Err(e) => {
-            eprintln!("[FTP] read_directory: MLSD failed ({}), falling back to LIST", e);
-            let lines = ftp.client.list(Some(remote_path))
+            eprintln!(
+                "[FTP] read_directory: MLSD failed ({}), falling back to LIST",
+                e
+            );
+            let lines = ftp
+                .client
+                .list(Some(remote_path))
                 .await
                 .map_err(|e| format!("Failed to list directory: {}", e))?;
             let mut entries = Vec::new();
             for line in &lines {
                 if let Some((name, is_dir, size, _modified)) = ftp::parse_list_line(line) {
-                    let full_path = format!("ftp://{}{}/{}", conn_name, remote_path.trim_end_matches('/'), name);
+                    let full_path = format!(
+                        "ftp://{}{}/{}",
+                        conn_name,
+                        remote_path.trim_end_matches('/'),
+                        name
+                    );
                     entries.push(FileEntry {
                         name,
                         path: full_path,
@@ -2026,7 +2133,10 @@ async fn try_list_dir(
                     });
                 }
             }
-            eprintln!("[FTP] read_directory: LIST returned {} entries", entries.len());
+            eprintln!(
+                "[FTP] read_directory: LIST returned {} entries",
+                entries.len()
+            );
             entries
         }
     };
@@ -2038,17 +2148,19 @@ async fn try_list_dir(
         entries.retain(|e| seen.insert(e.path.clone()));
         let removed = before - entries.len();
         if removed > 0 {
-            eprintln!("[FTP] read_directory: dedup removed {} duplicate entries, {} remaining", removed, entries.len());
+            eprintln!(
+                "[FTP] read_directory: dedup removed {} duplicate entries, {} remaining",
+                removed,
+                entries.len()
+            );
         }
     }
 
     // Sort: directories first, then alphabetical
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(entries)
@@ -2067,18 +2179,24 @@ async fn ftp_download(
     drop(mgr);
 
     let file_name = remote_path.rsplit('/').next().unwrap_or(&remote_path);
-    eprintln!("[FTP] command ftp_download: conn={} remote={} → local={}", conn_name, remote_path, local_path);
+    eprintln!(
+        "[FTP] command ftp_download: conn={} remote={} → local={}",
+        conn_name, remote_path, local_path
+    );
 
     let mut ftp = session.lock().await;
 
     // Stream download directly to file
     let local = Path::new(&local_path);
     if let Some(parent) = local.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
     use tokio::io::AsyncWriteExt;
-    let mut stream = ftp.client.retr_as_stream(&remote_path)
+    let mut stream = ftp
+        .client
+        .retr_as_stream(&remote_path)
         .await
         .map_err(|e| format!("Failed to download: {}", e))?;
 
@@ -2088,16 +2206,21 @@ async fn ftp_download(
     let bytes = tokio::io::copy(&mut stream, &mut file)
         .await
         .map_err(|e| format!("Failed to write file: {}", e))?;
-    file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {}", e))?;
 
     eprintln!("[FTP] download: wrote {} bytes for {}", bytes, file_name);
 
-    let _ = app.emit("ftp-progress", serde_json::json!({
-        "file": file_name,
-        "done": bytes,
-        "total": bytes,
-        "op": "download"
-    }));
+    let _ = app.emit(
+        "ftp-progress",
+        serde_json::json!({
+            "file": file_name,
+            "done": bytes,
+            "total": bytes,
+            "op": "download"
+        }),
+    );
 
     Ok(())
 }
@@ -2115,7 +2238,10 @@ async fn ftp_upload(
     drop(mgr);
 
     let file_name = local_path.rsplit('\\').next().unwrap_or(&local_path);
-    eprintln!("[FTP] command ftp_upload: conn={} local={} → remote={}", conn_name, local_path, remote_path);
+    eprintln!(
+        "[FTP] command ftp_upload: conn={} local={} → remote={}",
+        conn_name, local_path, remote_path
+    );
 
     let mut ftp = session.lock().await;
 
@@ -2123,21 +2249,26 @@ async fn ftp_upload(
     let mut file = tokio::fs::File::open(&local_path)
         .await
         .map_err(|e| format!("Failed to open local file: {}", e))?;
-    let file_size = file.metadata().await
-        .map(|m| m.len())
-        .unwrap_or(0);
-    eprintln!("[FTP] upload: streaming {} bytes for {}", file_size, file_name);
+    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "[FTP] upload: streaming {} bytes for {}",
+        file_size, file_name
+    );
 
-    ftp.client.put_file(&remote_path, &mut file)
+    ftp.client
+        .put_file(&remote_path, &mut file)
         .await
         .map_err(|e| format!("Failed to upload: {}", e))?;
 
-    let _ = app.emit("ftp-progress", serde_json::json!({
-        "file": file_name,
-        "done": file_size,
-        "total": file_size,
-        "op": "upload"
-    }));
+    let _ = app.emit(
+        "ftp-progress",
+        serde_json::json!({
+            "file": file_name,
+            "done": file_size,
+            "total": file_size,
+            "op": "upload"
+        }),
+    );
 
     Ok(())
 }
@@ -2149,7 +2280,10 @@ async fn ftp_delete(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let (conn_name, remote_path) = parse_ftp_url(&path)?;
-    eprintln!("[FTP] command ftp_delete: conn={} path={}", conn_name, remote_path);
+    eprintln!(
+        "[FTP] command ftp_delete: conn={} path={}",
+        conn_name, remote_path
+    );
 
     let mgr = state.ftp_manager.lock().await;
     let session = mgr.get(conn_name)?;
@@ -2166,7 +2300,8 @@ async fn ftp_delete(
             eprintln!("[FTP] delete: rm failed ({}), trying rmdir...", e);
         }
     }
-    ftp.client.rmdir(&remote_path)
+    ftp.client
+        .rmdir(&remote_path)
         .await
         .map_err(|e| format!("Failed to delete: {}", e))?;
     eprintln!("[FTP] delete: removed directory {}", remote_path);
@@ -2181,7 +2316,10 @@ async fn ftp_rename(
 ) -> Result<String, String> {
     let (conn_name, remote_path) = parse_ftp_url(&old_path)?;
     let (_, new_remote) = parse_ftp_url(&new_path)?;
-    eprintln!("[FTP] command ftp_rename: conn={} from={} to={}", conn_name, remote_path, new_remote);
+    eprintln!(
+        "[FTP] command ftp_rename: conn={} from={} to={}",
+        conn_name, remote_path, new_remote
+    );
 
     // Try server-side rename first (fast path)
     {
@@ -2195,7 +2333,10 @@ async fn ftp_rename(
                 return Ok(new_path.to_string());
             }
             Err(e) => {
-                eprintln!("[FTP] rename: server-side rename failed ({}), falling back to copy+delete", e);
+                eprintln!(
+                    "[FTP] rename: server-side rename failed ({}), falling back to copy+delete",
+                    e
+                );
             }
         }
     }
@@ -2225,7 +2366,9 @@ async fn ftp_copy_move_fallback(
         let session = mgr.get(conn_name)?;
         drop(mgr);
         let mut ftp = session.lock().await;
-        let mut stream = ftp.client.retr_as_stream(src_remote)
+        let mut stream = ftp
+            .client
+            .retr_as_stream(src_remote)
             .await
             .map_err(|e| format!("Failed to open download: {}", e))?;
         let mut file = tokio::fs::File::create(&tmp)
@@ -2246,7 +2389,8 @@ async fn ftp_copy_move_fallback(
         let mut file = tokio::fs::File::open(&tmp)
             .await
             .map_err(|e| format!("Failed to read temp: {}", e))?;
-        ftp.client.put_file(dst_remote, &mut file)
+        ftp.client
+            .put_file(dst_remote, &mut file)
             .await
             .map_err(|e| format!("Failed to upload: {}", e))?;
     }
@@ -2258,7 +2402,8 @@ async fn ftp_copy_move_fallback(
         let session = mgr.get(conn_name)?;
         drop(mgr);
         let mut ftp = session.lock().await;
-        ftp.client.rm(src_remote)
+        ftp.client
+            .rm(src_remote)
             .await
             .map_err(|e| format!("Failed to delete source: {}", e))?;
     }
@@ -2274,10 +2419,17 @@ async fn ftp_copy(
     dst_path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    eprintln!("[FTP] command ftp_copy: conn={} src={} dst={}", conn_name, src_path, dst_path);
+    eprintln!(
+        "[FTP] command ftp_copy: conn={} src={} dst={}",
+        conn_name, src_path, dst_path
+    );
 
     // Download to temp file, re-upload (no native server-side copy in FTP)
-    let tmp = std::env::temp_dir().join(format!("wind_ftp_copy_{}_{}", std::process::id(), src_path.rsplit('/').next().unwrap_or("file")));
+    let tmp = std::env::temp_dir().join(format!(
+        "wind_ftp_copy_{}_{}",
+        std::process::id(),
+        src_path.rsplit('/').next().unwrap_or("file")
+    ));
 
     // Download
     eprintln!("[FTP] copy: downloading to temp {}", tmp.display());
@@ -2288,7 +2440,9 @@ async fn ftp_copy(
         drop(mgr);
         let mut ftp = session.lock().await;
 
-        let mut stream = ftp.client.retr_as_stream(&src_path)
+        let mut stream = ftp
+            .client
+            .retr_as_stream(&src_path)
             .await
             .map_err(|e| format!("Failed to open download stream: {}", e))?;
         let mut file = tokio::fs::File::create(&tmp)
@@ -2312,7 +2466,9 @@ async fn ftp_copy(
         let mut file = tokio::fs::File::open(&tmp)
             .await
             .map_err(|e| format!("Failed to read temp file: {}", e))?;
-        bytes_ul = ftp.client.put_file(&dst_path, &mut file)
+        bytes_ul = ftp
+            .client
+            .put_file(&dst_path, &mut file)
             .await
             .map_err(|e| format!("Failed to upload: {}", e))?;
     }
@@ -2325,12 +2481,12 @@ async fn ftp_copy(
 }
 
 #[tauri::command]
-async fn ftp_create_file(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn ftp_create_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let (conn_name, remote_path) = parse_ftp_url(&path)?;
-    eprintln!("[FTP] command ftp_create_file: conn={} path={}", conn_name, remote_path);
+    eprintln!(
+        "[FTP] command ftp_create_file: conn={} path={}",
+        conn_name, remote_path
+    );
 
     let mgr = state.ftp_manager.lock().await;
     let session = mgr.get(conn_name)?;
@@ -2352,12 +2508,12 @@ async fn ftp_create_file(
 }
 
 #[tauri::command]
-async fn ftp_mkdir(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn ftp_mkdir(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let (conn_name, remote_path) = parse_ftp_url(&path)?;
-    eprintln!("[FTP] command ftp_mkdir: conn={} path={}", conn_name, remote_path);
+    eprintln!(
+        "[FTP] command ftp_mkdir: conn={} path={}",
+        conn_name, remote_path
+    );
 
     let mgr = state.ftp_manager.lock().await;
     let session = mgr.get(conn_name)?;
@@ -2365,10 +2521,17 @@ async fn ftp_mkdir(
 
     let mut ftp = session.lock().await;
     // Use custom_command to accept both 250 and 257 (Android servers return 250)
-    match ftp.client.custom_command(
-        format!("MKD {}", remote_path),
-        &[suppaftp::Status::RequestedFileActionOk, suppaftp::Status::PathCreated],
-    ).await {
+    match ftp
+        .client
+        .custom_command(
+            format!("MKD {}", remote_path),
+            &[
+                suppaftp::Status::RequestedFileActionOk,
+                suppaftp::Status::PathCreated,
+            ],
+        )
+        .await
+    {
         Ok(_) => eprintln!("[FTP] mkdir: created {}", remote_path),
         Err(e) => {
             eprintln!("[FTP] mkdir: FAILED {} — {}", remote_path, e);
@@ -2390,14 +2553,16 @@ async fn ftp_download_folder(
     eprintln!("[FTP] command ftp_download_folder: conn={conn_name} remote={remote_path} → local={local_path} move={move_mode} skip={}", skip_rel_paths.len());
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
-    let (total_bytes, ids) = scheduler.enqueue_ftp_folder_download(
-        sched.clone(),
-        &conn_name,
-        &remote_path,
-        &local_path,
-        move_mode,
-        skip_rel_paths,
-    ).await?;
+    let (total_bytes, ids) = scheduler
+        .enqueue_ftp_folder_download(
+            sched.clone(),
+            &conn_name,
+            &remote_path,
+            &local_path,
+            move_mode,
+            skip_rel_paths,
+        )
+        .await?;
     Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
 }
 
@@ -2413,22 +2578,29 @@ async fn ftp_upload_folder(
     eprintln!("[FTP] command ftp_upload_folder: local={local_path} → conn={conn_name} remote={remote_path} move={move_mode} skip={}", skip_rel_paths.len());
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
-    let (total_bytes, ids) = scheduler.enqueue_ftp_folder_upload(
-        sched.clone(),
-        &conn_name,
-        &local_path,
-        &remote_path,
-        move_mode,
-        skip_rel_paths,
-    ).await?;
+    let (total_bytes, ids) = scheduler
+        .enqueue_ftp_folder_upload(
+            sched.clone(),
+            &conn_name,
+            &local_path,
+            &remote_path,
+            move_mode,
+            skip_rel_paths,
+        )
+        .await?;
     Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
 }
 
 #[tauri::command]
-async fn list_ftp_connections(state: State<'_, AppState>) -> Result<Vec<ftp::FtpConnectionConfig>, String> {
+async fn list_ftp_connections(
+    state: State<'_, AppState>,
+) -> Result<Vec<ftp::FtpConnectionConfig>, String> {
     let mgr = state.ftp_manager.lock().await;
     let configs = mgr.get_configs();
-    eprintln!("[FTP] command list_ftp_connections: {} connection(s)", configs.len());
+    eprintln!(
+        "[FTP] command list_ftp_connections: {} connection(s)",
+        configs.len()
+    );
     Ok(configs)
 }
 
@@ -2467,26 +2639,7 @@ struct ShellOutput {
 }
 
 fn detect_bash_path() -> Option<String> {
-    let candidates = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\msys64\usr\bin\bash.exe",
-        r"C:\cygwin64\bin\bash.exe",
-    ];
-    for path in &candidates {
-        if Path::new(path).exists() {
-            return Some(path.to_string());
-        }
-    }
-    // Fallback: check if bash is in PATH
-    if std::process::Command::new("bash")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Some("bash".to_string());
-    }
-    None
+    tool_cache::bash_path().map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -2494,11 +2647,14 @@ fn exec_shell_command(command: String, cwd: Option<String>) -> Result<ShellOutpu
     let bash = detect_bash_path()
         .ok_or_else(|| "bash not found. Install Git for Windows or MSYS2.".to_string())?;
 
-    let output = std::process::Command::new(&bash)
+    let output = tool_cache::background_command(&bash)
         .args(["-c", &command])
         .current_dir(cwd.unwrap_or_else(|| ".".to_string()))
         .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+        .map_err(|e| {
+            tool_cache::invalidate("bash");
+            format!("Failed to execute: {}", e)
+        })?;
 
     Ok(ShellOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -2518,9 +2674,10 @@ pub fn run() {
             let mut ftp_manager = ftp::FtpManager::new();
             ftp_manager.load_on_startup();
             let ftp_manager = Arc::new(TokioMutex::new(ftp_manager));
-            let transfer_scheduler = Arc::new(TokioMutex::new(
-                transfer::TransferScheduler::new(handle.clone(), ftp_manager.clone())
-            ));
+            let transfer_scheduler = Arc::new(TokioMutex::new(transfer::TransferScheduler::new(
+                handle.clone(),
+                ftp_manager.clone(),
+            )));
             app.manage(AppState {
                 terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),

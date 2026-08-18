@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+
+use crate::tool_cache;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PackageInfo {
@@ -42,34 +43,35 @@ fn python_exe_hash(python: &str) -> String {
 
 fn find_python(python_exe: Option<&str>) -> Result<String, String> {
     if let Some(exe) = python_exe {
-        if PathBuf::from(exe).exists() {
+        if PathBuf::from(exe).is_file() {
             return Ok(exe.to_string());
         }
     }
-    for name in &["python", "python3", "py"] {
-        if Command::new(name).arg("--version").output().is_ok() {
-            return Ok(name.to_string());
-        }
-    }
-    Err("Python not found in PATH".into())
+    tool_cache::python_path()
+        .map(|path| path.to_string_lossy().to_string())
+        .ok_or_else(|| "Python not found in PATH".into())
 }
 
 #[tauri::command]
-pub async fn scan_python_packages(
-    python_exe: Option<String>,
-) -> Result<Vec<PackageInfo>, String> {
+pub async fn scan_python_packages(python_exe: Option<String>) -> Result<Vec<PackageInfo>, String> {
     let python = find_python(python_exe.as_deref())?;
 
-    let output = Command::new(&python)
+    let output = tool_cache::background_command(&python)
         .arg("-m")
         .arg("pip")
         .arg("list")
         .arg("--format=json")
         .output()
-        .map_err(|e| format!("Failed to run pip: {}", e))?;
+        .map_err(|e| {
+            tool_cache::invalidate("python");
+            format!("Failed to run pip: {}", e)
+        })?;
 
     if !output.status.success() {
-        return Err(format!("pip list failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "pip list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -118,13 +120,16 @@ pub async fn get_package_api(
 }
 
 fn get_package_version(python: &str, package_name: &str) -> Result<String, String> {
-    let output = Command::new(python)
+    let output = tool_cache::background_command(python)
         .arg("-m")
         .arg("pip")
         .arg("show")
         .arg(package_name)
         .output()
-        .map_err(|e| format!("Failed to run pip show: {}", e))?;
+        .map_err(|e| {
+            tool_cache::invalidate("python");
+            format!("Failed to run pip show: {}", e)
+        })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
@@ -172,7 +177,7 @@ print(json.dumps(members))
         import_name
     );
 
-    let mut child = Command::new(python)
+    let mut child = tool_cache::background_command(python)
         .arg("-c")
         .arg(&script)
         .env("PYTHONIOENCODING", "utf-8")
@@ -180,7 +185,10 @@ print(json.dumps(members))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn Python: {}", e))?;
+        .map_err(|e| {
+            tool_cache::invalidate("python");
+            format!("Failed to spawn Python: {}", e)
+        })?;
 
     // Wait with timeout (some packages are slow to import)
     let timeout = std::time::Duration::from_secs(15);
@@ -188,8 +196,13 @@ print(json.dumps(members))
     let mut status = None;
     while start.elapsed() < timeout {
         match child.try_wait() {
-            Ok(Some(s)) => { status = Some(s); break; }
-            Ok(None) => { std::thread::sleep(std::time::Duration::from_millis(100)); }
+            Ok(Some(s)) => {
+                status = Some(s);
+                break;
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             Err(_) => break,
         }
     }
