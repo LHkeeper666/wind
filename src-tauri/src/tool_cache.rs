@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use crate::app_paths;
+
 #[derive(Default, Deserialize, Serialize)]
 struct DiskToolCache {
     tools: HashMap<String, String>,
@@ -32,10 +34,7 @@ fn cache_state() -> &'static Mutex<ToolCacheState> {
 }
 
 fn cache_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("wind")
-        .join("tool-paths.json")
+    app_paths::cache_file("tool-paths.json")
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -48,7 +47,11 @@ fn load_disk_cache(state: &mut ToolCacheState) {
     }
     state.loaded = true;
 
-    let Ok(contents) = fs::read_to_string(cache_path()) else {
+    let path = cache_path();
+    let legacy_path = app_paths::legacy_local_file("tool-paths.json");
+    let _ = app_paths::migrate_legacy_file(&path, &legacy_path);
+
+    let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
     let Ok(cache) = serde_json::from_str::<DiskToolCache>(&contents) else {

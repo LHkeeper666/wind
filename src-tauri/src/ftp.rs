@@ -6,6 +6,8 @@ use suppaftp::tokio::AsyncRustlsFtpStream;
 use suppaftp::types::FileType;
 use tokio::sync::Mutex;
 
+use crate::app_paths;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FtpConnectionConfig {
     pub name: String,
@@ -27,10 +29,7 @@ pub struct FtpManager {
 
 impl FtpManager {
     pub fn new() -> Self {
-        let config_path = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wind")
-            .join("ftp-connections.json");
+        let config_path = app_paths::config_file("ftp-connections.json");
         eprintln!("[FTP] Manager initialized, config path: {}", config_path.display());
         FtpManager {
             sessions: HashMap::new(),
@@ -40,6 +39,10 @@ impl FtpManager {
     }
 
     pub fn load_on_startup(&mut self) {
+        let legacy_path = app_paths::legacy_roaming_file("ftp-connections.json");
+        if let Err(error) = app_paths::migrate_legacy_file(&self.config_path, &legacy_path) {
+            eprintln!("[FTP] Failed to migrate stored connections: {}", error);
+        }
         match self.load_configs_from_file() {
             Ok(configs) => {
                 let count = configs.len();

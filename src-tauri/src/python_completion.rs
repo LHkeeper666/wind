@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 
-use crate::tool_cache;
+use crate::{app_paths, tool_cache};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PackageInfo {
@@ -27,10 +27,7 @@ pub struct PackageApi {
 }
 
 fn cache_dir() -> PathBuf {
-    let base = dirs::cache_dir()
-        .or_else(|| dirs::data_local_dir())
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("wind").join("python-completions")
+    app_paths::cache_dir().join("python-completions")
 }
 
 fn python_exe_hash(python: &str) -> String {

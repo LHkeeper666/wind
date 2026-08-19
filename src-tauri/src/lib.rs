@@ -1,3 +1,4 @@
+mod app_paths;
 mod file_ops;
 mod file_watcher;
 mod ftp;
@@ -1341,19 +1342,12 @@ fn is_leap(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
-fn config_dir() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("C:\\"))
-        .join("wind")
-}
-
-fn config_path() -> std::path::PathBuf {
-    config_dir().join("windrc.json")
-}
-
 #[tauri::command]
 fn read_config() -> Result<serde_json::Value, String> {
-    let path = config_path();
+    let path = app_paths::config_file("windrc.json");
+    let legacy_path = app_paths::legacy_roaming_file("windrc.json");
+    app_paths::migrate_legacy_file(&path, &legacy_path)
+        .map_err(|e| format!("Failed to migrate config: {}", e))?;
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
@@ -1363,11 +1357,14 @@ fn read_config() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn write_config(options: serde_json::Value) -> Result<(), String> {
-    let dir = config_dir();
+    let path = app_paths::config_file("windrc.json");
+    let dir = path
+        .parent()
+        .ok_or_else(|| "Failed to determine config directory".to_string())?;
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
     let content = serde_json::to_string_pretty(&options)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(config_path(), content).map_err(|e| format!("Failed to write config: {}", e))
+    fs::write(path, content).map_err(|e| format!("Failed to write config: {}", e))
 }
 
 #[tauri::command]

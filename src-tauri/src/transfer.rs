@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::Mutex as TokioMutex;
+
+use crate::app_paths;
 use tokio::task::JoinHandle;
 
 use crate::ftp::FtpManager;
@@ -105,10 +107,11 @@ pub struct TransferScheduler {
 
 impl TransferScheduler {
     pub fn new(app: AppHandle, ftp_manager: Arc<TokioMutex<FtpManager>>) -> Self {
-        let history_path = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wind")
-            .join("transfer-history.json");
+        let history_path = app_paths::state_file("transfer-history.json");
+        let legacy_history_path = app_paths::legacy_roaming_file("transfer-history.json");
+        if let Err(error) = app_paths::migrate_legacy_file(&history_path, &legacy_history_path) {
+            eprintln!("[transfer] Failed to migrate history: {}", error);
+        }
 
         let mut scheduler = TransferScheduler {
             app,
