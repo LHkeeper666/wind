@@ -82,6 +82,9 @@ function createLayoutStore() {
     // Apply all tab state fields in a single store update to avoid
     // cascading reactive triggers from multiple individual set* calls.
     restoreTabState(partial: {
+      columnRatios: [number, number, number];
+      previewExpanded: boolean;
+      originalRatios: [number, number, number];
       currentPath: string;
       selectedFile: string | null;
       terminalVisible: boolean;
@@ -110,6 +113,9 @@ function createLayoutStore() {
         }
         return {
           ...state,
+          columnRatios: [...partial.columnRatios] as [number, number, number],
+          previewExpanded: partial.previewExpanded,
+          originalRatios: [...partial.originalRatios] as [number, number, number],
           currentPath: normalized,
           parentPath,
           selectedFile: partial.selectedFile,

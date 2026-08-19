@@ -5,6 +5,9 @@ export interface TabState {
   id: number;
   lastUsedAt: number;
   name: string;
+  columnRatios: [number, number, number];
+  previewExpanded: boolean;
+  originalRatios: [number, number, number];
   parentPath: string;
   currentPath: string;
   selectedFile: string | null;
@@ -39,6 +42,9 @@ function getDefaultTab(id: number): TabState {
     id,
     lastUsedAt: 0,
     name: 'home',
+    columnRatios: [1, 1, 3],
+    previewExpanded: false,
+    originalRatios: [1, 1, 3],
     parentPath: '',
     currentPath: '',
     selectedFile: null,
@@ -233,6 +239,9 @@ function createTabsStore() {
         const newTabs = [...state.tabs];
         newTabs[idx] = {
           ...newTabs[idx],
+          columnRatios: [...layoutState.columnRatios] as [number, number, number],
+          previewExpanded: layoutState.previewExpanded,
+          originalRatios: [...layoutState.originalRatios] as [number, number, number],
           parentPath: layoutState.parentPath,
           currentPath: layoutState.currentPath,
           selectedFile: layoutState.selectedFile,

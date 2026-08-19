@@ -19,6 +19,7 @@
   import SearchModal from './SearchModal.svelte';
   import HelpOverlay from './HelpOverlay.svelte';
   import TabBar from './TabBar.svelte';
+  import WindowTitlebar from './WindowTitlebar.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
   import TransferManager from './TransferManager.svelte';
   import { transfer, activeTransferCount } from '$lib/stores/transfer';
@@ -619,6 +620,9 @@
     selectedFile = tab.selectedFile;
     // Batch all layout store updates into one to avoid cascading reactive triggers
     layout.restoreTabState({
+      columnRatios: tab.columnRatios,
+      previewExpanded: tab.previewExpanded,
+      originalRatios: tab.originalRatios,
       currentPath: tab.currentPath || '',
       selectedFile: tab.selectedFile,
       terminalVisible: tab.terminalVisible,
@@ -2112,6 +2116,7 @@
 <!-- svelte-ignore a11y_no_nonactive_element_interactions -->
 <div class="app-layout" role="application" aria-label="Wind Panel Layout" onfocusin={handleAppFocusIn}>
 
+  <WindowTitlebar />
   <TabBar onSwitchTab={handleTabSwitch} switcherActive={switcherActive} switcherSelectionId={switcherSelectionId} />
 
   <div class="panel-layout" style="
