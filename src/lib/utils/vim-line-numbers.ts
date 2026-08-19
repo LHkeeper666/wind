@@ -6,8 +6,7 @@ import { vimOptions } from './vim-options';
 export const lineNumberCompartment = new Compartment();
 
 let registered = false;
-let compRef: Compartment | null = null;
-let viewRef: EditorView | null = null;
+const registeredViews = new Map<EditorView, Compartment>();
 
 function buildLineNumbers(nu: boolean, rnu: boolean): Extension {
   if (!nu && !rnu) return [];
@@ -25,15 +24,15 @@ function buildLineNumbers(nu: boolean, rnu: boolean): Extension {
 }
 
 function rebuild() {
-  if (!viewRef || !compRef) return;
   const nu = vimOptions.get<boolean>('number');
   const rnu = vimOptions.get<boolean>('relativenumber');
-  viewRef.dispatch({ effects: compRef.reconfigure(buildLineNumbers(nu, rnu)) });
+  for (const [view, compartment] of registeredViews) {
+    view.dispatch({ effects: compartment.reconfigure(buildLineNumbers(nu, rnu)) });
+  }
 }
 
 export function setupVimLineNumbers(comp: Compartment, view: EditorView): void {
-  compRef = comp;
-  viewRef = view;
+  registeredViews.set(view, comp);
 
   if (!registered) {
     registered = true;
@@ -62,6 +61,10 @@ export function setupVimLineNumbers(comp: Compartment, view: EditorView): void {
   // applies persisted values (safe: compartment reconfigure only affects gutter).
   rebuild();
   vimOptions.load().then(() => {
-    if (viewRef === view && compRef === comp) rebuild();
+    if (registeredViews.has(view)) rebuild();
   });
+}
+
+export function teardownVimLineNumbers(view: EditorView): void {
+  registeredViews.delete(view);
 }

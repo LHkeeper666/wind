@@ -4,27 +4,34 @@ import type { EditorView } from 'codemirror';
 export interface ClipboardBridge {
   injectClipboard(): void;
   getCache(): string;
+  refresh(): void;
+  dispose(): void;
 }
+
+let clipboardCache = '';
+let registerPatched = false;
 
 export function initClipboardBridge(editorView: EditorView, overlayElement?: HTMLElement): ClipboardBridge {
   const cm = getCM(editorView);
-  if (!cm) return { injectClipboard() {}, getCache() { return ''; } };
+  if (!cm) return { injectClipboard() {}, getCache() { return ''; }, refresh() {}, dispose() {} };
 
   const supportsClipboard = typeof navigator !== 'undefined' && !!navigator.clipboard;
 
   // 1. Patch pushText: sync yank/delete to system clipboard
   const rc = Vim.getRegisterController();
-  const origPushText = rc.pushText.bind(rc);
-  rc.pushText = (registerName: string | null | undefined, operator: string, text: string, linewise?: boolean, blockwise?: boolean) => {
-    origPushText(registerName, operator, text, linewise, blockwise);
-    if (supportsClipboard && (!registerName || registerName === '"' || registerName === '+' || registerName === '*')) {
-      clipboardCache = text;
-      navigator.clipboard.writeText(text).catch(() => {});
-    }
-  };
+  if (!registerPatched) {
+    const origPushText = rc.pushText.bind(rc);
+    rc.pushText = (registerName: string | null | undefined, operator: string, text: string, linewise?: boolean, blockwise?: boolean) => {
+      origPushText(registerName, operator, text, linewise, blockwise);
+      if (supportsClipboard && (!registerName || registerName === '"' || registerName === '+' || registerName === '*')) {
+        clipboardCache = text;
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    };
+    registerPatched = true;
+  }
 
   // 2. Focus pre-read: cache clipboard for synchronous put
-  let clipboardCache = '';
 
   async function refreshClipboardCache() {
     if (!supportsClipboard) return;
@@ -47,5 +54,10 @@ export function initClipboardBridge(editorView: EditorView, overlayElement?: HTM
       }
     },
     getCache() { return clipboardCache; },
+    refresh: refreshClipboardCache,
+    dispose() {
+      if (overlayElement) overlayElement.removeEventListener('focus', refreshClipboardCache);
+      editorView.contentDOM.removeEventListener('focus', refreshClipboardCache);
+    },
   };
 }

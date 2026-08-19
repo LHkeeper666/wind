@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
@@ -88,6 +88,13 @@
   let windowReady: boolean = $state(false);
   let focusUnlisten: (() => void) | null = null;
 
+  function tracePerformance(name: string, start: string): void {
+    if (!import.meta.env.DEV || typeof performance === 'undefined') return;
+    performance.mark(name);
+    const measure = performance.measure(name, start, name);
+    if (measure.duration > 16) console.debug(`[PanelLayout] ${name}: ${measure.duration.toFixed(1)}ms`);
+  }
+
   // Tab completion state for command palette
   let completions: { name: string; is_dir: boolean }[] = [];
   let completionIndex: number = -1;
@@ -108,10 +115,10 @@
       handleTabSwitchMru(-1);
     } else if (cmd === 'switcher-next') {
       if (switcherActive) moveSwitcherIn(switcherMruIds, 1);
-      else startSwitcher('mru');
+      else startSwitcherForTabPrefix('mru');
     } else if (cmd === 'switcher-prev') {
       if (switcherActive) moveSwitcherIn(switcherPhysicalIds, 1);
-      else startSwitcher('physical');
+      else startSwitcherForTabPrefix('physical');
     } else if (cmd === 'swap-prev') {
       tabs.swapTab(-1);
     } else if (cmd === 'swap-next') {
@@ -548,6 +555,11 @@
     }
   }
 
+  function startSwitcherForTabPrefix(mode: 'mru' | 'physical') {
+    startSwitcher(mode);
+    if (!tHeld) commitSwitcher();
+  }
+
   function moveSwitcherIn(ids: number[], direction: 1 | -1) {
     const idx = ids.indexOf(switcherSelectionId);
     if (idx === -1) return;
@@ -615,6 +627,9 @@
       ? 'preview'
       : targetPanel;
     layout.setActiveColumn(actualPanel);
+    if (actualPanel === 'preview') {
+      previewEditor?.prepareTabFocus(tab.id, tab.selectedFile, tab.editorMode);
+    }
     // Sync PanelLayout local state
     currentPath = tab.currentPath;
     selectedFile = tab.selectedFile;
@@ -634,23 +649,16 @@
     // Re-assert activeColumn — restoreTabState may have triggered reactive
     // effects that changed it (e.g. tab rename callback → layout subscription)
     layout.setActiveColumn(actualPanel);
-    // Apply DOM focus after the panel paths and active tab state are restored.
-    requestAnimationFrame(() => {
-      void refreshCoordinator?.synchronizeActivePanels();
-      if (actualPanel === 'terminal' && floatingTerminal) {
-        floatingTerminal.focus();
-      } else if (actualPanel === 'parent' && parentDirectoryPanel) {
-        parentDirectoryPanel.focus();
-      } else if (actualPanel === 'current' && currentDirectoryPanel) {
-        currentDirectoryPanel.focus();
-      } else if (actualPanel === 'preview' && previewPanel) {
-        if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
-          previewEditor.focusToc();
-        } else {
-          const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
-          if (element) element.focus({ preventScroll: true });
-        }
-      }
+    if (import.meta.env.DEV) performance.mark('tab-focus-restore-start');
+    void tick().then(() => {
+      focusPanelNow(actualPanel);
+      if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
+      setTimeout(() => {
+        if (import.meta.env.DEV) performance.mark('directory-sync-schedule-start');
+        void refreshCoordinator?.synchronizeActivePanels().finally(() => {
+          if (import.meta.env.DEV) tracePerformance('directory-sync-schedule', 'directory-sync-schedule-start');
+        });
+      }, 0);
     });
   }
 
@@ -1590,9 +1598,9 @@
       } else if (code === 'KeyC') {
         handleTabClose();
       } else if (code === 'KeyN') {
-        startSwitcher('mru');
+        startSwitcherForTabPrefix('mru');
       } else if (code === 'KeyP') {
-        startSwitcher('physical');
+        startSwitcherForTabPrefix('physical');
       } else if (code === 'Comma') {
         tabs.swapTab(-1);
       } else if (code === 'Period') {
@@ -2016,29 +2024,36 @@
 
   function focusPanel(panel: 'parent' | 'current' | 'preview' | 'terminal') {
     layout.setActiveColumn(panel);
-    requestAnimationFrame(() => {
-      if (panel === 'terminal' && floatingTerminal) {
-        floatingTerminal.focus();
-      } else if (panel === 'parent' && parentDirectoryPanel) {
-        parentDirectoryPanel.focus();
-      } else if (panel === 'current' && currentDirectoryPanel) {
-        currentDirectoryPanel.focus();
-      } else if (panel === 'preview' && previewPanel) {
-        if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
-          previewEditor.focusToc();
-        } else {
-          const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
-          if (element) element.focus({ preventScroll: true });
-        }
+    focusPanelNow(panel);
+    void tick().then(() => focusPanelNow(panel));
+  }
+
+  function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal') {
+    if (panel === 'terminal' && floatingTerminal) {
+      floatingTerminal.focus();
+    } else if (panel === 'parent' && parentDirectoryPanel) {
+      parentDirectoryPanel.focus();
+    } else if (panel === 'current' && currentDirectoryPanel) {
+      currentDirectoryPanel.focus();
+    } else if (panel === 'preview' && previewPanel) {
+      if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
+        previewEditor.focusToc();
+      } else {
+        const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
+        if (element) element.focus({ preventScroll: true });
+        previewEditor?.focusActiveInput();
       }
-    });
+    }
   }
 
   function isPanelFocused(): boolean {
     const active = document.activeElement;
     if (!active || active === document.body) return false;
     const panelLayout = document.querySelector('.panel-layout');
-    return panelLayout ? panelLayout.contains(active) : false;
+    if (!panelLayout || !panelLayout.contains(active)) return false;
+    const element = active as HTMLElement;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
   }
 
   function handleAppFocusIn(event: FocusEvent) {
@@ -2071,9 +2086,11 @@
       return;
     }
     if (!windowReady) return;
-    if (isPanelFocused()) return;
-    focusPanel($layout.activeColumn);
-    showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
+    const hadPanelFocus = isPanelFocused();
+    focusPanelNow($layout.activeColumn);
+    if (!hadPanelFocus) {
+      showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
+    }
   }
 
   // Column resize drag handlers

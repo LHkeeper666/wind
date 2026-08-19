@@ -50,7 +50,7 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **AND** 保存 originalRatios=2:1:2
 
 ### Requirement: Tab 切换时恢复保存的状态
-切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM、left panel 的 detach 状态以及完整布局快照。布局快照 SHALL 在一次布局状态更新中恢复，且不得保留上一 tab 的列比例或展开状态。
+切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM、left panel 的 detach 状态以及完整布局快照。布局快照 SHALL 在一次布局状态更新中恢复，且不得保留上一 tab 的列比例或展开状态。若该 tab 保存的文件存在有效 Vim 编辑器会话，系统 MUST 复用该会话并恢复其焦点，而非重建 `EditorView`。
 
 #### Scenario: 恢复 selectedFile 并显示预览
 - **WHEN** 用户切换到 tab A
@@ -190,3 +190,30 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **WHEN** 切 tab 流程执行 `deactivateTab`
 - **THEN** 该调用与 `filePath`（`selectedFile`）赋值在同一同步调用栈内且在前
 - **AND** 不被放入 `setTimeout` 或 `requestAnimationFrame`
+
+### Requirement: Vim 编辑器会话在 Tab 间复用
+
+系统 SHALL 为每个已进入编辑模式且文件路径未变化的 Tab 保留独立的 CodeMirror 编辑器会话。切换回该 Tab 时，系统 MUST 激活已有会话而非销毁并重建其 `EditorView`。
+
+#### Scenario: 两个 Vim normal 模式 Tab 来回切换
+- **WHEN** Tab A 和 Tab B 都已在同一文件路径下进入 `editor-normal` 模式
+- **AND** 用户从 Tab A 切换到 Tab B 再切回 Tab A
+- **THEN** 每个 Tab 恢复各自已有的 `EditorView`
+- **AND** 切换路径不再次执行目标 Tab 的编辑器初始化
+- **AND** 每个 Tab 的光标、滚动位置和 Vim 模式保持各自状态
+
+#### Scenario: 切换回 Vim insert 模式 Tab
+- **WHEN** 用户离开处于 `editor-insert` 模式的 Tab A 后再切回 Tab A
+- **THEN** Tab A 的已有编辑器会话被激活
+- **AND** CodeMirror 内容区获得焦点
+- **AND** 用户可以立即继续输入文本
+
+#### Scenario: 文件路径变化使会话失效
+- **WHEN** 某 Tab 的选中文件从 `a.txt` 变为 `b.txt`
+- **THEN** `a.txt` 对应的编辑器会话不再作为该 Tab 的活动会话
+- **AND** 系统在需要编辑 `b.txt` 时为其创建正确的新会话
+
+#### Scenario: 关闭持有编辑器会话的 Tab
+- **WHEN** 用户关闭一个已进入 Vim 编辑模式的 Tab
+- **THEN** 系统销毁该 Tab 的编辑器会话和宿主容器
+- **AND** 不影响其他 Tab 的编辑器会话
