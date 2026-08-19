@@ -152,16 +152,26 @@
   let editorView: EditorView | undefined = $state(undefined);
   let editorFilePath: string | null = $state(null);
   let themeObserver: MutationObserver | null = null;
+  interface TextContentSnapshot {
+    tabId: number;
+    path: string;
+    generation: number;
+    content: string;
+  }
+  let loadGeneration: number = 0;
+  let readyTextContent = $state<TextContentSnapshot | null>(null);
   let codeFileDirectEdit = $derived(
     !!filePath &&
-    !!content &&
     !binaryContent &&
-    !['md', 'markdown', 'json', 'ipynb'].includes((filePath?.split('.').pop() || '').toLowerCase())
+    !!readyTextContent &&
+    readyTextContent.tabId === renderTabId &&
+    readyTextContent.path === filePath &&
+    readyTextContent.generation === loadGeneration &&
+    isDirectEditorFile(filePath)
   );
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   const tabRenderVersions = new Map<number, number>();
-  let loadGeneration: number = 0;
   let waitingForTabKey: boolean = false;
 
   interface EditorSession {
@@ -419,6 +429,19 @@
     invoke('stop_watch_file').catch(() => {});
   }
 
+  function isCurrentTextSnapshot(snapshot: TextContentSnapshot): boolean {
+    const current = readyTextContent;
+    return current !== null
+      && current.tabId === snapshot.tabId
+      && current.path === snapshot.path
+      && current.generation === snapshot.generation
+      && current.content === snapshot.content
+      && snapshot.tabId === renderTabId
+      && snapshot.path === filePath
+      && snapshot.generation === loadGeneration
+      && binaryContent === null;
+  }
+
   async function handleFileChanged(eventPath: string) {
     if (!filePath) return;
     const a = eventPath.replace(/\//g, '\\').toLowerCase();
@@ -519,15 +542,19 @@
     if (m === 'editor-normal' || m === 'editor-insert') {
       if (previewWithToc) previewWithToc.style.display = 'none';
       if (editorContainer) editorContainer.style.display = 'block';
-      if (filePath && activateEditorSession(renderTabId, filePath)) {
+      const textSnapshot = readyTextContent;
+      if (!textSnapshot || !isCurrentTextSnapshot(textSnapshot)) {
+        return;
+      }
+      if (activateEditorSession(renderTabId, textSnapshot.path)) {
         if (editorTargetLine >= 0 && editorView) moveCursorToLine(editorTargetLine);
         if (changed && activeColumn === 'preview') focusActiveEditor();
-      } else if (editorContainer && filePath && (!editorSessions.has(renderTabId) || editorSessions.get(renderTabId)?.filePath !== filePath)) {
-        const targetFilePath = filePath;
+      } else if (editorContainer && (!editorSessions.has(textSnapshot.tabId) || editorSessions.get(textSnapshot.tabId)?.filePath !== textSnapshot.path)) {
         requestAnimationFrame(() => {
           if (mode !== 'editor-normal' && mode !== 'editor-insert') return;
-          if (editorContainer && filePath === targetFilePath && (!editorSessions.has(renderTabId) || editorSessions.get(renderTabId)?.filePath !== filePath)) {
-            initEditor();
+          if (!isCurrentTextSnapshot(textSnapshot)) return;
+          if (editorContainer && (!editorSessions.has(textSnapshot.tabId) || editorSessions.get(textSnapshot.tabId)?.filePath !== textSnapshot.path)) {
+            initEditor(textSnapshot);
             if (activeColumn === 'preview') focusActiveEditor();
           }
         });
@@ -727,6 +754,10 @@
   function isImageFile(path: string): boolean { return IMAGE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
   function isPdfFile(path: string): boolean { return (path.split('.').pop()?.toLowerCase() || '') === 'pdf'; }
   function isVideoFile(path: string): boolean { return isVideoFileExt(path); }
+  function isDirectEditorFile(path: string): boolean {
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    return !['md', 'markdown', 'json', 'ipynb'].includes(ext);
+  }
   const ARCHIVE_EXTENSIONS = new Set(['zip']);
   function isArchiveFile(path: string): boolean { return ARCHIVE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
 
@@ -748,6 +779,12 @@
       content = cached.content;
       savedContent = cached.savedContent;
       binaryContent = cached.binaryContent;
+      readyTextContent = cached.binaryContent ? null : {
+        tabId: loadTabId,
+        path,
+        generation: gen,
+        content: cached.content,
+      };
       isModified = cached.isModified;
       pdfCurrentPage = cached.pdfCurrentPage;
       pdfPageCount = cached.pdfPageCount;
@@ -785,8 +822,10 @@
     // async loadFile completes) does not render stale data from a previous file.
     content = '';
     binaryContent = null;
+    readyTextContent = null;
     pendingRestoreScrollTop = -1;
     isModified = false;
+    mode = 'global-normal';
 
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
@@ -913,6 +952,7 @@
         }
       } else {
         content = newContent; binaryContent = null; savedContent = newContent;
+        readyTextContent = { tabId: loadTabId, path, generation: gen, content: newContent };
       }
     } catch {
       if (gen !== loadGeneration) return;
@@ -931,11 +971,8 @@
       }
     }
     // Code files go directly to editor mode (no Shiki preview)
-    if (codeFileDirectEdit) {
-      if (mode === 'editor-normal' || mode === 'editor-insert') {
-      } else {
-        mode = 'editor-normal';
-      }
+    if (readyTextContent && isDirectEditorFile(path)) {
+      mode = 'editor-normal';
     } else {
       destroyEditorSession(loadTabId);
       mode = 'global-normal';
@@ -1147,20 +1184,21 @@
     }
   }
 
-  function initEditor() {
-    if (!editorContainer || !filePath) return;
-    if (activateEditorSession(renderTabId, filePath)) return;
-    destroyEditorSession(renderTabId);
+  function initEditor(textSnapshot: TextContentSnapshot) {
+    if (!editorContainer || !isCurrentTextSnapshot(textSnapshot)) return;
+    if (activateEditorSession(textSnapshot.tabId, textSnapshot.path)) return;
+    destroyEditorSession(textSnapshot.tabId);
     if (import.meta.env.DEV) performance.mark('vim-session-create-start');
-    const tabId = renderTabId;
-    const targetPath = filePath;
+    const tabId = textSnapshot.tabId;
+    const targetPath = textSnapshot.path;
+    const initialContent = textSnapshot.content;
     const host = document.createElement('div');
     host.className = 'editor-session';
     editorContainer.appendChild(host);
     const sessionLineNumberCompartment = new Compartment();
     const sessionThemeCompartment = new Compartment();
-    editorFilePath = filePath;
-    const language = getLanguage(filePath);
+    editorFilePath = targetPath;
+    const language = getLanguage(targetPath);
     const extensions = [
       highlightActiveLineGutter(), highlightSpecialChars(), history(),
       foldGutter(), drawSelection(), dropCursor(), autocompletion(),
@@ -1222,14 +1260,14 @@
       }),
     ];
     if (language) extensions.push(language);
-    if (filePath && filePath.toLowerCase().endsWith('.py')) {
+    if (targetPath.toLowerCase().endsWith('.py')) {
       extensions.push(pythonLanguage.data.of({ autocomplete: pythonCompletionSource }));
     }
     const restorePos = pendingEditorPos >= 0 ? pendingEditorPos : 0;
     const state = EditorState.create({
-      doc: content, extensions,
+      doc: initialContent, extensions,
       selection: pendingEditorPos >= 0 ? { anchor: pendingEditorPos }
-        : editorTargetLine >= 0 ? { anchor: getPosAtLine(content, editorTargetLine) }
+        : editorTargetLine >= 0 ? { anchor: getPosAtLine(initialContent, editorTargetLine) }
         : undefined,
     });
     const needsScroll = pendingEditorPos >= 0 || editorTargetLine >= 0;
