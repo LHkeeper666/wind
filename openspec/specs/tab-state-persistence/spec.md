@@ -3,7 +3,7 @@
 Preserve and restore tab state (selected file, cursor, scroll, terminal mode, preview DOM) across tab switches.
 ## Requirements
 ### Requirement: Tab 切换时保存当前状态
-切换 tab 前，系统 SHALL 保存当前 tab 的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM 缓存、left panel 的 detach 状态，以及完整的布局快照到 TabState。布局快照 MUST 包含三栏比例、预览是否展开和预览展开前的比例。
+切换 tab 前，系统 SHALL 保存当前 tab 的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM 缓存、left panel 的 detach 状态，以及完整的布局快照到 TabState。布局快照 MUST 包含三栏比例、预览是否展开和预览展开前的比例。当前目录面板处于项目模式时，TabState MUST 额外保存项目模式启用状态、固定树根、展开目录路径、项目树选中路径和项目树滚动位置。
 
 #### Scenario: 保存 selectedFile
 - **WHEN** 用户从 tab A 切换到 tab B
@@ -49,8 +49,12 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **AND** 保存展开时的可见比例
 - **AND** 保存 originalRatios=2:1:2
 
+#### Scenario: 保存项目树状态
+- **WHEN** 用户从项目模式 tab A 切换到 tab B
+- **THEN** tab A 保存固定树根、展开路径、项目树选中路径和滚动位置
+
 ### Requirement: Tab 切换时恢复保存的状态
-切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM、left panel 的 detach 状态以及完整布局快照。布局快照 SHALL 在一次布局状态更新中恢复，且不得保留上一 tab 的列比例或展开状态。若该 tab 保存的文件存在有效 Vim 编辑器会话，系统 MUST 复用该会话并恢复其焦点，而非重建 `EditorView`。
+切换到一个 tab 时，系统 SHALL 恢复该 tab 之前保存的 selectedFile、cursorIndex、scrollOffset、terminal 状态、预览 DOM、left panel 的 detach 状态以及完整布局快照。布局快照 SHALL 在一次布局状态更新中恢复，且不得保留上一 tab 的列比例或展开状态。若该 tab 保存的文件存在有效 Vim 编辑器会话，系统 MUST 复用该会话并恢复其焦点，而非重建 `EditorView`。若 TabState.projectMode 为 true，系统 MUST 恢复固定树根并按保存的路径重建展开分支、选择和滚动位置。
 
 #### Scenario: 恢复 selectedFile 并显示预览
 - **WHEN** 用户切换到 tab A
@@ -117,6 +121,11 @@ Preserve and restore tab state (selected file, cursor, scroll, terminal mode, pr
 - **AND** 用户切换回 tab A
 - **THEN** tab A 以预览展开布局显示
 - **AND** 用户退出预览展开后，三栏比例恢复为 2:1:2
+
+#### Scenario: 恢复项目树状态
+- **WHEN** 用户切换到 projectMode=true 的 tab
+- **THEN** 当前目录面板以保存的树根恢复项目模式
+- **AND** 恢复保存的展开路径、选择和滚动位置
 
 #### Scenario: 新 tab 使用默认独立布局
 - **WHEN** 用户创建一个新 tab

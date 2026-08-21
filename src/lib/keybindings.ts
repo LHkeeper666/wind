@@ -18,6 +18,7 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'Ctrl+`', context: 'global', description: 'Toggle terminal' },
       { key: 'Ctrl+Shift+`', context: 'global', description: 'Fullscreen terminal' },
       { key: 'Ctrl+L', context: 'global', description: 'Restore focus' },
+      { key: 'Ctrl+Shift+E', context: 'current directory', description: 'Toggle project tree mode' },
       { key: 'Ctrl+=/-/0', context: 'global', description: 'Zoom in/out/reset' },
       { key: 'Ctrl+W h/l', context: 'global', description: 'Switch panel left/right' },
       { key: 'Ctrl+W j/k', context: 'global', description: 'Focus terminal/preview' },
@@ -57,6 +58,9 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'sm/sM', context: 'directory', description: 'Sort by modified time / reversed' },
       { key: 'sc/sC', context: 'directory', description: 'Sort by created time / reversed' },
       { key: 'st', context: 'directory', description: 'Toggle directory first' },
+      { key: 'l / L', context: 'project tree', description: 'Expand current / recursively expand subtree' },
+      { key: 'h / H', context: 'project tree', description: 'Collapse current / deepest expanded level' },
+      { key: 'K', context: 'project tree', description: 'Select parent directory' },
     ],
   },
   {

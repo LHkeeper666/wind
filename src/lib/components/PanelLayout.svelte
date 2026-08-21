@@ -488,6 +488,7 @@
     const snapshot = previewEditor?.getEditorStateSnapshot();
     previewEditor?.cacheTabState(state.activeTabId);
 
+    const projectTree = currentDirectoryPanel?.getProjectTreeState();
     tabs.saveActiveTabState({
       cursorIndex: currentDirectoryPanel?.getSelectedIndex() ?? 0,
       scrollOffset: currentDirectoryPanel?.getScrollOffset() ?? 0,
@@ -496,6 +497,11 @@
       isModified: snapshot?.isModified ?? false,
       pdfCurrentPage: snapshot?.pdfCurrentPage ?? 0,
       tocOpen: snapshot?.tocOpen ?? true,
+      projectMode: projectTree?.enabled ?? false,
+      projectRootPath: projectTree?.rootPath ?? null,
+      projectExpandedPaths: projectTree?.expandedPaths ?? [],
+      projectSelectedPath: projectTree?.selectedPath ?? null,
+      projectScrollOffset: projectTree?.scrollOffset ?? 0,
     });
   }
 
@@ -611,7 +617,7 @@
     previewEditor?.deactivateTab();
     // Set pending cursor/scroll BEFORE path change — for cached dirs, loadDirectory
     // completes synchronously, so pending must be set first
-    if (tab.cursorIndex > 0 || tab.scrollOffset > 0) {
+    if (!tab.projectMode && (tab.cursorIndex > 0 || tab.scrollOffset > 0)) {
       currentDirectoryPanel?.setPendingRestore(tab.cursorIndex, tab.scrollOffset);
     }
     // Set activeColumn BEFORE restoreTabState so the editor's activeColumn
@@ -651,6 +657,17 @@
     layout.setActiveColumn(actualPanel);
     if (import.meta.env.DEV) performance.mark('tab-focus-restore-start');
     void tick().then(() => {
+      if (tab.projectMode) {
+        void currentDirectoryPanel?.setProjectMode(true, {
+          enabled: true,
+          rootPath: tab.projectRootPath,
+          expandedPaths: tab.projectExpandedPaths,
+          selectedPath: tab.projectSelectedPath,
+          scrollOffset: tab.projectScrollOffset,
+        });
+      } else {
+        void currentDirectoryPanel?.setProjectMode(false);
+      }
       focusPanelNow(actualPanel);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
       setTimeout(() => {
@@ -1443,6 +1460,15 @@
     }
 
     // Ctrl+L to manually restore focus (skip if Ctrl+W prefix is active)
+    if (event.ctrlKey && event.shiftKey && event.code === 'KeyE'
+      && $layout.activeColumn === 'current' && !showCommandPalette && !showFileSearch) {
+      event.preventDefault();
+      event.stopPropagation();
+      const state = currentDirectoryPanel?.getProjectTreeState();
+      await currentDirectoryPanel?.setProjectMode(!state?.enabled);
+      return;
+    }
+
     if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
       const canRestore = !showCommandPalette && !showFileSearch
         && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen

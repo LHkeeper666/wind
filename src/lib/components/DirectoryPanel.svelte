@@ -21,6 +21,25 @@
     created?: number | null;
   }
 
+  interface TreeNode {
+    entry: FileEntry;
+    depth: number;
+    parentPath: string | null;
+    expanded: boolean;
+    loaded: boolean;
+    loading: boolean;
+    error: string;
+    children: TreeNode[];
+  }
+
+  export interface ProjectTreeState {
+    enabled: boolean;
+    rootPath: string | null;
+    expandedPaths: string[];
+    selectedPath: string | null;
+    scrollOffset: number;
+  }
+
   let {
     type = 'current',
     path = '',
@@ -86,9 +105,12 @@
   // Filter state
   let filterPattern: string = $state('');
   let filterMode: 'prefix' | 'wildcard' = $state('prefix');
+  let projectMode: boolean = $state(false);
+  let projectRoot: TreeNode | null = $state(null);
+  let projectRestoreGeneration = 0;
 
   // Derived values that depend on state declared above
-  let displayFiles: FileEntry[] = $derived.by(() => {
+  let normalDisplayFiles: FileEntry[] = $derived.by(() => {
     let result = showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden);
 
     // Apply filter
@@ -133,6 +155,17 @@
 
     return [...dotdot, ...rest];
   });
+  let treeVisibleNodes: TreeNode[] = $derived.by(() => {
+    if (!projectMode || !projectRoot) return [];
+    const result: TreeNode[] = [];
+    const visit = (node: TreeNode) => {
+      result.push(node);
+      if (node.expanded) node.children.forEach(visit);
+    };
+    visit(projectRoot);
+    return result;
+  });
+  let displayFiles: FileEntry[] = $derived(projectMode ? treeVisibleNodes.map(node => node.entry) : normalDisplayFiles);
   let selectedFile: FileEntry | null = $derived(
     selectedIndex >= 0 && selectedIndex < displayFiles.length ? displayFiles[selectedIndex] : null
   );
@@ -262,11 +295,49 @@
   }
 
   export function refresh() {
+    if (projectMode) return refreshProjectTree();
     return loadDirectory(path, true);
   }
 
   export function synchronize(version: number) {
+    if (projectMode) return refreshProjectTree(version);
     return loadDirectory(path, false, version);
+  }
+
+  export function getProjectTreeState(): ProjectTreeState {
+    return {
+      enabled: projectMode,
+      rootPath: projectRoot?.entry.path ?? null,
+      expandedPaths: treeVisibleNodes.filter(node => node.expanded && node !== projectRoot).map(node => node.entry.path),
+      selectedPath: selectedFile?.path ?? null,
+      scrollOffset: getScrollOffset(),
+    };
+  }
+
+  export async function setProjectMode(enabled: boolean, state?: ProjectTreeState): Promise<boolean> {
+    if (!enabled) {
+      projectMode = false;
+      projectRoot = null;
+      return true;
+    }
+    const rootPath = state?.rootPath ?? path;
+    if (!rootPath || rootPath === '/' || rootPath === '\\' || rootPath.startsWith('ftp://')) {
+      onToast('Project mode requires a local directory');
+      return false;
+    }
+    const generation = ++projectRestoreGeneration;
+    projectMode = true;
+    projectRoot = { entry: { name: rootPath.split(/[/\\]/).filter(Boolean).pop() || rootPath, path: rootPath, is_dir: true, size: null }, depth: 0, parentPath: null, expanded: true, loaded: false, loading: false, error: '', children: [] };
+    await loadTreeChildren(projectRoot, generation);
+    if (generation !== projectRestoreGeneration) return false;
+    for (const expandedPath of state?.expandedPaths ?? []) {
+      const node = findTreeNode(expandedPath);
+      if (node?.entry.is_dir) await expandTreeNode(node, generation);
+    }
+    if (state?.selectedPath) selectTreePathOrAncestor(state.selectedPath);
+    else selectByIndex(0);
+    if (state?.scrollOffset) setScrollOffset(state.scrollOffset);
+    return true;
   }
 
   function handleFocus() {
@@ -445,6 +516,90 @@
       if (gen === loadingGen) {
         isLoading = false;
       }
+    }
+  }
+
+  function findTreeNode(nodePath: string, node: TreeNode | null = projectRoot): TreeNode | null {
+    if (!node) return null;
+    if (node.entry.path === nodePath) return node;
+    for (const child of node.children) {
+      const found = findTreeNode(nodePath, child);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  async function loadTreeChildren(node: TreeNode, generation: number, forceRefresh: boolean = false): Promise<void> {
+    if (!node.entry.is_dir || node.loading || (node.loaded && !forceRefresh)) return;
+    node.loading = true;
+    node.error = '';
+    try {
+      const entries = !forceRefresh && directoryCache.has(node.entry.path)
+        ? directoryCache.get(node.entry.path)!
+        : await invoke<FileEntry[]>('read_directory', { path: node.entry.path });
+      if (generation !== projectRestoreGeneration) return;
+      directoryCache.set(node.entry.path, entries);
+      node.children = entries
+        .filter(entry => showHidden || !entry.is_hidden)
+        .sort((a, b) => a.is_dir === b.is_dir ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.is_dir ? -1 : 1)
+        .map(entry => ({ entry, depth: node.depth + 1, parentPath: node.entry.path, expanded: false, loaded: false, loading: false, error: '', children: [] }));
+      node.loaded = true;
+    } catch (error) {
+      node.error = String(error);
+    } finally {
+      node.loading = false;
+      projectRoot = projectRoot ? { ...projectRoot } : null;
+    }
+  }
+
+  async function expandTreeNode(node: TreeNode, generation: number = projectRestoreGeneration): Promise<void> {
+    if (!node.entry.is_dir) return;
+    await loadTreeChildren(node, generation);
+    if (generation === projectRestoreGeneration) {
+      node.expanded = true;
+      projectRoot = projectRoot ? { ...projectRoot } : null;
+    }
+  }
+
+  function selectTreePathOrAncestor(nodePath: string): void {
+    let candidate: string | null = nodePath;
+    while (candidate) {
+      const index = treeVisibleNodes.findIndex(node => node.entry.path === candidate);
+      if (index >= 0) { selectByIndex(index); return; }
+      const node = findTreeNode(candidate);
+      candidate = node?.parentPath ?? null;
+    }
+    selectByIndex(0);
+  }
+
+  async function refreshProjectTree(version?: number): Promise<boolean> {
+    const state = getProjectTreeState();
+    if (state.rootPath) directoryCache.invalidate(normalizeDirectoryKey(state.rootPath));
+    state.expandedPaths.forEach(nodePath => directoryCache.invalidate(normalizeDirectoryKey(nodePath)));
+    const result = await setProjectMode(true, state);
+    if (result && projectRoot) markDirectorySynchronized(projectRoot.entry.path, version);
+    return result;
+  }
+
+  async function expandRecursively(node: TreeNode): Promise<void> {
+    const queue: TreeNode[] = [node];
+    let visited = 0;
+    const limit = 500;
+    while (queue.length > 0 && visited < limit) {
+      const current = queue.shift()!;
+      await expandTreeNode(current);
+      visited += 1;
+      queue.push(...current.children.filter(child => child.entry.is_dir));
+    }
+    if (queue.length > 0) onToast(`Project tree expansion stopped after ${limit} directories`);
+  }
+
+  function collapseDeepestTreeLevel(): void {
+    const deepest = treeVisibleNodes.filter(node => node !== projectRoot && node.expanded)
+      .sort((a, b) => b.depth - a.depth)[0];
+    if (deepest) {
+      deepest.expanded = false;
+      projectRoot = projectRoot ? { ...projectRoot } : null;
     }
   }
 
@@ -807,7 +962,8 @@
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
-            onNavigate(entry.path);
+            if (projectMode) void expandTreeNode(treeVisibleNodes[selectedIndex]);
+            else onNavigate(entry.path);
           } else {
             onActivate(entry.path);
           }
@@ -858,7 +1014,14 @@
             break;
           case 'KeyK':
             event.preventDefault();
-            selectByIndex(Math.max(selectedIndex - 1, 0));
+            if (projectMode) {
+              if (event.shiftKey) {
+                const parentPath = treeVisibleNodes[selectedIndex]?.parentPath;
+                if (parentPath) selectTreePathOrAncestor(parentPath);
+              } else {
+                selectByIndex(Math.max(selectedIndex - 1, 0));
+              }
+            } else selectByIndex(Math.max(selectedIndex - 1, 0));
             break;
           case 'KeyG':
             if (isDoubleG) {
@@ -873,6 +1036,19 @@
             }
             break;
           case 'KeyH':
+            if (projectMode) {
+              event.preventDefault();
+              if (event.shiftKey) {
+                collapseDeepestTreeLevel();
+              } else {
+                const node = treeVisibleNodes[selectedIndex];
+                if (node?.expanded) {
+                  node.expanded = false;
+                  projectRoot = projectRoot ? { ...projectRoot } : null;
+                } else if (node?.parentPath) selectTreePathOrAncestor(node.parentPath);
+              }
+              break;
+            }
             if (type === 'current' || type === 'parent') {
               event.preventDefault();
               const shouldRestore = isFocused;
@@ -885,6 +1061,16 @@
             }
             break;
           case 'KeyL':
+            if (projectMode) {
+              event.preventDefault();
+              const node = treeVisibleNodes[selectedIndex];
+              if (node?.entry.is_dir) {
+                if (event.shiftKey) void expandRecursively(node);
+                else if (node.expanded && node.children.length > 0) selectByIndex(selectedIndex + 1);
+                else void expandTreeNode(node);
+              } else if (node) onActivate(node.entry.path);
+              break;
+            }
             if (type === 'current' || detached || type === 'parent') {
               event.preventDefault();
               if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
@@ -998,10 +1184,20 @@
 
   function handleItemDblClick(entry: FileEntry) {
     if (entry.is_dir) {
-      onNavigate(entry.path);
+      if (projectMode) {
+        const node = findTreeNode(entry.path);
+        if (node) toggleTreeNode(node);
+      } else onNavigate(entry.path);
     } else {
       onActivate(entry.path);
     }
+  }
+
+  function toggleTreeNode(node: TreeNode): void {
+    if (node.expanded) {
+      node.expanded = false;
+      projectRoot = projectRoot ? { ...projectRoot } : null;
+    } else void expandTreeNode(node);
   }
 </script>
 
@@ -1055,7 +1251,7 @@
             class:cut-marked={cutPaths.has(file.path)}
             class:directory={file.is_dir}
             class:hidden-file={file.is_hidden}
-            onclick={() => handleItemClick(files.findIndex(f => f.path === file.path))}
+            onclick={() => handleItemClick(index)}
             ondblclick={() => handleItemDblClick(file)}
             onkeydown={() => {}}
             data-path={file.path}
@@ -1065,6 +1261,22 @@
               <span class="select-marker">*</span>
             {:else if cutPaths.has(file.path)}
               <span class="cut-marker">x</span>
+            {/if}
+            {#if projectMode}
+              <span class="tree-indent" style={`width: ${(treeVisibleNodes[index]?.depth ?? 0) * 16}px`}></span>
+              <button
+                type="button"
+                aria-label={treeVisibleNodes[index]?.expanded ? 'Collapse directory' : 'Expand directory'}
+                class="tree-toggle"
+                class:expanded={treeVisibleNodes[index]?.expanded}
+                class:directory-toggle={file.is_dir}
+                onclick={(event) => {
+                  if (!file.is_dir) return;
+                  event.stopPropagation();
+                  const node = treeVisibleNodes[index];
+                  if (node) toggleTreeNode(node);
+                }}
+              ></button>
             {/if}
             <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
           </div>
@@ -1163,6 +1375,7 @@
     padding: 2px 12px;
     cursor: pointer;
     transition: background-color 0.1s ease;
+    user-select: none;
   }
 
   .file-item:hover {
@@ -1215,6 +1428,64 @@
   .file-name.is-dir {
     color: var(--dir-color);
     font-weight: 500;
+  }
+
+  .tree-indent,
+  .tree-toggle {
+    flex-shrink: 0;
+  }
+
+  .tree-indent {
+    align-self: stretch;
+    background-image: repeating-linear-gradient(
+      to right,
+      transparent 0,
+      transparent 7px,
+      var(--border) 7px,
+      var(--border) 8px,
+      transparent 8px,
+      transparent 16px
+    );
+    opacity: 0.65;
+  }
+
+  .tree-toggle {
+    width: 14px;
+    position: relative;
+    border: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  .tree-toggle::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: -8px;
+    width: 8px;
+    border-top: 1px solid var(--border);
+    opacity: 0.65;
+  }
+
+  .tree-toggle.directory-toggle::after {
+    content: '';
+    position: absolute;
+    top: calc(50% - 3px);
+    left: 2px;
+    width: 7px;
+    height: 7px;
+    border-right: 1px solid var(--text-muted);
+    border-bottom: 1px solid var(--text-muted);
+    transform: rotate(-45deg);
+    transition: transform 0.1s ease;
+  }
+
+  .tree-toggle.directory-toggle.expanded::after {
+    transform: rotate(45deg);
+  }
+
+  .tree-toggle.directory-toggle {
+    cursor: pointer;
   }
 
   .placeholder {

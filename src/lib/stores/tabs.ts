@@ -30,6 +30,11 @@ export interface TabState {
   leftScrollOffset: number;
   currentDirectoryVersion: number;
   leftDirectoryVersion: number;
+  projectMode: boolean;
+  projectRootPath: string | null;
+  projectExpandedPaths: string[];
+  projectSelectedPath: string | null;
+  projectScrollOffset: number;
 }
 
 interface TabsState {
@@ -68,6 +73,11 @@ function getDefaultTab(id: number): TabState {
     leftScrollOffset: 0,
     currentDirectoryVersion: 0,
     leftDirectoryVersion: 0,
+    projectMode: false,
+    projectRootPath: null,
+    projectExpandedPaths: [],
+    projectSelectedPath: null,
+    projectScrollOffset: 0,
   };
 }
 
@@ -243,6 +253,11 @@ function createTabsStore() {
       isModified?: boolean;
       pdfCurrentPage?: number;
       tocOpen?: boolean;
+      projectMode?: boolean;
+      projectRootPath?: string | null;
+      projectExpandedPaths?: string[];
+      projectSelectedPath?: string | null;
+      projectScrollOffset?: number;
     }) {
       update(state => {
         const idx = state.tabs.findIndex(t => t.id === state.activeTabId);
@@ -271,6 +286,11 @@ function createTabsStore() {
           tocOpen: extra?.tocOpen ?? newTabs[idx].tocOpen,
           leftMode: layoutState.leftMode,
           leftPath: layoutState.leftPath,
+          projectMode: extra?.projectMode ?? newTabs[idx].projectMode,
+          projectRootPath: extra?.projectRootPath ?? newTabs[idx].projectRootPath,
+          projectExpandedPaths: extra?.projectExpandedPaths ?? newTabs[idx].projectExpandedPaths,
+          projectSelectedPath: extra?.projectSelectedPath ?? newTabs[idx].projectSelectedPath,
+          projectScrollOffset: extra?.projectScrollOffset ?? newTabs[idx].projectScrollOffset,
         };
         return { ...state, tabs: newTabs };
       });
