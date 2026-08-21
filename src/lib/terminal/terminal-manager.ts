@@ -10,9 +10,12 @@ export interface TerminalInstance {
   terminal: Terminal;
   fitAddon: FitAddon;
   unlisten: (() => void) | null;
+  unlistenExit: (() => void) | null;
   container: HTMLDivElement;
   shellType: string;
   initialCwd: string;
+  restartCwd: string;
+  restartPending: boolean;
   shellIntegration: ShellIntegration;
   shellState: ShellState;
   terminalSize: { cols: number; rows: number };
@@ -44,6 +47,13 @@ export class TerminalManager {
 
   get(tabId: number): TerminalInstance | undefined {
     return this.instances.get(tabId);
+  }
+
+  setRestartCwd(tabId: number, cwd: string) {
+    const instance = this.instances.get(tabId);
+    if (instance && cwd) {
+      instance.restartCwd = cwd;
+    }
   }
 
   registerContainer(tabId: number, container: HTMLDivElement) {
@@ -162,9 +172,12 @@ export class TerminalManager {
       terminal,
       fitAddon,
       unlisten: null,
+      unlistenExit: null,
       container,
       shellType,
       initialCwd,
+      restartCwd: initialCwd,
+      restartPending: false,
       shellIntegration,
       shellState,
       terminalSize: { cols: 80, rows: 24 },
@@ -218,6 +231,24 @@ export class TerminalManager {
       }
     });
 
+    listen<string>(`terminal-exited-${tabId}`, () => {
+      const current = this.instances.get(tabId);
+      if (!current || current.restartPending) return;
+
+      current.restartPending = true;
+      void this.startShell(tabId, current.shellType, current.restartCwd, true).finally(() => {
+        const latest = this.instances.get(tabId);
+        if (latest === current) latest.restartPending = false;
+      });
+    }).then((unlistenFn) => {
+      const inst = this.instances.get(tabId);
+      if (inst) {
+        inst.unlistenExit = unlistenFn;
+      } else {
+        unlistenFn();
+      }
+    });
+
     return instance;
   }
 
@@ -227,15 +258,16 @@ export class TerminalManager {
     this.onShellStateChange = handler;
   }
 
-  private resolveCwd(instance: TerminalInstance, fallbackCwd: string = ''): string {
+  private resolveCwd(instance: TerminalInstance, fallbackCwd: string = '', preferFallbackCwd: boolean = false): string {
+    if (preferFallbackCwd && fallbackCwd) return fallbackCwd;
     return instance.shellIntegration.getState().currentDirectory || instance.initialCwd || fallbackCwd;
   }
 
-  async startShell(tabId: number, shellType: string, fallbackCwd: string = '') {
+  async startShell(tabId: number, shellType: string, fallbackCwd: string = '', preferFallbackCwd: boolean = false) {
     const instance = this.instances.get(tabId);
     if (!instance) return;
 
-    const cwd = this.resolveCwd(instance, fallbackCwd);
+    const cwd = this.resolveCwd(instance, fallbackCwd, preferFallbackCwd);
     instance.terminal.clear();
     instance.terminal.write('\x1b[2J\x1b[H');
     instance.shellIntegration.reset();
@@ -289,6 +321,9 @@ export class TerminalManager {
 
     if (instance.unlisten) {
       instance.unlisten();
+    }
+    if (instance.unlistenExit) {
+      instance.unlistenExit();
     }
 
     const resizeObserver = this.resizeObservers.get(tabId);

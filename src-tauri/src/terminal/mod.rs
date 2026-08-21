@@ -1,25 +1,29 @@
 use portable_pty::{ChildKiller, CommandBuilder, PtyPair, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
 struct TerminalInstance {
+    generation: u64,
     pty_pair: Arc<Mutex<Option<PtyPair>>>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     child_killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
 }
 
 pub struct TerminalManager {
-    instances: Mutex<HashMap<u32, TerminalInstance>>,
+    instances: Arc<Mutex<HashMap<u32, TerminalInstance>>>,
+    next_generation: AtomicU64,
     app_handle: Option<AppHandle>,
 }
 
 impl TerminalManager {
     pub fn new() -> Self {
         TerminalManager {
-            instances: Mutex::new(HashMap::new()),
+            instances: Arc::new(Mutex::new(HashMap::new())),
+            next_generation: AtomicU64::new(1),
             app_handle: None,
         }
     }
@@ -31,6 +35,7 @@ impl TerminalManager {
     pub fn spawn(&self, tab_id: u32, shell: &str, cwd: Option<&str>, cols: u16, rows: u16) -> Result<(), String> {
         // Kill existing instance for this tab if any
         self.kill(tab_id);
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
 
         let pty_system = native_pty_system();
 
@@ -70,7 +75,7 @@ impl TerminalManager {
         }
 
         // Spawn child process in PTY
-        let child = pty_pair
+        let mut child = pty_pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
@@ -92,6 +97,7 @@ impl TerminalManager {
 
         // Store instance
         let instance = TerminalInstance {
+            generation,
             pty_pair: Arc::new(Mutex::new(Some(pty_pair))),
             writer: Arc::new(Mutex::new(Some(writer))),
             child_killer: Arc::new(Mutex::new(Some(killer))),
@@ -103,7 +109,7 @@ impl TerminalManager {
         }
 
         // Spawn thread to read output
-        let app_handle = self.app_handle.clone();
+        let output_handle = self.app_handle.clone();
         let event_name = format!("terminal-output-{}", tab_id);
         thread::spawn(move || {
             let mut buffer = [0u8; 4096];
@@ -112,11 +118,30 @@ impl TerminalManager {
                     Ok(0) => break,
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        if let Some(ref handle) = app_handle {
+                        if let Some(ref handle) = output_handle {
                             let _ = handle.emit(&event_name, &data);
                         }
                     }
                     Err(_) => break,
+                }
+            }
+        });
+
+        let exit_handle = self.app_handle.clone();
+        let exit_event_name = format!("terminal-exited-{}", tab_id);
+        let instances = Arc::clone(&self.instances);
+        thread::spawn(move || {
+            let _ = child.wait();
+
+            let current_instance = instances
+                .lock()
+                .unwrap()
+                .get(&tab_id)
+                .map(|instance| instance.generation == generation)
+                .unwrap_or(false);
+            if current_instance {
+                if let Some(ref handle) = exit_handle {
+                    let _ = handle.emit(&exit_event_name, generation.to_string());
                 }
             }
         });

@@ -49,6 +49,10 @@
     });
   });
 
+  $effect(() => {
+    terminalManager.setRestartCwd(currentTabId, currentPath);
+  });
+
   // Ensure terminal container exists for current tab and switch visibility
   $effect(() => {
     if (!terminalWrapper) return;

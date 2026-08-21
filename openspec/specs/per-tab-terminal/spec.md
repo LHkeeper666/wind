@@ -40,20 +40,26 @@
 - **AND** 用户将 directory panel 导航到 `C:\other`
 - **THEN** Tab A 保存的 terminal 初始 cwd 仍为 `C:\work`
 
-### Requirement: Shell 重启保持 terminal 当前目录
-系统 SHALL 在 shell 重启或切换 shell 时优先使用该 terminal 通过 shell integration 记录的最近有效目录；无此目录时 SHALL 回退到该 tab 的 terminal 初始 cwd，而不得直接读取 directory panel 的当前路径。
+### Requirement: Shell 退出重启使用 directory panel 目录
+系统 SHALL 在用户通过 `exit` 自然退出 shell 后，自动在该 tab directory panel 的当前 `currentPath` 中启动新的同类型 shell。用户切换 shell 时 SHALL 优先使用该 terminal 通过 shell integration 记录的最近有效目录；无此目录时 SHALL 回退到该 tab 的 terminal 初始 cwd。
 
-#### Scenario: 重启 shell 沿用 shell integration 目录
+#### Scenario: exit 后以 directory panel 目录重启
+- **WHEN** Tab A 的 shell integration 最近记录的目录为 `C:\work\src`
+- **AND** Tab A 的 directory panel 当前路径为 `C:\other`
+- **AND** 用户在 terminal 中执行 `exit`
+- **THEN** 当前 shell 结束后自动启动同类型的新 shell
+- **AND** 新 shell 以 `C:\other` 启动
+
+#### Scenario: 切换 shell 沿用 shell integration 目录
 - **WHEN** Tab A 的 terminal 初始 cwd 为 `C:\work`
 - **AND** shell integration 最近记录的当前目录为 `C:\work\src`
-- **AND** 用户切换 shell 或触发 shell 重启
+- **AND** 用户切换 shell
 - **THEN** 新 shell 以 `C:\work\src` 启动
 
-#### Scenario: 无 shell integration 目录时回退初始 cwd
+#### Scenario: 切换 shell 无 shell integration 目录时回退初始 cwd
 - **WHEN** Tab A 的 terminal 初始 cwd 为 `C:\work`
 - **AND** shell integration 没有有效当前目录
-- **AND** directory panel 当前路径已变为 `C:\other`
-- **AND** 用户切换 shell 或触发 shell 重启
+- **AND** 用户切换 shell
 - **THEN** 新 shell 以 `C:\work` 启动
 
 #### Scenario: 切换 shell 不改变 terminal cwd 来源
