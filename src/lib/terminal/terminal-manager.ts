@@ -12,6 +12,7 @@ export interface TerminalInstance {
   unlisten: (() => void) | null;
   container: HTMLDivElement;
   shellType: string;
+  initialCwd: string;
   shellIntegration: ShellIntegration;
   shellState: ShellState;
   terminalSize: { cols: number; rows: number };
@@ -73,7 +74,7 @@ export class TerminalManager {
     }
   }
 
-  create(tabId: number, shellType: string): TerminalInstance {
+  create(tabId: number, shellType: string, initialCwd: string = ''): TerminalInstance {
     const existing = this.instances.get(tabId);
     if (existing) return existing;
 
@@ -163,6 +164,7 @@ export class TerminalManager {
       unlisten: null,
       container,
       shellType,
+      initialCwd,
       shellIntegration,
       shellState,
       terminalSize: { cols: 80, rows: 24 },
@@ -225,10 +227,15 @@ export class TerminalManager {
     this.onShellStateChange = handler;
   }
 
-  async startShell(tabId: number, shellType: string, cwd: string) {
+  private resolveCwd(instance: TerminalInstance, fallbackCwd: string = ''): string {
+    return instance.shellIntegration.getState().currentDirectory || instance.initialCwd || fallbackCwd;
+  }
+
+  async startShell(tabId: number, shellType: string, fallbackCwd: string = '') {
     const instance = this.instances.get(tabId);
     if (!instance) return;
 
+    const cwd = this.resolveCwd(instance, fallbackCwd);
     instance.terminal.clear();
     instance.terminal.write('\x1b[2J\x1b[H');
     instance.shellIntegration.reset();
@@ -247,12 +254,12 @@ export class TerminalManager {
     }
   }
 
-  async changeShell(tabId: number, newShell: string, cwd: string) {
+  async changeShell(tabId: number, newShell: string) {
     const instance = this.instances.get(tabId);
     if (!instance) return;
 
     instance.shellType = newShell;
-    await this.startShell(tabId, newShell, cwd);
+    await this.startShell(tabId, newShell);
   }
 
   focus(tabId: number) {

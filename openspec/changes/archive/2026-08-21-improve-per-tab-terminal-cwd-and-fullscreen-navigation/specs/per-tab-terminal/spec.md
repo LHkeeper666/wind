@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: 每个 tab 拥有独立的 terminal 实例
 系统 SHALL 为每个 tab 维护独立的 terminal 实例（xterm.js Terminal + shell 进程），而非所有 tab 共享同一个实例；terminal 实例 SHALL 仅在该 tab 首次真正显示 terminal 时创建。
@@ -53,47 +53,10 @@
 - **WHEN** Tab A 的 terminal 初始 cwd 为 `C:\work`
 - **AND** shell integration 没有有效当前目录
 - **AND** directory panel 当前路径已变为 `C:\other`
-- **AND** 用户切换 shell 或触发 shell 重启
+- **AND** 用户切换 shell或触发 shell 重启
 - **THEN** 新 shell 以 `C:\work` 启动
 
 #### Scenario: 切换 shell 不改变 terminal cwd 来源
 - **WHEN** 用户从 Bash 切换到 PowerShell 或 CMD
 - **THEN** 新 shell 使用上述 cwd 解析顺序
 - **AND** 不使用切换瞬间的 directory panel `currentPath` 覆盖该目录
-
-### Requirement: Tab 关闭时清理 terminal 资源
-系统 SHALL 在 tab 关闭时销毁对应的 terminal 实例和 shell 进程。
-
-#### Scenario: 关闭有 terminal 的 tab
-- **WHEN** 用户关闭一个已打开 terminal 的 tab
-- **THEN** 该 tab 的 xterm.js Terminal 实例被 dispose
-- **AND** 该 tab 的 shell 进程被终止
-
-#### Scenario: 关闭无 terminal 的 tab
-- **WHEN** 用户关闭一个从未打开 terminal 的 tab
-- **THEN** 无需清理 terminal 资源
-
-### Requirement: Terminal 实例的模式独立
-每个 terminal 实例 SHALL 独立维护自己的 insert/normal 模式状态。
-
-#### Scenario: Tab A insert 模式不影响 Tab B
-- **WHEN** Tab A 的 terminal 处于 insert 模式
-- **AND** 用户切换到 Tab B
-- **THEN** Tab B 的 terminal 模式由 Tab B 自己的状态决定（非继承自 Tab A）
-
-### Requirement: TerminalManager 管理多实例
-系统 SHALL 使用 TerminalManager 模块集中管理所有 terminal 实例的生命周期。
-
-#### Scenario: 创建 terminal 实例
-- **WHEN** 用户在某个 tab 中首次打开 terminal
-- **THEN** TerminalManager 创建新的 TerminalInstance
-- **AND** TerminalInstance 包含 xterm.js Terminal、FitAddon、shell 进程引用
-
-#### Scenario: 获取 terminal 实例
-- **WHEN** 系统需要操作某个 tab 的 terminal
-- **THEN** TerminalManager.get(tabId) 返回对应的 TerminalInstance
-- **AND** 如果该 tab 未创建 terminal，返回 undefined
-
-#### Scenario: 销毁 terminal 实例
-- **WHEN** tab 被关闭或 terminal 被显式关闭
-- **THEN** TerminalManager.destroy(tabId) 清理所有资源

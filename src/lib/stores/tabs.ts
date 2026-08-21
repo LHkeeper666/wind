@@ -16,6 +16,7 @@ export interface TabState {
   terminalVisible: boolean;
   terminalHeight: number;
   fullscreenTerminalOpen: boolean;
+  terminalInitialCwd?: string | null;
   shellType: string;
   editorMode: 'global-normal' | 'editor-normal' | 'editor-insert';
   previewScrollTop: number;
@@ -53,6 +54,7 @@ function getDefaultTab(id: number): TabState {
     terminalVisible: false,
     terminalHeight: 300,
     fullscreenTerminalOpen: false,
+    terminalInitialCwd: null,
     shellType: 'git-bash',
     editorMode: 'global-normal',
     previewScrollTop: 0,
@@ -223,6 +225,16 @@ function createTabsStore() {
       });
     },
 
+    setActiveTerminalInitialCwd(cwd: string) {
+      update(state => {
+        const index = state.tabs.findIndex(tab => tab.id === state.activeTabId);
+        if (index === -1 || state.tabs[index].terminalInitialCwd) return state;
+        const tabs = [...state.tabs];
+        tabs[index] = { ...tabs[index], terminalInitialCwd: cwd };
+        return { ...state, tabs };
+      });
+    },
+
     saveActiveTabState(extra?: {
       cursorIndex?: number;
       scrollOffset?: number;
@@ -250,6 +262,7 @@ function createTabsStore() {
           terminalVisible: layoutState.terminalVisible,
           terminalHeight: layoutState.terminalHeight,
           fullscreenTerminalOpen: layoutState.fullscreenTerminalOpen,
+          terminalInitialCwd: newTabs[idx].terminalInitialCwd ?? null,
           editorMode: extra?.editorMode ?? newTabs[idx].editorMode,
           previewScrollTop: extra?.previewScrollTop ?? newTabs[idx].previewScrollTop,
           isModified: extra?.isModified ?? newTabs[idx].isModified,

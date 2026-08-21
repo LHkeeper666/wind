@@ -1,32 +1,15 @@
 ## MODIFIED Requirements
 
-### Requirement: Terminal mode synced to store
-The terminal's mode state (insert/normal) SHALL be synchronized to the layout store.
-
-#### Scenario: Terminal enters normal mode
-- **WHEN** user presses Escape in terminal insert mode
-- **THEN** layout store's `terminalMode` is set to `'normal'`
-
-#### Scenario: Terminal enters insert mode
-- **WHEN** user presses `i` in terminal normal mode
-- **THEN** layout store's `terminalMode` is set to `'insert'`
-
-#### Scenario: Terminal is hidden
-- **WHEN** terminal is toggled off via Ctrl+`
-- **THEN** layout store's `terminalMode` is set to `null`
-
-## ADDED Requirements
-
 ### Requirement: t prefix tab operations work globally
 The `t` prefix for tab operations (t n, t p, t c, t t, etc.) SHALL work from any panel focus state, including fullscreen terminal normal mode, as long as no modal overlay (command palette, file search, fullscreen editor) is open and the active input is not in insert mode.
 
-#### Scenario: t n in terminal normal mode
-- **WHEN** user presses `t` then `n` while terminal is in normal mode
+#### Scenario: t n in fullscreen terminal normal mode
+- **WHEN** user presses `t` then `n` while terminal is in fullscreen normal mode
 - **THEN** system switches to the next tab
 - **AND** key prefix display shows `t` briefly after pressing `t`
 
-#### Scenario: t p in terminal normal mode
-- **WHEN** user presses `t` then `p` while terminal is in normal mode
+#### Scenario: t p in fullscreen terminal normal mode
+- **WHEN** user presses `t` then `p` while terminal is in fullscreen normal mode
 - **THEN** system switches to the previous tab
 
 #### Scenario: t prefix in terminal insert mode
@@ -52,3 +35,10 @@ The `t` prefix for tab operations (t n, t p, t c, t t, etc.) SHALL work from any
 - **WHEN** terminal 处于 fullscreen normal mode 且用户按下 Ctrl+L
 - **THEN** 焦点回到当前 tab 的 terminal
 - **AND** terminal 可以继续接收 normal mode 快捷键
+
+### Requirement: Panel switching disabled in fullscreen terminal
+系统 SHALL disable Ctrl+W panel switching when the terminal is in fullscreen mode.
+
+#### Scenario: Panel switch attempt in fullscreen
+- **WHEN** the user presses Ctrl+W followed by h/l/j/k while in fullscreen terminal
+- **THEN** no panel switching operation is executed

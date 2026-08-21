@@ -253,7 +253,11 @@ function createLayoutStore() {
 
     // Toggle fullscreen terminal
     toggleFullscreenTerminal() {
-      update(state => ({ ...state, fullscreenTerminalOpen: !state.fullscreenTerminalOpen }));
+      update(state => ({
+        ...state,
+        fullscreenTerminalOpen: !state.fullscreenTerminalOpen,
+        activeColumn: !state.fullscreenTerminalOpen ? 'terminal' : state.activeColumn,
+      }));
     },
 
     // Enter expanded preview mode

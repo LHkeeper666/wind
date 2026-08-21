@@ -9,18 +9,22 @@
     visible = false,
     fullscreen = false,
     currentPath = '',
+    initialCwd = null,
     shellType: shellTypeProp = 'git-bash',
     currentTabId = 1,
     zoomLevel = 1,
     onClose = () => {},
+    onInitialCwd = () => {},
   }: {
     visible: boolean;
     fullscreen?: boolean;
     currentPath?: string;
+    initialCwd?: string | null;
     shellType?: string;
     currentTabId?: number;
     zoomLevel?: number;
     onClose?: () => void;
+    onInitialCwd?: (cwd: string) => void;
   } = $props();
 
   let terminalWrapper: HTMLDivElement | undefined = $state(undefined);
@@ -57,11 +61,14 @@
       terminalManager.setContainerVisible(prevTabId, false);
     }
 
-    // Create container and terminal if needed
+    if (!visible) return;
+
     if (!terminalManager.has(activeTabId)) {
+      const terminalCwd = initialCwd || currentPath;
+      if (!initialCwd && terminalCwd) onInitialCwd(terminalCwd);
       terminalManager.createContainer(activeTabId, terminalWrapper);
-      terminalManager.create(activeTabId, shellTypeProp);
-      terminalManager.startShell(activeTabId, shellTypeProp, currentPath);
+      terminalManager.create(activeTabId, shellTypeProp, terminalCwd);
+      terminalManager.startShell(activeTabId, shellTypeProp);
     } else {
       terminalManager.setContainerVisible(activeTabId, true);
       // Fit after becoming visible
@@ -78,9 +85,10 @@
 
   // Sync shell type changes
   $effect(() => {
+    if (!visible) return;
     const instance = terminalManager.get(activeTabId);
     if (instance && instance.shellType !== shellTypeProp) {
-      terminalManager.changeShell(activeTabId, shellTypeProp, currentPath);
+      terminalManager.changeShell(activeTabId, shellTypeProp);
     }
   });
 
@@ -220,21 +228,21 @@
       <button
         class="shell-btn"
         class:selected={currentShellType === 'git-bash'}
-        onclick={() => terminalManager.changeShell(activeTabId, 'git-bash', currentPath)}
+        onclick={() => terminalManager.changeShell(activeTabId, 'git-bash')}
       >
         Bash
       </button>
       <button
         class="shell-btn"
         class:selected={currentShellType === 'powershell'}
-        onclick={() => terminalManager.changeShell(activeTabId, 'powershell', currentPath)}
+        onclick={() => terminalManager.changeShell(activeTabId, 'powershell')}
       >
         Pwsh
       </button>
       <button
         class="shell-btn"
         class:selected={currentShellType === 'cmd'}
-        onclick={() => terminalManager.changeShell(activeTabId, 'cmd', currentPath)}
+        onclick={() => terminalManager.changeShell(activeTabId, 'cmd')}
       >
         CMD
       </button>
@@ -261,9 +269,9 @@
   }
 
   .floating-terminal.fullscreen {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    z-index: 1000;
+    z-index: 20;
     border-top: none;
   }
 

@@ -2136,9 +2136,10 @@
   <WindowTitlebar />
   <TabBar onSwitchTab={handleTabSwitch} switcherActive={switcherActive} switcherSelectionId={switcherSelectionId} />
 
-  <div class="panel-layout" style="
-    grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
-  ">
+  <div class="content-area">
+    <div class="panel-layout" style="
+      grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
+    ">
     <!-- Parent Directory Column -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -2254,66 +2255,69 @@
         onBatchRenameCancel={handleBatchRenameCancel}
       />
     </div>
+    </div>
+
+    <!-- Fullscreen Editor Overlay -->
+    {#if $layout.fullscreenEditorOpen && selectedFile}
+      <FullscreenEditor
+        filePath={selectedFile}
+        content={previewEditor?.getContent() || ''}
+        initialLine={editorInitialLine}
+        onClose={handleCloseFullscreen}
+        onSave={handleSaveFullscreen}
+      />
+    {/if}
+
+    <!-- Fullscreen Image Viewer Overlay -->
+    {#if $layout.fullscreenImageViewerOpen && fullscreenImageList.length > 0}
+      <FullscreenImageViewer
+        imageList={fullscreenImageList}
+        currentIndex={fullscreenImageIndex}
+        onClose={handleCloseImageViewer}
+        onNavigate={handleImageViewerNavigate}
+      />
+    {/if}
+
+    <!-- Fullscreen PDF Viewer Overlay -->
+    {#if $layout.fullscreenPdfViewerOpen && fullscreenPdfPath}
+      <FullscreenPdfViewer
+        pdfPath={fullscreenPdfPath}
+        initialPage={fullscreenPdfPage}
+        pageCount={fullscreenPdfPageCount}
+        fileSize={fullscreenPdfFileSize}
+        onClose={handleClosePdfViewer}
+      />
+    {/if}
+
+    <!-- Fullscreen Video Player Overlay -->
+    {#if $layout.fullscreenVideoPlayerOpen && fullscreenVideoPlayerPath}
+      <FullscreenVideoPlayer
+        filePath={fullscreenVideoPlayerPath}
+        fileSize={fullscreenVideoPlayerFileSize}
+        onClose={handleCloseVideoPlayer}
+      />
+    {/if}
+
+    <!-- Floating Terminal -->
+    <FloatingTerminal
+      bind:this={floatingTerminal}
+      visible={$layout.terminalVisible}
+      fullscreen={$layout.fullscreenTerminalOpen}
+      currentPath={currentPath}
+      initialCwd={$activeTab.terminalInitialCwd}
+      shellType={$activeTab.shellType}
+      currentTabId={$activeTab.id}
+      zoomLevel={zoomLevel}
+      onClose={handleCloseTerminal}
+      onInitialCwd={(cwd) => tabs.setActiveTerminalInitialCwd(cwd)}
+    />
+
+    <!-- Transfer Manager -->
+    <TransferManager
+      visible={showTransfer}
+      onClose={() => showTransfer = false}
+    />
   </div>
-
-  <!-- Fullscreen Editor Overlay -->
-  {#if $layout.fullscreenEditorOpen && selectedFile}
-    <FullscreenEditor
-      filePath={selectedFile}
-      content={previewEditor?.getContent() || ''}
-      initialLine={editorInitialLine}
-      onClose={handleCloseFullscreen}
-      onSave={handleSaveFullscreen}
-    />
-  {/if}
-
-  <!-- Fullscreen Image Viewer Overlay -->
-  {#if $layout.fullscreenImageViewerOpen && fullscreenImageList.length > 0}
-    <FullscreenImageViewer
-      imageList={fullscreenImageList}
-      currentIndex={fullscreenImageIndex}
-      onClose={handleCloseImageViewer}
-      onNavigate={handleImageViewerNavigate}
-    />
-  {/if}
-
-  <!-- Fullscreen PDF Viewer Overlay -->
-  {#if $layout.fullscreenPdfViewerOpen && fullscreenPdfPath}
-    <FullscreenPdfViewer
-      pdfPath={fullscreenPdfPath}
-      initialPage={fullscreenPdfPage}
-      pageCount={fullscreenPdfPageCount}
-      fileSize={fullscreenPdfFileSize}
-      onClose={handleClosePdfViewer}
-    />
-  {/if}
-
-  <!-- Fullscreen Video Player Overlay -->
-  {#if $layout.fullscreenVideoPlayerOpen && fullscreenVideoPlayerPath}
-    <FullscreenVideoPlayer
-      filePath={fullscreenVideoPlayerPath}
-      fileSize={fullscreenVideoPlayerFileSize}
-      onClose={handleCloseVideoPlayer}
-    />
-  {/if}
-
-  <!-- Floating Terminal -->
-  <FloatingTerminal
-    bind:this={floatingTerminal}
-    visible={$layout.terminalVisible}
-    fullscreen={$layout.fullscreenTerminalOpen}
-    currentPath={currentPath}
-    shellType={$activeTab.shellType}
-    currentTabId={$activeTab.id}
-    zoomLevel={zoomLevel}
-    onClose={handleCloseTerminal}
-  />
-
-  <!-- Transfer Manager -->
-  <TransferManager
-    visible={showTransfer}
-    onClose={() => showTransfer = false}
-  />
 
   <!-- Status Bar -->
   <div class="status-bar">
@@ -2428,6 +2432,15 @@
     background-color: var(--bg-primary);
     color: var(--text-primary);
     font-family: var(--font-mono);
+    overflow: hidden;
+  }
+
+  .content-area {
+    display: flex;
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
     overflow: hidden;
   }
 
