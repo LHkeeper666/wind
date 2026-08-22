@@ -657,8 +657,10 @@
     // the filePath $effect-triggered loadFile sees mode=global-normal (no stale
     // editor content during async load). Do NOT move into setTimeout/rAF.
     previewEditor?.deactivateTab();
-    // Set pending cursor/scroll BEFORE path change — for cached dirs, loadDirectory
-    // completes synchronously, so pending must be set first
+    // Disable project mode before path change so the DirectoryPanel's $effect.pre
+    // always loads the new directory in normal mode. If the target tab is project
+    // mode, it will be re-enabled after the path settles in tick().then.
+    currentDirectoryPanel?.setProjectMode(false);
     if (!tab.projectMode && (tab.cursorIndex > 0 || tab.scrollOffset > 0)) {
       currentDirectoryPanel?.setPendingRestore(tab.cursorIndex, tab.scrollOffset);
     }
@@ -708,7 +710,7 @@
           scrollOffset: tab.projectScrollOffset,
         }).then(() => synchronizeProjectTreeWatcher());
       } else {
-        void currentDirectoryPanel?.setProjectMode(false).then(() => synchronizeProjectTreeWatcher());
+        void synchronizeProjectTreeWatcher();
       }
       focusPanelNow(actualPanel);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
