@@ -5,6 +5,7 @@ export interface ClipboardEntry {
   name: string;
   is_dir: boolean;
   size?: number;
+  skip_rel_paths?: string[];
 }
 
 interface ClipboardState {

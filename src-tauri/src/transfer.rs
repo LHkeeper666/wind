@@ -756,7 +756,7 @@ fn collect_dir_conflicts(src: &Path, dst: &Path, root: &Path, out: &mut Vec<Stri
 
 /// Recursively scan a source directory tree and emit a
 /// `transfer-conflict-found` event for each conflicting file.
-pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle) {
+pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle, skip_rel_paths: &[String]) {
     let Ok(entries) = fs::read_dir(src) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -765,8 +765,11 @@ pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle) 
         let rel = path.strip_prefix(root)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| name.to_string_lossy().to_string());
+        if skip_rel_paths.iter().any(|excluded| rel == *excluded || rel.starts_with(&format!("{excluded}\\"))) {
+            continue;
+        }
         if path.is_dir() {
-            scan_dir_conflicts(&path, &dst_path, root, app);
+            scan_dir_conflicts(&path, &dst_path, root, app, skip_rel_paths);
         } else if dst_path.exists() {
             let _ = app.emit("transfer-conflict-found", serde_json::json!({
                 "kind": "dir",
@@ -1286,7 +1289,11 @@ fn local_copy_blocking(
     // If this is a move, delete source after copy
     if task.op_type == TransferType::Move {
         if src.is_dir() {
-            let _ = fs::remove_dir_all(src);
+            if skip.is_empty() {
+                let _ = fs::remove_dir_all(src);
+            } else {
+                delete_with_progress(src, cancel_flag, app, task, &mut total, &mut last_emit)?;
+            }
         } else {
             let _ = fs::remove_file(src);
         }
@@ -1421,6 +1428,19 @@ fn delete_with_progress(
     total: &mut u64,
     last_emit: &mut Instant,
 ) -> Result<(), String> {
+    delete_with_progress_filtered(path, cancel_flag, app, task, total, last_emit, path, &task.skip_rel_paths.iter().map(|p| p.replace('\\', "/")).collect())
+}
+
+fn delete_with_progress_filtered(
+    path: &Path,
+    cancel_flag: &Arc<AtomicBool>,
+    app: &AppHandle,
+    task: &TransferTask,
+    total: &mut u64,
+    last_emit: &mut Instant,
+    root: &Path,
+    skip: &std::collections::HashSet<String>,
+) -> Result<(), String> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Err("Cancelled".into());
     }
@@ -1428,9 +1448,21 @@ fn delete_with_progress(
     if path.is_dir() {
         for entry in fs::read_dir(path).map_err(|e| format!("Read dir error: {}", e))? {
             let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
-            delete_with_progress(&entry.path(), cancel_flag, app, task, total, last_emit)?;
+            let relative = entry.path().strip_prefix(root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if skip.iter().any(|excluded| relative == *excluded || relative.starts_with(&format!("{excluded}/"))) {
+                continue;
+            }
+            delete_with_progress_filtered(&entry.path(), cancel_flag, app, task, total, last_emit, root, skip)?;
         }
-        fs::remove_dir(path).map_err(|e| format!("Remove dir error: {}", e))?;
+        let is_empty = fs::read_dir(path)
+            .map_err(|e| format!("Read dir error: {}", e))?
+            .next()
+            .is_none();
+        if is_empty {
+            fs::remove_dir(path).map_err(|e| format!("Remove dir error: {}", e))?;
+        }
     } else {
         let size = path.metadata().map(|m| m.len()).unwrap_or(0);
         fs::remove_file(path).map_err(|e| format!("Remove file error: {}", e))?;

@@ -1,5 +1,6 @@
 mod app_paths;
 mod file_ops;
+mod directory_watcher;
 mod file_watcher;
 mod ftp;
 mod neovim;
@@ -96,6 +97,7 @@ struct AppState {
     terminal: terminal::TerminalManager,
     neovim: Mutex<neovim::Neovim>,
     file_watcher: Mutex<file_watcher::FileWatcher>,
+    directory_watcher: Mutex<directory_watcher::DirectoryWatcher>,
     ftp_manager: Arc<TokioMutex<ftp::FtpManager>>,
     transfer_scheduler: Arc<TokioMutex<transfer::TransferScheduler>>,
 }
@@ -155,6 +157,17 @@ fn start_watch_file(
 #[tauri::command]
 fn stop_watch_file(state: State<'_, AppState>) -> Result<(), String> {
     state.file_watcher.lock().map_err(|e| e.to_string())?.stop();
+    Ok(())
+}
+
+#[tauri::command]
+fn start_watch_directory(path: String, app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.directory_watcher.lock().map_err(|e| e.to_string())?.start(&path, app_handle)
+}
+
+#[tauri::command]
+fn stop_watch_directory(state: State<'_, AppState>) -> Result<(), String> {
+    state.directory_watcher.lock().map_err(|e| e.to_string())?.stop();
     Ok(())
 }
 
@@ -859,7 +872,7 @@ async fn scan_transfer_conflicts(
             let src = std::path::Path::new(&task.source);
             let dst = std::path::Path::new(&task.destination);
             if src.is_dir() {
-                transfer::scan_dir_conflicts(src, dst, src, &app);
+                transfer::scan_dir_conflicts(src, dst, src, &app, &task.skip_rel_paths);
             }
         }
         let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
@@ -1731,6 +1744,31 @@ pub struct SearchResult {
     path: String,
     relative_path: String,
     is_dir: bool,
+    is_hidden: bool,
+}
+
+fn is_hidden_search_path(path: &Path, root_path: &Path) -> bool {
+    let relative_path = path.strip_prefix(root_path).unwrap_or(path);
+    let mut current_path = root_path.to_path_buf();
+
+    for component in relative_path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        current_path.push(component.as_os_str());
+        if name.starts_with('.') {
+            return true;
+        }
+        let is_hidden = fs::metadata(&current_path)
+            .map(|metadata| {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes() & 0x2 != 0
+            })
+            .unwrap_or(false);
+        if is_hidden {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn is_rg_available() -> bool {
@@ -1808,6 +1846,7 @@ fn search_with_fd(
             path: line.replace('/', "\\").trim_end_matches('\\').to_string(),
             relative_path,
             is_dir: path.is_dir(),
+            is_hidden: is_hidden_search_path(path, root_path),
         });
     }
 
@@ -1886,6 +1925,7 @@ fn search_with_rust(
                     path: path.to_string_lossy().to_string(),
                     relative_path,
                     is_dir,
+                    is_hidden: is_hidden_search_path(&path, root_path),
                 });
             }
 
@@ -1948,6 +1988,7 @@ async fn search_files(
                 path: e.path.clone(),
                 relative_path: e.name.clone(),
                 is_dir: e.is_dir,
+                is_hidden: false,
             })
             .collect();
         return Ok(results);
@@ -2679,6 +2720,7 @@ pub fn run() {
                 terminal,
                 neovim: Mutex::new(neovim::Neovim::new()),
                 file_watcher: Mutex::new(file_watcher::FileWatcher::new()),
+                directory_watcher: Mutex::new(directory_watcher::DirectoryWatcher::new()),
                 ftp_manager: ftp_manager.clone(),
                 transfer_scheduler: transfer_scheduler.clone(),
             });
@@ -2691,6 +2733,8 @@ pub fn run() {
             get_file_metadata,
             start_watch_file,
             stop_watch_file,
+            start_watch_directory,
+            stop_watch_directory,
             read_directory,
             list_archive_entries,
             list_drives,

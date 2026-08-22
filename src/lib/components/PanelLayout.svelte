@@ -49,6 +49,9 @@
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let previewPanel: HTMLDivElement | undefined = $state(undefined);
   let refreshCoordinator: DirectoryRefreshCoordinator | null = null;
+  let directoryWatchUnlisten: (() => void) | null = null;
+  let directoryWatchTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingDirectoryChanges = new Set<string>();
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
 
@@ -351,6 +354,15 @@
       cache: directoryCache,
       getActivePanels: getRefreshPanels,
     });
+    directoryWatchUnlisten = await listen<string[]>('directory-changed', (event) => {
+      event.payload.forEach(path => pendingDirectoryChanges.add(path));
+      if (directoryWatchTimer) clearTimeout(directoryWatchTimer);
+      directoryWatchTimer = setTimeout(() => {
+        const paths = [...pendingDirectoryChanges];
+        pendingDirectoryChanges.clear();
+        void currentDirectoryPanel?.refreshProjectDirectories(paths);
+      }, 250);
+    });
 
     // Pre-load vim config so options are ready before first editor init
     vimOptions.preload();
@@ -409,6 +421,9 @@
     window.removeEventListener('keyup', handleGlobalKeyup, true);
     window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
     if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
+    if (directoryWatchUnlisten) directoryWatchUnlisten();
+    if (directoryWatchTimer) clearTimeout(directoryWatchTimer);
+    void invoke('stop_watch_directory');
   });
 
   function getDirName(path: string): string {
@@ -436,7 +451,10 @@
       // tab's name isn't clobbered by the previewed tab's directory/file name.
       if (switcherActive) return;
       // Auto-name active tab: file name if selected, otherwise directory name
-      const name = state.selectedFile
+      const projectTree = currentDirectoryPanel?.getProjectTreeState();
+      const name = projectTree?.enabled && projectTree.rootPath
+        ? getDirName(projectTree.rootPath)
+        : state.selectedFile
         ? (state.selectedFile.split(/[/\\]/).pop() || state.selectedFile)
         : getDirName(state.currentPath);
       const tabsState = getTabsState();
@@ -561,6 +579,30 @@
     }
   }
 
+  async function synchronizeProjectTreeWatcher(): Promise<void> {
+    const tree = currentDirectoryPanel?.getProjectTreeState();
+    if (tree?.enabled && tree.rootPath && !tree.rootPath.startsWith('ftp://')) {
+      await invoke('start_watch_directory', { path: tree.rootPath });
+    } else {
+      await invoke('stop_watch_directory');
+    }
+  }
+
+  async function setProjectTreeRoot(path: string): Promise<void> {
+    await tick();
+    const enabled = await currentDirectoryPanel?.setProjectMode(true, {
+      enabled: true,
+      rootPath: path,
+      expandedPaths: [],
+      selectedPath: null,
+      scrollOffset: 0,
+    });
+    if (enabled) {
+      tabs.renameTab(getTabsState().activeTabId, getDirName(path));
+      await synchronizeProjectTreeWatcher();
+    }
+  }
+
   function startSwitcherForTabPrefix(mode: 'mru' | 'physical') {
     startSwitcher(mode);
     if (!tHeld) commitSwitcher();
@@ -664,9 +706,9 @@
           expandedPaths: tab.projectExpandedPaths,
           selectedPath: tab.projectSelectedPath,
           scrollOffset: tab.projectScrollOffset,
-        });
+        }).then(() => synchronizeProjectTreeWatcher());
       } else {
-        void currentDirectoryPanel?.setProjectMode(false);
+        void currentDirectoryPanel?.setProjectMode(false).then(() => synchronizeProjectTreeWatcher());
       }
       focusPanelNow(actualPanel);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
@@ -902,7 +944,8 @@
 
     const entries = state.entries;
     const operation = state.operation;
-    const destIsFtp = isFtpPath(currentPath);
+    const destinationPath = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
+    const destIsFtp = isFtpPath(destinationPath);
     const srcIsFtp = entries.some((e: any) => isFtpPath(e.path));
     const isCrossBackend = destIsFtp || srcIsFtp;
 
@@ -910,7 +953,7 @@
     if (isCrossBackend) {
       if (srcIsFtp && !destIsFtp) {
         // FTP → Local: download via TransferManager
-        const destDir = currentPath.replace(/[\\\/]+$/, '');
+        const destDir = destinationPath.replace(/[\\\/]+$/, '');
 
         const dirs = entries.filter((e: any) => e.is_dir);
         const files = entries.filter((e: any) => !e.is_dir);
@@ -950,7 +993,7 @@
             remotePath: getFtpRemotePath(dir.path),
             localPath: destDir + '\\' + dir.name,
             moveMode: operation === 'cut',
-            skipRelPaths: skipRel,
+            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
           });
           totalQueued++;
         }
@@ -981,15 +1024,15 @@
             await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
           }
           for (const dir of dirs) {
-            const hasSkipped = (skipDirMap.get(dir.path) || []).length > 0;
+            const hasSkipped = (skipDirMap.get(dir.path) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
             if (hasSkipped) continue;
             await invoke('ftp_delete', { path: dir.path, permanent: true }).catch(() => {});
           }
         }
       } else if (!srcIsFtp && destIsFtp) {
         // Local → FTP: upload via TransferManager
-        const destConn = getFtpConnName(currentPath);
-        const destBase = getFtpRemotePath(currentPath).replace(/\/+$/, '');
+        const destConn = getFtpConnName(destinationPath);
+        const destBase = getFtpRemotePath(destinationPath).replace(/\/+$/, '');
 
         const dirs = entries.filter((e: any) => e.is_dir);
         const files = entries.filter((e: any) => !e.is_dir);
@@ -1029,7 +1072,7 @@
             localPath: dir.path,
             remotePath: `${destBase}/${dir.name}`,
             moveMode: operation === 'cut',
-            skipRelPaths: skipRel,
+            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
           });
           totalQueued++;
         }
@@ -1068,7 +1111,7 @@
           // Skip directories that had internal conflicting files skipped, to avoid
           // deleting files that were not uploaded.
           for (const dir of dirs) {
-            const hasSkipped = (skipDirMap.get(dir.name) || []).length > 0;
+            const hasSkipped = (skipDirMap.get(dir.name) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
             if (hasSkipped) continue;
             await invoke('delete_file', { path: dir.path }).catch(() => {});
           }
@@ -1076,9 +1119,9 @@
       } else if (srcIsFtp && destIsFtp) {
         // FTP → FTP
         const srcConn = getFtpConnName(entries[0].path);
-        const destConn = getFtpConnName(currentPath);
+        const destConn = getFtpConnName(destinationPath);
         if (srcConn === destConn) {
-          const destBase = getFtpDestPath(currentPath, '').replace(/\/+$/, '');
+          const destBase = getFtpDestPath(destinationPath, '').replace(/\/+$/, '');
           if (operation === 'cut') {
             // Move: server-side rename (instant, regardless of file size)
             for (const entry of entries) {
@@ -1121,7 +1164,7 @@
     }
 
     // Local-to-local paste (existing behavior)
-    const destDir = currentPath.replace(/[\\\/]+$/, '');
+    const destDir = destinationPath.replace(/[\\\/]+$/, '');
     let processed = 0;
     let firstPastedPath: string | null = null;
     const resolvedSources: string[] = [];
@@ -1143,6 +1186,7 @@
           source: entry.path,
           destination: destDir + '\\' + entry.name,
           total_bytes: 0,
+          skip_rel_paths: entry.skip_rel_paths || [],
         }));
         scanningConflicts = true;
         const result = await scanConflicts(() => invoke('scan_transfer_conflicts', { tasks: dirTasks }));
@@ -1208,7 +1252,7 @@
         source: src,
         destination: destDir + '\\' + (src.split(/[/\\]/).pop() || src),
         total_bytes: origEntry?.size || 0,
-        skip_rel_paths: skipMap.get(src) || [],
+        skip_rel_paths: [...(origEntry?.skip_rel_paths || []), ...(skipMap.get(src) || [])],
       };
     });
     const ids = await transfer.enqueueTransfers(tasks);
@@ -1466,6 +1510,9 @@
       event.stopPropagation();
       const state = currentDirectoryPanel?.getProjectTreeState();
       await currentDirectoryPanel?.setProjectMode(!state?.enabled);
+      const tree = currentDirectoryPanel?.getProjectTreeState();
+      if (tree?.enabled && tree.rootPath) tabs.renameTab(getTabsState().activeTabId, getDirName(tree.rootPath));
+      await synchronizeProjectTreeWatcher();
       return;
     }
 
@@ -1749,6 +1796,7 @@
       if (q === 'cd' || q.startsWith('cd ')) {
         const arg = q.substring(2).trim();
         const isLeftManual = $layout.activeColumn === 'parent' && $layout.leftMode === 'manual';
+        const keepProjectTree = !isLeftManual && currentDirectoryPanel?.getProjectTreeState().enabled;
 
         if (!arg) {
           invoke<string>('get_home_dir').then(homeDir => {
@@ -1756,6 +1804,7 @@
               handleLeftNavigate(homeDir);
             } else {
               handleNavigate(homeDir);
+              if (keepProjectTree) void setProjectTreeRoot(homeDir);
             }
           });
         } else {
@@ -1778,6 +1827,7 @@
                 handleLeftNavigate(resolved);
               } else {
                 handleNavigate(resolved);
+                if (keepProjectTree) void setProjectTreeRoot(resolved);
               }
             }).catch(() => {
               showToast(`E344: Can't find directory: ${arg}`);

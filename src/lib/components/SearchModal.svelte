@@ -7,6 +7,7 @@
     path: string;
     relative_path: string;
     is_dir: boolean;
+    is_hidden: boolean;
   }
 
   let {
@@ -16,7 +17,7 @@
     allowRecursive = true,
     entries = null,
     onClose = () => {},
-    onSelect = (path: string, isDir: boolean) => {},
+    onSelect = (path: string, isDir: boolean, isHidden: boolean) => {},
   }: {
     visible: boolean;
     rootPath: string;
@@ -24,7 +25,7 @@
     allowRecursive?: boolean;
     entries?: {name: string; path: string; is_dir: boolean}[] | null;
     onClose?: () => void;
-    onSelect?: (path: string, isDir: boolean) => void;
+    onSelect?: (path: string, isDir: boolean, isHidden: boolean) => void;
   } = $props();
 
   let searchInput: HTMLInputElement | undefined = $state(undefined);
@@ -132,7 +133,7 @@
       const filtered = entries
         .filter(e => e.name === '..' ? false : e.name.toLowerCase().includes(lower))
         .slice(0, MAX_RESULTS);
-      results = filtered.map(e => ({ name: e.name, path: e.path, relative_path: e.name, is_dir: e.is_dir }));
+      results = filtered.map(e => ({ name: e.name, path: e.path, relative_path: e.name, is_dir: e.is_dir, is_hidden: false }));
       reachedLimit = filtered.length >= MAX_RESULTS;
       selectedIndex = results.length > 0 ? 0 : -1;
       isSearching = false;
@@ -229,7 +230,7 @@
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < results.length) {
           const result = results[selectedIndex];
-          onSelect(result.path, result.is_dir);
+          onSelect(result.path, result.is_dir, result.is_hidden);
           onClose();
         }
         break;
@@ -299,8 +300,8 @@
     focusMode = 'list';
   }
 
-  function handleResultDblClick(path: string, isDir: boolean) {
-    onSelect(path, isDir);
+  function handleResultDblClick(path: string, isDir: boolean, isHidden: boolean) {
+    onSelect(path, isDir, isHidden);
     onClose();
   }
 
@@ -352,7 +353,7 @@
               class:directory={result.is_dir}
               data-index={index}
               onclick={() => handleResultClick(index)}
-              ondblclick={() => handleResultDblClick(result.path, result.is_dir)}
+              ondblclick={() => handleResultDblClick(result.path, result.is_dir, result.is_hidden)}
               onkeydown={() => {}}
             >
               <span class="result-name" class:is-dir={result.is_dir}>{result.name}{result.is_dir ? '/' : ''}</span>
