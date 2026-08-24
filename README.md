@@ -80,13 +80,17 @@ npm run tauri build
 | `Ctrl+S` | Save and close |
 | `Ctrl+Q` | Close without saving |
 
-### Multi-Tab (Yazi-style)
+### Multi-Tab
 | Key | Action |
 |---|---|
-| `t n` | New tab |
-| `t x` | Close tab |
-| `t 1`–`9` | Switch to tab by number |
-| `t [` / `t ]` | Previous / next tab |
+| `Alt+T` | New tab |
+| `Alt+C` | Close tab |
+| `Alt+R` | Show tab rename hint |
+| `Alt+N` | Switch tabs by most-recently-used order |
+| `Alt+H` / `Alt+L` | Previous / next tab by display order |
+| `Alt+,` / `Alt+.` | Swap tab backward / forward |
+| `Alt+D` | Toggle left panel detach |
+| `Alt+1`–`9` | Switch to tab by number |
 
 ### Content Zoom
 | Key | Action |

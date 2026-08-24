@@ -110,7 +110,6 @@
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
-    onTabCommand = (cmd: string) => {},
     onToggleLayout = () => {},
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
@@ -123,7 +122,6 @@
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
-    onTabCommand?: (cmd: string) => void;
     onToggleLayout?: () => void;
     batchRenameTempPath?: string | null;
     onBatchRenameSave?: (content: string) => void;
@@ -172,7 +170,6 @@
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
   const tabRenderVersions = new Map<number, number>();
-  let waitingForTabKey: boolean = false;
 
   interface EditorSession {
     tabId: number;
@@ -266,10 +263,6 @@
     focusActiveEditor();
     return true;
   }
-
-  // t prefix for tab operations in editor-normal overlay
-  let tPending: boolean = false;
-  let tTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // TOC state
   let tocHeadings: TocHeading[] = $state([]);
@@ -1592,61 +1585,11 @@
     }
     if (event.key === '/' || event.key === '?') { searchActive = true; searchBuf = ''; return; }
 
-    // t prefix for tab operations (editor-normal, only when vim has no pending operator)
-    if (tPending) {
-      if (event.repeat) return; // ignore key repeat while holding t
-      const code = event.code; const key = event.key;
-      if (code === 'KeyN' || code === 'KeyP') {
-        tPending = false;
-        if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; }
-        layout.clearKeyPrefix();
-        onTabCommand(code === 'KeyN' ? 'switcher-next' : 'switcher-prev');
-        return;
-      }
-      tPending = false;
-      if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; }
-      layout.clearKeyPrefix();
-      if (code === 'KeyT') onTabCommand('new');
-      else if (code === 'KeyC') onTabCommand('close');
-      else if (code === 'Comma') onTabCommand('swap-prev');
-      else if (code === 'Period') onTabCommand('swap-next');
-      else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
-      else {
-        const cm = getCM(editorView!);
-        if (cm) {
-          (Vim as any).multiSelectHandleKey?.(cm, 't', 'user');
-          const vk = codeToVimKey(event);
-          if (vk) (Vim as any).multiSelectHandleKey?.(cm, vk, 'user');
-        }
-      }
-      return;
-    }
-    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && mode === 'editor-normal') {
-      if (editorView) {
-        const cm = getCM(editorView);
-        if (cm) {
-          const vs = cm.state?.vim;
-          if ((vs as any)?.operator) {
-            // Operator pending (e.g. dt", ct)): let t through as vim motion
-          } else {
-            tPending = true;
-            layout.setKeyPrefix('t');
-            if (tTimeout) clearTimeout(tTimeout);
-            tTimeout = setTimeout(() => { tPending = false; layout.clearKeyPrefix(); }, 1000);
-            return;
-          }
-        }
-      }
-    }
-
     if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       if (editorView) { if (event.shiftKey) findPrevious(editorView); else findNext(editorView); }
       return;
     }
-    if (event.key === 'Escape') {
-      if (tPending) { tPending = false; if (tTimeout) { clearTimeout(tTimeout); tTimeout = null; } layout.clearKeyPrefix(); return; }
-      if (editorView) closeSearchPanel(editorView);
-    }
+    if (event.key === 'Escape' && editorView) closeSearchPanel(editorView);
     const vimKey = codeToVimKey(event);
     if (!vimKey || !editorView) return;
     if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) { clipboardBridge.injectClipboard(); }
@@ -1660,21 +1603,6 @@
   function handleKeydown(event: KeyboardEvent) {
     if (mode !== 'global-normal') return;
     if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
-    if (waitingForTabKey) {
-      if (event.repeat) { event.preventDefault(); return; }
-      waitingForTabKey = false; layout.clearKeyPrefix();
-      const code = event.code; const key = event.key; event.preventDefault();
-      if (code === 'KeyT') onTabCommand('new');
-      else if (code === 'KeyC') onTabCommand('close');
-      else if (code === 'KeyR') onTabCommand('rename-hint');
-      else if (code === 'KeyN') onTabCommand('next');
-      else if (code === 'KeyP') onTabCommand('prev');
-      else if (code === 'Comma') onTabCommand('swap-prev');
-      else if (code === 'Period') onTabCommand('swap-next');
-      else if (key >= '1' && key <= '9') onTabCommand('switch-' + key);
-      return;
-    }
-    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); waitingForTabKey = true; layout.setKeyPrefix('t'); setTimeout(() => { waitingForTabKey = false; layout.clearKeyPrefix(); }, 1000); return; }
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }

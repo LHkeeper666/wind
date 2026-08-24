@@ -75,17 +75,12 @@
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // t prefix state for tab operations (global, not per-panel)
-  let waitingForTabKey: boolean = $state(false);
-  let tabKeyTimeout: ReturnType<typeof setTimeout> | null = null;
-  // t-hold state for MRU tab switcher (alt+tab style)
-  let tHeld: boolean = $state(false);
+  let altHeld: boolean = $state(false);
   let switcherActive: boolean = $state(false);
   let switcherSelectionId: number = $state(-1);
   let switcherOriginTabId: number = $state(-1);
   let switcherMruIds: number[] = $state([]);
   let switcherPhysicalIds: number[] = $state([]);
-  let switcherTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Focus restore state
   let windowReady: boolean = $state(false);
@@ -103,34 +98,6 @@
   let completionIndex: number = -1;
   let completionPrefix: string = '';
   let completionDir: string = '';
-
-  // Tab command handler (called from DirectoryPanel's t prefix)
-  function handleTabCommand(cmd: string) {
-    if (cmd === 'new') {
-      handleTabNew();
-    } else if (cmd === 'close') {
-      handleTabClose();
-    } else if (cmd === 'rename-hint') {
-      showToast('Double-click tab name to rename');
-    } else if (cmd === 'next') {
-      handleTabSwitchMru(1);
-    } else if (cmd === 'prev') {
-      handleTabSwitchMru(-1);
-    } else if (cmd === 'switcher-next') {
-      if (switcherActive) moveSwitcherIn(switcherMruIds, 1);
-      else startSwitcherForTabPrefix('mru');
-    } else if (cmd === 'switcher-prev') {
-      if (switcherActive) moveSwitcherIn(switcherPhysicalIds, 1);
-      else startSwitcherForTabPrefix('physical');
-    } else if (cmd === 'swap-prev') {
-      tabs.swapTab(-1);
-    } else if (cmd === 'swap-next') {
-      tabs.swapTab(1);
-    } else if (cmd.startsWith('switch-')) {
-      const idx = parseInt(cmd.substring(7)) - 1;
-      handleTabSwitchByIndex(idx);
-    }
-  }
 
   // Toast notification
   let toastMessage: string = $state('');
@@ -551,19 +518,7 @@
     restoreTabAndFocus();
   }
 
-  function handleTabSwitchMru(delta: number) {
-    const order = tabs.getMruOrder();
-    if (order.length <= 1) return;
-    const state = getTabsState();
-    const idx = order.findIndex((t: TabState) => t.id === state.activeTabId);
-    if (idx === -1) return;
-    const newIdx = (idx + delta + order.length) % order.length;
-    saveCurrentTabState();
-    tabs.switchTab(order[newIdx].id);
-    restoreTabAndFocus();
-  }
-
-  function startSwitcher(mode: 'mru' | 'physical') {
+  function startSwitcher(mode: 'mru' | 'physical', direction: 1 | -1 = 1) {
     const state = getTabsState();
     if (state.tabs.length <= 1) return;
     saveCurrentTabState();
@@ -573,7 +528,7 @@
     switcherSelectionId = state.activeTabId;
     switcherActive = true;
     if (mode === 'physical') {
-      moveSwitcherIn(switcherPhysicalIds, 1);
+      moveSwitcherIn(switcherPhysicalIds, direction);
     } else {
       moveSwitcherIn(switcherMruIds, 1);
     }
@@ -603,11 +558,6 @@
     }
   }
 
-  function startSwitcherForTabPrefix(mode: 'mru' | 'physical') {
-    startSwitcher(mode);
-    if (!tHeld) commitSwitcher();
-  }
-
   function moveSwitcherIn(ids: number[], direction: 1 | -1) {
     const idx = ids.indexOf(switcherSelectionId);
     if (idx === -1) return;
@@ -615,17 +565,10 @@
     switcherSelectionId = ids[newIdx];
     const tab = getTabsState().tabs.find((t: TabState) => t.id === switcherSelectionId);
     if (tab) restoreTabContent(tab);
-    // Only schedule a fallback commit when t was tapped (not held) — the
-    // keyup handler commits when t is physically held down.
-    if (!tHeld) {
-      if (switcherTimeout) { clearTimeout(switcherTimeout); switcherTimeout = null; }
-      switcherTimeout = setTimeout(() => { commitSwitcher(); }, 1000);
-    }
   }
 
   function commitSwitcher() {
     if (!switcherActive) return;
-    if (switcherTimeout) { clearTimeout(switcherTimeout); switcherTimeout = null; }
     const selectionId = switcherSelectionId;
     const originId = switcherOriginTabId;
     // Commit the active tab before clearing switcher state. PreviewEditor is
@@ -1444,15 +1387,13 @@
   async function handleGlobalKeydown(event: KeyboardEvent) {
     // Skip when typing in an input field (InputDialog, SearchModal search box, etc.)
     const target = event.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
       // Only allow Escape and Ctrl shortcuts through
       if (event.key !== 'Escape' && !event.ctrlKey) return;
     }
 
-    // Track physical t key state globally so the MRU switcher can commit on
-    // keyup regardless of which panel (directory or editor) owns the prefix.
-    if (event.code === 'KeyT' && !event.repeat) {
-      tHeld = true;
+    if ((event.code === 'AltLeft' || event.code === 'AltRight') && !event.repeat) {
+      altHeld = true;
     }
 
     // Tab / Shift+Tab: prevent native focus switching
@@ -1494,7 +1435,7 @@
     }
 
     // Ctrl+T to toggle Transfer Manager
-    if (event.ctrlKey && event.key === 't' && !waitingForWindowKey) {
+    if (event.ctrlKey && !event.altKey && event.key === 't' && !waitingForWindowKey) {
       const canToggle = !showCommandPalette && !showFileSearch
         && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
         && !$layout.fullscreenTerminalOpen;
@@ -1632,84 +1573,83 @@
     const previewMode = previewEditor?.getMode?.() || 'global-normal';
     const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
 
-    // t prefix for tab operations (global)
-    // Works when: no modal open, not in terminal insert, not in editor insert
-    const canUseTabPrefix = !showCommandPalette && !showFileSearch
+    const canUseTabShortcuts = !showCommandPalette && !showFileSearch
+      && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
+      && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
+      && !($layout.activeColumn === 'preview' && previewMode === 'editor-insert');
+    const canUseGlobalFileOperations = !showCommandPalette && !showFileSearch
       && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
       && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
       && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
 
-    // While in switcher mode, only n/p move selection; all other keys ignored
-    if (switcherActive) {
+    if (switcherActive && altHeld) {
       event.preventDefault();
       event.stopPropagation();
       if (event.code === 'KeyN') {
         moveSwitcherIn(switcherMruIds, 1);
-      } else if (event.code === 'KeyP') {
+      } else if (event.code === 'KeyL') {
         moveSwitcherIn(switcherPhysicalIds, 1);
+      } else if (event.code === 'KeyH') {
+        moveSwitcherIn(switcherPhysicalIds, -1);
       }
       return;
     }
 
-    // Handle second key when waiting for t prefix
-    if (waitingForTabKey) {
-      // Ignore keyboard repeat while holding t (e.g. holding t for MRU switch)
-      if (event.repeat) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
+    const isAltTabShortcut = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && canUseTabShortcuts;
+    if (isAltTabShortcut) {
+      let handled = true;
+      switch (event.code) {
+        case 'KeyT':
+          handleTabNew();
+          break;
+        case 'KeyC':
+          handleTabClose();
+          break;
+        case 'KeyR':
+          showToast('Double-click tab name to rename');
+          break;
+        case 'KeyN':
+          startSwitcher('mru');
+          break;
+        case 'KeyL':
+          startSwitcher('physical');
+          break;
+        case 'KeyH':
+          startSwitcher('physical', -1);
+          break;
+        case 'Comma':
+          tabs.swapTab(-1);
+          break;
+        case 'Period':
+          tabs.swapTab(1);
+          break;
+        case 'KeyD':
+          layout.toggleDetach();
+          showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
+          break;
+        default:
+          if (/^Digit[1-9]$/.test(event.code)) {
+            handleTabSwitchByIndex(parseInt(event.code.substring(5)) - 1);
+          } else {
+            handled = false;
+          }
       }
-      waitingForTabKey = false;
-      layout.clearKeyPrefix();
-      if (tabKeyTimeout) { clearTimeout(tabKeyTimeout); tabKeyTimeout = null; }
 
-      const code = event.code;
-      const key = event.key;
+      if (!handled) return;
       event.preventDefault();
       event.stopPropagation();
-
-      if (code === 'KeyT') {
-        handleTabNew();
-      } else if (code === 'KeyC') {
-        handleTabClose();
-      } else if (code === 'KeyN') {
-        startSwitcherForTabPrefix('mru');
-      } else if (code === 'KeyP') {
-        startSwitcherForTabPrefix('physical');
-      } else if (code === 'Comma') {
-        tabs.swapTab(-1);
-      } else if (code === 'Period') {
-        tabs.swapTab(1);
-      } else if (code === 'KeyD') {
-        layout.toggleDetach();
-        showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
-      } else if (key >= '1' && key <= '9') {
-        handleTabSwitchByIndex(parseInt(key) - 1);
-      }
-      return;
-    }
-
-    // Start t prefix
-    if (event.code === 'KeyT' && !event.repeat && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
-      event.preventDefault();
-      event.stopPropagation();
-      waitingForTabKey = true;
-      tHeld = true;
-      layout.setKeyPrefix('t');
-      if (tabKeyTimeout) clearTimeout(tabKeyTimeout);
-      tabKeyTimeout = setTimeout(() => { waitingForTabKey = false; tHeld = false; layout.clearKeyPrefix(); }, 1000);
       return;
     }
 
     // P key for force paste (skip conflict confirmation)
-    if (event.key === 'P' && event.shiftKey && !event.ctrlKey && !event.altKey && canUseTabPrefix) {
+    if (event.key === 'P' && event.shiftKey && !event.ctrlKey && !event.altKey && canUseGlobalFileOperations) {
       event.preventDefault();
       handlePaste(true);
       return;
     }
 
     // p key for paste (works in directory panels, not in terminal insert or editor)
-    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && !event.shiftKey && canUseTabPrefix) {
+    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && !event.shiftKey && canUseGlobalFileOperations) {
       event.preventDefault();
       handlePaste();
       return;
@@ -1730,11 +1670,9 @@
   }
 
   function handleGlobalKeyup(event: KeyboardEvent) {
-    if (event.code === 'KeyT') {
-      tHeld = false;
-      if (switcherActive) {
-        commitSwitcher();
-      }
+    if (event.code === 'AltLeft' || event.code === 'AltRight') {
+      altHeld = event.getModifierState('Alt');
+      if (!altHeld && switcherActive) commitSwitcher();
     }
   }
 
@@ -2160,7 +2098,7 @@
     if (!focused) {
       // Window lost focus mid-switcher — commit to avoid a stuck preview state
       if (switcherActive) commitSwitcher();
-      tHeld = false;
+      altHeld = false;
       return;
     }
     if (!windowReady) return;
@@ -2246,7 +2184,6 @@
         }}
         onSelect={() => {}}  // Parent column doesn't need to select files
         onSwitchPanel={handleSwitchPanel}
-        onTabCommand={handleTabCommand}
         onToast={showToast}
         getDirectoryVersion={getDirectoryVersion}
         onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('left', directory, version)}
@@ -2286,7 +2223,6 @@
         onSwitchPanel={handleSwitchPanel}
         onFullscreen={handleFullscreenEditor}
         onNavigateUp={() => handleNavigate($layout.parentPath)}
-        onTabCommand={handleTabCommand}
         onToast={showToast}
         onBatchRenameStart={handleBatchRenameStart}
         getDirectoryVersion={getDirectoryVersion}
@@ -2326,7 +2262,6 @@
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
-        onTabCommand={handleTabCommand}
         onToggleLayout={togglePreviewLayout}
         batchRenameTempPath={batchRenameTempPath}
         onBatchRenameSave={handleBatchRenameSave}

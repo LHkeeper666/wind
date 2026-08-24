@@ -52,7 +52,6 @@
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
     onNavigateUp = () => {},
-    onTabCommand = (cmd: string) => {},
     onToast = (message: string) => {},
     onBatchRenameStart = (_files: { path: string; name: string }[]) => {},
     getDirectoryVersion = (_directory: DirectoryKey) => 0,
@@ -68,7 +67,6 @@
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
     onNavigateUp?: () => void;
-    onTabCommand?: (cmd: string) => void;
     onToast?: (message: string) => void;
     onBatchRenameStart?: (files: { path: string; name: string }[]) => void;
     getDirectoryVersion?: (directory: DirectoryKey) => number;

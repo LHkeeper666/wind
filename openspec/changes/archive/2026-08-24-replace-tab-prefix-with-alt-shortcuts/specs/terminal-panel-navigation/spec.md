@@ -1,20 +1,3 @@
-## MODIFIED Requirements
-
-### Requirement: Terminal mode synced to store
-The terminal's mode state (insert/normal) SHALL be synchronized to the layout store.
-
-#### Scenario: Terminal enters normal mode
-- **WHEN** user presses Escape in terminal insert mode
-- **THEN** layout store's `terminalMode` is set to `'normal'`
-
-#### Scenario: Terminal enters insert mode
-- **WHEN** user presses `i` in terminal normal mode
-- **THEN** layout store's `terminalMode` is set to `'insert'`
-
-#### Scenario: Terminal is hidden
-- **WHEN** terminal is toggled off via Ctrl+`
-- **THEN** layout store's `terminalMode` is set to `null`
-
 ## ADDED Requirements
 
 ### Requirement: Alt-based tab operations work globally
@@ -44,10 +27,9 @@ The system SHALL provide tab operations through the direct shortcuts `Alt+T`, `A
 - **WHEN** the user presses bare Alt, an unsupported Alt shortcut, or a `Ctrl+Alt` keyboard-layout shortcut
 - **THEN** the system SHALL NOT intercept it as a tab operation
 
-### Requirement: Ctrl+L restores focus to fullscreen terminal
-系统 SHALL allow Ctrl+L to restore focus to the active fullscreen terminal when no modal overlay is open.
+## REMOVED Requirements
 
-#### Scenario: Ctrl+L in fullscreen terminal
-- **WHEN** terminal 处于 fullscreen normal mode 且用户按下 Ctrl+L
-- **THEN** 焦点回到当前 tab 的 terminal
-- **AND** terminal 可以继续接收 normal mode 快捷键
+### Requirement: t prefix tab operations work globally
+**Reason**: The timed `t` prefix conflicts with Vim's Normal-mode `t` motion and requires duplicate state machines.
+
+**Migration**: Replace every former `t` sequence with the corresponding direct Alt shortcut: `t t` → `Alt+T`, `t c` → `Alt+C`, `t r` → `Alt+R`, `t n` → `Alt+N`, `t p` → `Alt+L`, `t ,` → `Alt+,`, `t .` → `Alt+.`, `t d` → `Alt+D`, and `t 1`–`9` → `Alt+1`–`9`.
