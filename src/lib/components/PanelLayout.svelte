@@ -99,6 +99,19 @@
   let completionPrefix: string = '';
   let completionDir: string = '';
 
+  const supportedAltTabCodes = new Set([
+    'KeyN', 'KeyM', 'KeyU', 'KeyR', 'KeyH', 'KeyL', 'Comma', 'Period', 'KeyD',
+    'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
+  ]);
+
+  function isSupportedAltTabCode(code: string): boolean {
+    return supportedAltTabCodes.has(code);
+  }
+
+  function isTerminalInputTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest('.terminal-containers') !== null;
+  }
+
   // Toast notification
   let toastMessage: string = $state('');
   let toastTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1386,14 +1399,17 @@
 
   async function handleGlobalKeydown(event: KeyboardEvent) {
     // Skip when typing in an input field (InputDialog, SearchModal search box, etc.)
-    const target = event.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-      // Only allow Escape and Ctrl shortcuts through
-      if (event.key !== 'Escape' && !event.ctrlKey) return;
-    }
-
     if ((event.code === 'AltLeft' || event.code === 'AltRight') && !event.repeat) {
       altHeld = true;
+    }
+
+    const target = event.target as HTMLElement | null;
+    const isTerminalAltTabChord = event.altKey && !event.ctrlKey && !event.metaKey
+      && !event.shiftKey && isSupportedAltTabCode(event.code) && isTerminalInputTarget(event.target);
+    if ((target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable)
+      && !isTerminalAltTabChord) {
+      // Only allow Escape and Ctrl shortcuts through
+      if (event.key !== 'Escape' && !event.ctrlKey) return;
     }
 
     // Tab / Shift+Tab: prevent native focus switching
@@ -1585,7 +1601,7 @@
     if (switcherActive && altHeld) {
       event.preventDefault();
       event.stopPropagation();
-      if (event.code === 'KeyN') {
+      if (event.code === 'KeyM') {
         moveSwitcherIn(switcherMruIds, 1);
       } else if (event.code === 'KeyL') {
         moveSwitcherIn(switcherPhysicalIds, 1);
@@ -1595,20 +1611,27 @@
       return;
     }
 
-    const isAltTabShortcut = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && canUseTabShortcuts;
+    const isAltTabShortcut = event.altKey && !event.ctrlKey && !event.metaKey
+      && !event.shiftKey && canUseTabShortcuts && isSupportedAltTabCode(event.code);
     if (isAltTabShortcut) {
+      if (event.repeat) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       let handled = true;
       switch (event.code) {
-        case 'KeyT':
+        case 'KeyN':
           handleTabNew();
           break;
-        case 'KeyC':
+        case 'KeyU':
           handleTabClose();
           break;
         case 'KeyR':
           showToast('Double-click tab name to rename');
           break;
-        case 'KeyN':
+        case 'KeyM':
           startSwitcher('mru');
           break;
         case 'KeyL':

@@ -7,11 +7,11 @@ Inspired by [Yazi](https://github.com/sxyazi/yazi), Wind combines a three-column
 ## Features
 
 - **Three-column layout** — parent directory | current directory | preview/editor, adjustable with `:ratio X:Y:Z`
-- **Vim keybindings** — `j/k` navigation, `gg/G`, `h/l` panel switching, Normal/Insert modes in the terminal
+- **Vim keybindings** — `j/k` navigation, `gg/G`, `h/l` panel switching
 - **File preview** — text (Shiki syntax highlight), Markdown (KaTeX + Mermaid), images (turbojpeg), PDF, video (ffmpeg thumbnails + HTTP streaming), JSON, archives (zip), directories
 - **Fullscreen viewers** — image viewer (zoom/pan/rotate), PDF viewer (text search), video player
 - **Floating terminal** — ConPTY-powered, supports PowerShell, CMD, Git Bash with shell integration (OSC 133/OSC 7)
-- **Multi-tab system** — Yazi-style `t` prefix keybindings for tab management
+- **Multi-tab system** — Alt shortcuts for tab management
 - **Code editor** — CodeMirror 6 with Vim mode, 15+ language syntax highlighting, fullscreen editing
 - **Command palette** — `:` to open, `:cd <path>`, `:e <path>`, `:ratio X:Y:Z`, Tab path completion
 - **File search** — `Ctrl+P` fuzzy search across the current directory
@@ -62,8 +62,8 @@ npm run tauri build
 | Key | Action |
 |---|---|
 | `Ctrl+\`` | Toggle terminal |
-| `Escape` | Switch to Normal mode |
-| `i` | Switch to Insert mode |
+| Supported `Alt` tab shortcuts | Intercepted while terminal is focused, including fullscreen terminal |
+| Other keys | Sent to the shell |
 
 ### Preview / Editor Panel
 | Key | Action |
@@ -83,10 +83,10 @@ npm run tauri build
 ### Multi-Tab
 | Key | Action |
 |---|---|
-| `Alt+T` | New tab |
-| `Alt+C` | Close tab |
+| `Alt+N` | New tab |
+| `Alt+U` | Close tab |
 | `Alt+R` | Show tab rename hint |
-| `Alt+N` | Switch tabs by most-recently-used order |
+| `Alt+M` | Switch tabs by most-recently-used order |
 | `Alt+H` / `Alt+L` | Previous / next tab by display order |
 | `Alt+,` / `Alt+.` | Swap tab backward / forward |
 | `Alt+D` | Toggle left panel detach |

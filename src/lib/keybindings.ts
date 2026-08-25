@@ -86,22 +86,15 @@ export const keybindingGroups: KeybindingGroup[] = [
   {
     title: 'Tab (Alt shortcuts)',
     items: [
-      { key: 'Alt+T', context: 'global', description: 'New tab' },
-      { key: 'Alt+C', context: 'global', description: 'Close tab' },
-      { key: 'Alt+R', context: 'global', description: 'Show tab rename hint' },
-      { key: 'Alt+N', context: 'global', description: 'Switch tabs (most recently used)' },
-      { key: 'Alt+H / Alt+L', context: 'global', description: 'Previous / next tab (display order)' },
-      { key: 'Alt+,', context: 'global', description: 'Swap tab backward' },
-      { key: 'Alt+.', context: 'global', description: 'Swap tab forward' },
-      { key: 'Alt+D', context: 'global', description: 'Toggle left panel detach' },
-      { key: 'Alt+1-9', context: 'global', description: 'Switch to tab N' },
-    ],
-  },
-  {
-    title: 'Terminal',
-    items: [
-      { key: 'Escape', context: 'terminal', description: 'Switch to normal mode' },
-      { key: 'i', context: 'terminal', description: 'Switch to insert mode' },
+      { key: 'Alt+N', context: 'global / terminal', description: 'New tab' },
+      { key: 'Alt+U', context: 'global / terminal', description: 'Close tab' },
+      { key: 'Alt+R', context: 'global / terminal', description: 'Show tab rename hint' },
+      { key: 'Alt+M', context: 'global / terminal', description: 'Switch tabs (most recently used)' },
+      { key: 'Alt+H / Alt+L', context: 'global / terminal', description: 'Previous / next tab (display order)' },
+      { key: 'Alt+,', context: 'global / terminal', description: 'Swap tab backward' },
+      { key: 'Alt+.', context: 'global / terminal', description: 'Swap tab forward' },
+      { key: 'Alt+D', context: 'global / terminal', description: 'Toggle left panel detach' },
+      { key: 'Alt+1-9', context: 'global / terminal', description: 'Switch to tab N' },
     ],
   },
   {

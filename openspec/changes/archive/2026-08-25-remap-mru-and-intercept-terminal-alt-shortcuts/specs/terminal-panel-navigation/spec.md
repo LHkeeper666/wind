@@ -1,3 +1,9 @@
+## REMOVED Requirements
+
+### Requirement: Terminal mode synced to store
+**Reason**: The terminal is no longer modeled as separate application Insert and Normal modes. Shell input owns ordinary terminal keys, while Wind owns the explicit supported Alt tab chords regardless of shell state.
+**Migration**: Treat terminal and fullscreen-terminal focus as one context. Do not expose or persist a terminal mode value for tab shortcut routing.
+
 ## MODIFIED Requirements
 
 ### Requirement: Alt-based tab operations work globally
@@ -15,12 +21,12 @@ The system SHALL provide tab operations through the direct shortcuts `Alt+N`, `A
 - **WHEN** the user presses `Alt+L` or `Alt+H` with more than one tab open, optionally repeats `L` or `H` while still holding Alt, and then releases Alt
 - **THEN** the system previews each selected tab in forward or backward display order and commits the final previewed tab when Alt is released
 
-#### Scenario: Alt tab operations in fullscreen terminal
-- **WHEN** the user presses a supported Alt tab shortcut while the fullscreen terminal is focused
-- **THEN** the system handles the shortcut according to its tab operation
-
 #### Scenario: Supported Alt tab actions from terminal focus
 - **WHEN** the user presses any supported Alt tab shortcut while the embedded terminal has focus
+- **THEN** the system handles the tab operation and prevents the chord from being forwarded to the shell
+
+#### Scenario: Supported Alt tab actions from fullscreen terminal focus
+- **WHEN** the user presses any supported Alt tab shortcut while the fullscreen terminal has focus
 - **THEN** the system handles the tab operation and prevents the chord from being forwarded to the shell
 
 #### Scenario: Generic editable and dialog contexts retain Alt input
@@ -30,11 +36,3 @@ The system SHALL provide tab operations through the direct shortcuts `Alt+N`, `A
 #### Scenario: Unrelated Alt and AltGr shortcuts remain available
 - **WHEN** the user presses bare Alt, an unsupported Alt shortcut, or a `Ctrl+Alt` keyboard-layout shortcut in any context
 - **THEN** the system SHALL NOT intercept it as a tab operation
-
-### Requirement: Ctrl+L restores focus to fullscreen terminal
-系统 SHALL allow Ctrl+L to restore focus to the active fullscreen terminal when no modal overlay is open.
-
-#### Scenario: Ctrl+L in fullscreen terminal
-- **WHEN** terminal 处于 fullscreen normal mode 且用户按下 Ctrl+L
-- **THEN** 焦点回到当前 tab 的 terminal
-- **AND** terminal 可以继续接收 normal mode 快捷键
