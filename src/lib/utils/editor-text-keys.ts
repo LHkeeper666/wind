@@ -35,6 +35,7 @@ type TextChange = { from: number; to?: number; insert?: string };
 interface MarkdownListItem {
   lineIndex: number;
   indentColumns: number;
+  contentColumns: number;
   ordered: boolean;
   parentLineIndex: number | null;
   subtreeEndIndex: number;
@@ -107,6 +108,41 @@ function documentLines(state: EditorView['state']): string[] {
   return lines;
 }
 
+function listItemContentColumns(text: string, prefix: MarkdownListPrefix, tabSize: number): number {
+  return countColumn(text.slice(0, prefix.prefixLength), tabSize);
+}
+
+function findMarkdownListSubtreeEnd(
+  lines: string[],
+  item: MarkdownListItem,
+  nextAtSameOrHigherLevel: MarkdownListItem | undefined,
+  tabSize: number,
+): number {
+  const naturalEnd = nextAtSameOrHigherLevel ? nextAtSameOrHigherLevel.lineIndex - 1 : lines.length - 1;
+  let afterBlankLine = false;
+
+  for (let lineIndex = item.lineIndex + 1; lineIndex <= naturalEnd; lineIndex++) {
+    const text = lines[lineIndex];
+    if (!text.trim()) {
+      afterBlankLine = true;
+      continue;
+    }
+
+    const prefix = parseMarkdownListPrefix(text);
+    if (prefix) {
+      afterBlankLine = false;
+      continue;
+    }
+
+    if (!afterBlankLine) continue;
+    if (leadingColumns(text, tabSize) >= item.contentColumns) continue;
+
+    return lineIndex - 1;
+  }
+
+  return naturalEnd;
+}
+
 function buildMarkdownListItems(lines: string[], tabSize: number): MarkdownListItem[] {
   const items: MarkdownListItem[] = [];
   const stack: MarkdownListItem[] = [];
@@ -123,6 +159,7 @@ function buildMarkdownListItems(lines: string[], tabSize: number): MarkdownListI
     const item: MarkdownListItem = {
       lineIndex,
       indentColumns,
+      contentColumns: listItemContentColumns(lines[lineIndex], prefix, tabSize),
       ordered: prefix.ordered,
       parentLineIndex: stack.length > 0 ? stack[stack.length - 1].lineIndex : null,
       subtreeEndIndex: lines.length - 1,
@@ -134,7 +171,7 @@ function buildMarkdownListItems(lines: string[], tabSize: number): MarkdownListI
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const nextAtSameOrHigherLevel = items.slice(i + 1).find(next => next.indentColumns <= item.indentColumns);
-    item.subtreeEndIndex = nextAtSameOrHigherLevel ? nextAtSameOrHigherLevel.lineIndex - 1 : lines.length - 1;
+    item.subtreeEndIndex = findMarkdownListSubtreeEnd(lines, item, nextAtSameOrHigherLevel, tabSize);
   }
 
   return items;
