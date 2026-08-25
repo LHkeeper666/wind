@@ -43,6 +43,7 @@
   let fileSearchHomeDir: string = $state('');
   let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
+  let fullscreenEditor: FullscreenEditor | undefined = $state(undefined);
   let editorInitialLine: number = $state(0);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
@@ -1422,12 +1423,25 @@
     // Skip when command palette is open (Tab = path completion)
     if (event.key === 'Tab' && !showCommandPalette) {
       event.preventDefault();
-      if ($layout.activeColumn === 'preview' && !$layout.fullscreenEditorOpen) {
+      const isPreviewEditorTab = $layout.activeColumn === 'preview'
+        && !$layout.fullscreenEditorOpen
+        && target instanceof Element
+        && target.closest('.preview-panel .cm-editor') !== null;
+      if (isPreviewEditorTab) {
         if (event.shiftKey) {
           previewEditor?.pressShiftTab();
         } else {
           previewEditor?.pressTab();
         }
+        return;
+      }
+      if ($layout.fullscreenEditorOpen) {
+        if (event.shiftKey) {
+          fullscreenEditor?.pressShiftTab();
+        } else {
+          fullscreenEditor?.pressTab();
+        }
+        return;
       }
     }
 
@@ -2302,6 +2316,7 @@
     <!-- Fullscreen Editor Overlay -->
     {#if $layout.fullscreenEditorOpen && selectedFile}
       <FullscreenEditor
+        bind:this={fullscreenEditor}
         filePath={selectedFile}
         content={previewEditor?.getContent() || ''}
         initialLine={editorInitialLine}

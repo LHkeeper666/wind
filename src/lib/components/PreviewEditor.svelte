@@ -18,7 +18,7 @@
     indentUnit, foldGutter, indentOnInput, bracketMatching,
     syntaxHighlighting, defaultHighlightStyle, foldKeymap,
   } from '@codemirror/language';
-  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
+  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
   import { lintKeymap } from '@codemirror/lint';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
@@ -29,6 +29,12 @@
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
+  import {
+    editorAutocompleteKeymap,
+    handleInsertModeEnter,
+    handleInsertModeShiftTab,
+    handleInsertModeTab,
+  } from '$lib/utils/editor-text-keys';
 
   // Independent StateField for :s live preview (nvim inccommand style)
   const triggerSMatchUpdate = StateEffect.define<void>();
@@ -692,42 +698,14 @@
     void tick().then(() => focusActiveEditor());
   }
 
-  function indentSelectionOrInsertTab(view: EditorView): void {
-    const { state } = view;
-    const { from, to } = state.selection.main;
-    const line = state.doc.lineAt(from);
-    const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-    if (markerMatch || !state.selection.main.empty) {
-      const lineFrom = state.doc.lineAt(from);
-      const lineTo = state.doc.lineAt(to);
-      const changes = [];
-      for (let i = lineFrom.number; i <= lineTo.number; i++) {
-        changes.push({ from: state.doc.line(i).from, insert: '    ' });
-      }
-      view.dispatch({ changes });
-    } else {
-      view.dispatch(state.replaceSelection('    '));
-    }
-  }
-
   export function pressTab() {
     if (!editorView || mode !== 'editor-insert') return;
-    indentSelectionOrInsertTab(editorView);
+    handleInsertModeTab(editorView);
   }
 
   export function pressShiftTab() {
     if (!editorView || mode !== 'editor-insert') return;
-    const { state } = editorView;
-    const line = state.doc.lineAt(state.selection.main.from);
-    const indentMatch = line.text.match(/^(\s{1,4})/);
-    if (indentMatch) {
-      editorView.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length } });
-    } else {
-      const markerMatch = line.text.match(/^((?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-      if (markerMatch) {
-        editorView.dispatch({ changes: { from: line.from, to: line.from + markerMatch[1].length } });
-      }
-    }
+    handleInsertModeShiftTab(editorView);
   }
 
   function getPreviewRouter(): PreviewRouter {
@@ -1261,22 +1239,15 @@
     const language = getLanguage(targetPath);
     const extensions = [
       highlightActiveLineGutter(), highlightSpecialChars(), history(),
-      foldGutter(), drawSelection(), dropCursor(), autocompletion(),
+      foldGutter(), drawSelection(), dropCursor(), autocompletion({ defaultKeymap: false }),
       bracketMatching(), closeBrackets(), crosshairCursor(),
       highlightActiveLine(), highlightSelectionMatches(), indentOnInput(),
       rectangularSelection(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...editorAutocompleteKeymap, ...lintKeymap]),
       sessionLineNumberCompartment.of(lineNumbers()),
       search({ top: true }), sMatchField, EditorView.lineWrapping,
       indentUnit.of('    '),
-      keymap.of([{
-        key: 'Tab',
-        run: (view) => {
-          indentSelectionOrInsertTab(view);
-          return true;
-        },
-      }]),
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
@@ -1381,20 +1352,11 @@
     }
 
     view.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key !== 'Enter') return;
-      const { state } = view;
-      const line = state.doc.lineAt(state.selection.main.head);
-      const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-      if (!markerMatch) return;
-      e.preventDefault(); e.stopPropagation();
-      const marker = markerMatch[1];
-      const contentAfter = line.text.slice(marker.length).trim();
-      const pos = state.selection.main.head;
-      if (!contentAfter) {
-        const indentMatch = line.text.match(/^(\s{1,4})/);
-        if (indentMatch) { view.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length }, selection: { anchor: line.from + marker.length - indentMatch[1].length } }); }
-        else { view.dispatch({ changes: { from: line.from, to: line.from + marker.length }, selection: { anchor: line.from } }); }
-      } else { view.dispatch({ changes: { from: pos, insert: '\n' + marker }, selection: { anchor: pos + 1 + marker.length } }); }
+      if (e.key !== 'Enter' || mode !== 'editor-insert') return;
+      if (handleInsertModeEnter(view)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
     }, true);
     if (import.meta.env.DEV) tracePerformance('vim-session-create', 'vim-session-create-start');
   }

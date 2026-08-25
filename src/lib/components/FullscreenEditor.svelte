@@ -10,7 +10,7 @@
     indentUnit, foldGutter, indentOnInput, bracketMatching,
     syntaxHighlighting, defaultHighlightStyle, foldKeymap,
   } from '@codemirror/language';
-  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
+  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
   import { lintKeymap } from '@codemirror/lint';
   import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
@@ -22,6 +22,12 @@
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
+  import {
+    editorAutocompleteKeymap,
+    handleInsertModeEnter,
+    handleInsertModeShiftTab,
+    handleInsertModeTab,
+  } from '$lib/utils/editor-text-keys';
 
   let {
     filePath = null,
@@ -167,6 +173,16 @@
     if (overlayElement && overlayVisible) {
       overlayElement.focus();
     }
+  }
+
+  export function pressTab() {
+    if (!editorView || overlayVisible) return;
+    handleInsertModeTab(editorView);
+  }
+
+  export function pressShiftTab() {
+    if (!editorView || overlayVisible) return;
+    handleInsertModeShiftTab(editorView);
   }
 
   function handleOutputKeydown(event: KeyboardEvent) {
@@ -350,50 +366,31 @@
     const language = getLanguage(filePath);
     const extensions = [
       highlightActiveLineGutter(), highlightSpecialChars(), history(),
-      foldGutter(), drawSelection(), dropCursor(), autocompletion(),
+      foldGutter(), drawSelection(), dropCursor(), autocompletion({ defaultKeymap: false }),
       bracketMatching(), closeBrackets(), crosshairCursor(),
       highlightActiveLine(), highlightSelectionMatches(), indentOnInput(),
       rectangularSelection(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...editorAutocompleteKeymap, ...lintKeymap]),
       lineNumberCompartment.of(lineNumbers()),
       EditorView.lineWrapping,
       indentUnit.of('    '),
       keymap.of([{
         key: 'Tab',
         run: (view) => {
-          const { state } = view;
-          const { from, to } = state.selection.main;
-          const line = state.doc.lineAt(from);
-          const col = from - line.from;
-          const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-          if (markerMatch && col <= markerMatch[1].length || !state.selection.main.empty) {
-            const lineFrom = state.doc.lineAt(from);
-            const lineTo = state.doc.lineAt(to);
-            const changes = [];
-            for (let i = lineFrom.number; i <= lineTo.number; i++) {
-              changes.push({ from: state.doc.line(i).from, insert: '    ' });
-            }
-            view.dispatch({ changes });
-          } else {
-            view.dispatch(state.replaceSelection('    '));
-          }
+          handleInsertModeTab(view);
           return true;
         },
       }, {
         key: 'Shift-Tab',
         run: (view) => {
-          const { state } = view;
-          const line = state.doc.lineAt(state.selection.main.from);
-          const indentMatch = line.text.match(/^(\s{1,4})/);
-          if (indentMatch) {
-            view.dispatch({ changes: { from: line.from, to: line.from + indentMatch[1].length } });
-          } else {
-            const markerMatch = line.text.match(/^((?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-            if (markerMatch) {
-              view.dispatch({ changes: { from: line.from, to: line.from + markerMatch[1].length } });
-            }
-          }
+          handleInsertModeShiftTab(view);
+          return true;
+        },
+      }, {
+        key: 'Enter',
+        run: (view) => {
+          handleInsertModeEnter(view);
           return true;
         },
       }]),

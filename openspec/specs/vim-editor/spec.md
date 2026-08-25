@@ -1,5 +1,7 @@
 # Vim Editor
 
+## Purpose
+
 CodeMirror 6 集成 vim 编辑模式的规格，包括 vim 键映射、ex 命令处理、替换预览高亮等。
 
 ## Requirements
@@ -187,3 +189,194 @@ FullscreenEditor 的 `processOverlayCommand()` SHALL 对不认识的 ex 命令�
 - **AND** 用户按下 `Tab`
 - **THEN** 该行变为 `    1. item`
 - **AND** 不在 marker 和 `item` 之间插入空格
+
+### Requirement: Insert 模式补全使用 Tab 确认
+
+当 Vim 编辑器处于 insert 模式且自动补全建议处于激活状态时，系统 SHALL 使用 `Tab` 确认当前补全项，并 SHALL NOT 使用 `Enter` 确认补全。
+
+#### Scenario: Tab 确认当前补全项
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 自动补全浮层已打开并存在选中的建议项
+- **AND** 用户按下 `Tab`
+- **THEN** 当前补全建议被插入
+- **AND** 该按键不会继续触发缩进
+
+#### Scenario: Enter 不确认补全项
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 自动补全浮层已打开并存在选中的建议项
+- **AND** 用户按下 `Enter`
+- **THEN** 编辑器插入换行或执行 Markdown 列表延续
+- **AND** 当前补全建议不会被插入
+
+#### Scenario: 补全导航保持可用
+
+- **WHEN** 自动补全浮层在 insert 模式打开
+- **THEN** 用户仍可使用方向键和翻页键导航建议项
+- **AND** 用户可使用 `Escape` 关闭补全
+- **AND** 用户可使用 `Ctrl+Space` 手动触发补全
+
+### Requirement: 普通 Tab 缩进推进到下一个制表位
+
+当 Vim 编辑器处于 insert 模式且 `Tab` 用于 Markdown 列表缩进以外的普通缩进时，系统 SHALL 只插入推进光标或行缩进到下一个制表位所需的空格数量。
+
+#### Scenario: 单光标在第 1 列推进到第 4 列
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 光标位于非列表行第 1 列
+- **AND** 没有补全建议被确认
+- **AND** 用户按下 `Tab`
+- **THEN** 编辑器插入 3 个空格
+- **AND** 光标推进到第 4 列
+
+#### Scenario: 单光标在第 4 列推进到第 8 列
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 光标位于非列表行第 4 列
+- **AND** 没有补全建议被确认
+- **AND** 用户按下 `Tab`
+- **THEN** 编辑器插入 4 个空格
+- **AND** 光标推进到第 8 列
+
+#### Scenario: 选中的非列表行分别推进到下一制表位
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选区跨越一个或多个非列表行
+- **AND** 没有补全建议被确认
+- **AND** 用户按下 `Tab`
+- **THEN** 每个选中行都插入推进其行首缩进到下一制表位所需的空格数量
+- **AND** 除非该行已经处于制表位，否则不会盲目插入固定 4 个空格
+
+### Requirement: Insert 模式 Markdown 列表缩进按列表树移动
+
+当 Vim 编辑器处于 insert 模式且 `Tab` 或 `Shift+Tab` 用于选中的 Markdown 列表项时，系统 SHALL 将每个选中的根列表项及其嵌套后代视为一棵列表树，移动根项一个列表层级并保持内部子结构。
+
+#### Scenario: 选中父项时子项一起缩进
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选区包含一个有嵌套子项的有序列表项
+- **AND** 没有补全建议被确认
+- **AND** 用户按下 `Tab`
+- **THEN** 选中的父列表项缩进一个列表层级
+- **AND** 其嵌套子项仍保留在该父项下并保持相对层级
+- **AND** 子项不会因为其行也在选区内而被重复缩进
+
+#### Scenario: 混合层级选区只移动选中根项
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选区跨越不同嵌套层级的 Markdown 列表项
+- **AND** 部分选中项是其他选中项的后代
+- **AND** 没有补全建议被确认
+- **AND** 用户按下 `Tab`
+- **THEN** 只有选中的根列表项被移动一个列表层级
+- **AND** 后代列表项只作为其根项列表树的一部分移动
+- **AND** 每棵被移动列表树的内部相对结构保持不变
+
+#### Scenario: 选中的列表树反向缩进一层
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选区包含一个有后代的嵌套 Markdown 列表项
+- **AND** 用户按下 `Shift+Tab`
+- **THEN** 选中的列表项反向缩进一个列表层级
+- **AND** 其后代仍保留在该项下并保持相对层级
+- **AND** 选中的后代项不会被重复反向缩进
+
+#### Scenario: 顶层列表项不会反向缩进出文档边界
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选中的 Markdown 列表项已经处于顶层列表层级
+- **AND** 用户按下 `Shift+Tab`
+- **THEN** 该项仍保持为顶层 Markdown 列表项
+- **AND** 列表 marker 不会因为列表树反向缩进而被删除
+
+### Requirement: Insert 模式 Markdown 有序列表缩进按容器重编号
+
+当 Markdown 有序列表项通过 insert 模式 `Tab` 或 `Shift+Tab` 移动时，系统 SHALL 按列表项在所属有序列表容器中的兄弟位置，对每个受影响的有序列表容器重新编号。
+
+#### Scenario: 有序列表项缩进到新的子容器时从 1 开始
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 一个有序列表项被选中
+- **AND** 目标位置尚无有序子列表容器
+- **AND** 用户按下 `Tab`
+- **THEN** 被移动项在新的有序子列表容器中编号为 `1.`
+- **AND** 原有序列表容器中的后续兄弟项连续重编号
+
+#### Scenario: 有序列表项缩进到已有子容器时延续编号
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 一个有序列表项被选中
+- **AND** 目标位置已有有序子列表容器
+- **AND** 用户按下 `Tab`
+- **THEN** 被移动项按其在该子有序列表容器中的位置编号
+- **AND** 该子有序列表容器中的所有兄弟项连续重编号
+- **AND** 原有序列表容器中的后续兄弟项连续重编号
+
+#### Scenario: 有序列表项反向缩进后重编号源容器和目标容器
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 一个嵌套有序列表项被选中
+- **AND** 用户按下 `Shift+Tab`
+- **THEN** 被移动项按其在父有序列表容器中的新位置编号
+- **AND** 原嵌套有序列表容器中剩余的兄弟项连续重编号
+- **AND** 父有序列表容器中的后续兄弟项连续重编号
+
+#### Scenario: 混合层级有序列表选区按容器独立重编号
+
+- **WHEN** 编辑器处于 insert 模式
+- **AND** 选区跨越多个嵌套层级的有序列表项
+- **AND** 用户按下 `Tab` 或 `Shift+Tab`
+- **THEN** 每个受影响的有序列表容器都从其第一个可见兄弟项开始独立重编号
+- **AND** 一个有序列表容器中的编号不会复用另一个容器的全局计数
+
+### Requirement: Markdown 有序列表 Enter 延续递增 marker
+
+当 Vim 编辑器处于 insert 模式且 `Enter` 延续 Markdown 有序列表项时，系统 SHALL 为新列表项插入递增后的数字 marker。
+
+#### Scenario: 有序列表 marker 在 Enter 后递增
+
+- **WHEN** 光标位于 `1. item` 行末
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Enter`
+- **THEN** 编辑器插入以 `2. ` 开头的新行
+
+#### Scenario: 多位数字有序列表 marker 在 Enter 后递增
+
+- **WHEN** 光标位于 `9. item` 行末
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Enter`
+- **THEN** 编辑器插入以 `10. ` 开头的新行
+
+#### Scenario: 嵌套有序列表 marker 保持缩进
+
+- **WHEN** 光标位于 `    1. nested` 行末
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Enter`
+- **THEN** 编辑器插入以 `    2. ` 开头的新行
+
+#### Scenario: 空有序列表项仍退出列表
+
+- **WHEN** 光标位于类似 `2. ` 的空有序列表项上
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Enter`
+- **THEN** 编辑器退出或降低当前列表项层级，保持既有空列表项行为
+- **AND** 不会插入 `3. `
+
+### Requirement: Vim 编辑器文本按键行为在不同编辑器界面一致
+
+系统 SHALL 在预览面板编辑器和全屏编辑器中应用一致的 insert 模式 `Tab`、`Shift+Tab`、自动补全确认和 Markdown 列表延续行为。
+
+#### Scenario: 预览编辑器和全屏编辑器的 Tab 行为一致
+
+- **WHEN** 同一文档内容和光标位置分别在 `PreviewEditor` 与 `FullscreenEditor` 中编辑
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Tab`
+- **THEN** 两个编辑器界面产生相同的文档变更
+
+#### Scenario: 预览编辑器和全屏编辑器的有序列表 Enter 行为一致
+
+- **WHEN** 同一个 Markdown 有序列表项分别在 `PreviewEditor` 与 `FullscreenEditor` 中编辑
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Enter`
+- **THEN** 两个编辑器界面用相同的递增 marker 延续列表
