@@ -140,3 +140,50 @@ FullscreenEditor 的 `processOverlayCommand()` SHALL 对不认识的 ex 命令�
 
 - **WHEN** 用户在 visual 模式下选中文本
 - **THEN** 选区高亮与活动行取消行为与此前一致，不受本改动影响
+
+### Requirement: Markdown 预览进入编辑器时内容稳定可见
+
+当 Markdown 文件已经在预览模式加载后，用户按 `e` 进入 Vim 编辑器模式时，系统 SHALL 仅基于当前已加载的 Markdown 内容初始化或激活 CodeMirror，并 SHALL 在编辑器容器具有稳定、非零尺寸后测量可见 viewport。
+
+#### Scenario: 打包构建中从 Markdown 预览进入编辑
+
+- **WHEN** 用户正在预览已加载的 `readme.md`
+- **AND** 在预览面板按下 `e`
+- **THEN** 编辑器切换到 `editor-normal`
+- **AND** CodeMirror 立即显示 Markdown 文档内容
+- **AND** 编辑器 viewport 不显示空白或局部未绘制区域
+
+#### Scenario: 布局变化后编辑 Markdown
+
+- **WHEN** 用户通过切换 tab、展开/折叠预览、切换/调整 terminal 或让应用重新获得焦点改变布局状态
+- **AND** 正在预览已加载的 Markdown 文件
+- **AND** 按下 `e`
+- **THEN** 编辑器在应用初始滚动恢复前测量其可见容器
+- **AND** Markdown 内容可见，不需要进入 insert 模式输入字符来触发重绘
+
+#### Scenario: 保留预览中的目标行
+
+- **WHEN** 用户滚动 Markdown 预览，使后面的章节可见
+- **AND** 按下 `e`
+- **THEN** 编辑器在布局测量完成后打开到对应的 Markdown 源码行附近
+- **AND** 不显示过期预览内容或旧编辑器 session 内容
+
+### Requirement: Markdown 列表 Tab 缩进保留 marker
+
+当用户在 insert 模式编辑 Markdown 列表项时，按下 `Tab` SHALL 缩进整个列表项行，包括 `-`、`*`、`+`、`1.` 或任务列表 marker，而不是只在列表内容前插入空格。
+
+#### Scenario: 无序 Markdown 列表内容中按 Tab
+
+- **WHEN** 光标位于以 `- item` 开头的行内容中
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Tab`
+- **THEN** 该行变为 `    - item`
+- **AND** 不在 marker 和 `item` 之间插入空格
+
+#### Scenario: 有序 Markdown 列表内容中按 Tab
+
+- **WHEN** 光标位于以 `1. item` 开头的行内容中
+- **AND** 编辑器处于 insert 模式
+- **AND** 用户按下 `Tab`
+- **THEN** 该行变为 `    1. item`
+- **AND** 不在 marker 和 `item` 之间插入空格

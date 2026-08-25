@@ -1406,8 +1406,14 @@
     const target = event.target as HTMLElement | null;
     const isTerminalAltTabChord = event.altKey && !event.ctrlKey && !event.metaKey
       && !event.shiftKey && isSupportedAltTabCode(event.code) && isTerminalInputTarget(event.target);
+    const isPreviewCodeMirrorTab = event.key === 'Tab'
+      && $layout.activeColumn === 'preview'
+      && !$layout.fullscreenEditorOpen
+      && target instanceof Element
+      && target.closest('.preview-panel .cm-editor') !== null;
     if ((target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable)
-      && !isTerminalAltTabChord) {
+      && !isTerminalAltTabChord
+      && !isPreviewCodeMirrorTab) {
       // Only allow Escape and Ctrl shortcuts through
       if (event.key !== 'Escape' && !event.ctrlKey) return;
     }

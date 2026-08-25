@@ -216,19 +216,17 @@
     editorView = session.view;
     editorFilePath = session.filePath;
     clipboardBridge = session.clipboardBridge;
+    let savedTopToRestore: number | null = null;
     if (pendingEditorPos >= 0 && pendingEditorPos <= session.view.state.doc.length) {
       session.view.dispatch({ selection: { anchor: pendingEditorPos } });
       pendingEditorPos = -1;
     }
     if (pendingEditorScrollTop >= 0) {
-      const savedTop = pendingEditorScrollTop;
+      savedTopToRestore = pendingEditorScrollTop;
       pendingEditorScrollTop = -1;
-      session.view.scrollDOM.scrollTop = savedTop;
     }
-    requestAnimationFrame(() => {
-      if (editorSessions.get(tabId) === session && editorView === session.view) {
-        session.view.requestMeasure();
-      }
+    void refreshEditorLayoutAfterPaint(session, () => {
+      if (savedTopToRestore !== null) session.view.scrollDOM.scrollTop = savedTopToRestore;
     });
     if (import.meta.env.DEV) tracePerformance('vim-session-activate', 'vim-session-activate-start');
     return true;
@@ -236,6 +234,64 @@
 
   function hideEditorSessions(): void {
     for (const session of editorSessions.values()) session.host.style.display = 'none';
+  }
+
+  function nextAnimationFrame(): Promise<void> {
+    return new Promise(resolve => requestAnimationFrame(() => resolve()));
+  }
+
+  function isVisibleBox(element: HTMLElement | undefined): boolean {
+    if (!element || element.getClientRects().length === 0) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isActiveEditorSession(session: EditorSession): boolean {
+    return editorSessions.get(session.tabId) === session
+      && editorView === session.view
+      && renderTabId === session.tabId
+      && filePath === session.filePath;
+  }
+
+  function getSessionForView(view: EditorView): EditorSession | undefined {
+    for (const session of editorSessions.values()) {
+      if (session.view === view) return session;
+    }
+  }
+
+  function clampEditorScroll(view: EditorView): void {
+    const s = view.scrollDOM;
+    s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
+  }
+
+  function hasStableEditorLayout(session: EditorSession): boolean {
+    return isVisibleBox(editorContainer)
+      && isVisibleBox(session.host)
+      && isVisibleBox(session.view.dom)
+      && isVisibleBox(session.view.scrollDOM);
+  }
+
+  async function waitForStableEditorLayout(session: EditorSession, maxFrames: number = 6): Promise<boolean> {
+    await tick();
+    for (let i = 0; i < maxFrames; i++) {
+      if (!isActiveEditorSession(session)) return false;
+      await nextAnimationFrame();
+      if (!isActiveEditorSession(session)) return false;
+      session.view.requestMeasure();
+      if (hasStableEditorLayout(session)) return true;
+    }
+    return isActiveEditorSession(session) && hasStableEditorLayout(session);
+  }
+
+  async function refreshEditorLayoutAfterPaint(session: EditorSession, applyAfterMeasure?: () => void): Promise<void> {
+    if (!await waitForStableEditorLayout(session)) return;
+    if (!isActiveEditorSession(session)) return;
+    session.view.requestMeasure();
+    await nextAnimationFrame();
+    if (!isActiveEditorSession(session)) return;
+    applyAfterMeasure?.();
+    clampEditorScroll(session.view);
+    session.view.requestMeasure();
   }
 
   function focusActiveEditor(): void {
@@ -535,6 +591,10 @@
     if (m === 'editor-normal' || m === 'editor-insert') {
       if (previewWithToc) previewWithToc.style.display = 'none';
       if (editorContainer) editorContainer.style.display = 'block';
+      const activeSession = editorView ? getSessionForView(editorView) : undefined;
+      if (activeSession && isActiveEditorSession(activeSession)) {
+        void refreshEditorLayoutAfterPaint(activeSession);
+      }
       const textSnapshot = readyTextContent;
       if (!textSnapshot || !isCurrentTextSnapshot(textSnapshot)) {
         return;
@@ -632,24 +692,27 @@
     void tick().then(() => focusActiveEditor());
   }
 
-  export function pressTab() {
-    if (!editorView || mode !== 'editor-insert') return;
-    const { state } = editorView;
+  function indentSelectionOrInsertTab(view: EditorView): void {
+    const { state } = view;
     const { from, to } = state.selection.main;
     const line = state.doc.lineAt(from);
-    const col = from - line.from;
     const markerMatch = line.text.match(/^(\s*(?:[-*+]|\d+\.)\s(?:\[[ x]\]\s)?)/);
-    if (markerMatch && col <= markerMatch[1].length || !state.selection.main.empty) {
+    if (markerMatch || !state.selection.main.empty) {
       const lineFrom = state.doc.lineAt(from);
       const lineTo = state.doc.lineAt(to);
       const changes = [];
       for (let i = lineFrom.number; i <= lineTo.number; i++) {
         changes.push({ from: state.doc.line(i).from, insert: '    ' });
       }
-      editorView.dispatch({ changes });
+      view.dispatch({ changes });
     } else {
-      editorView.dispatch(state.replaceSelection('    '));
+      view.dispatch(state.replaceSelection('    '));
     }
+  }
+
+  export function pressTab() {
+    if (!editorView || mode !== 'editor-insert') return;
+    indentSelectionOrInsertTab(editorView);
   }
 
   export function pressShiftTab() {
@@ -1111,12 +1174,16 @@
   }
 
   function scrollEditorToPos(view: EditorView, pos: number) {
+    const session = getSessionForView(view);
+    if (session) {
+      void refreshEditorLayoutAfterPaint(session, () => {
+        view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+      });
+      return;
+    }
     view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const s = view.scrollDOM;
-        s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
-      });
+      requestAnimationFrame(() => clampEditorScroll(view));
     });
   }
 
@@ -1206,16 +1273,7 @@
       keymap.of([{
         key: 'Tab',
         run: (view) => {
-          const { state } = view;
-          if (state.selection.main.empty) { view.dispatch(state.replaceSelection('    ')); }
-          else {
-            const { from, to } = state.selection.main;
-            const lineFrom = state.doc.lineAt(from);
-            const lineTo = state.doc.lineAt(to);
-            const changes = [];
-            for (let i = lineFrom.number; i <= lineTo.number; i++) { changes.push({ from: state.doc.line(i).from, insert: '    ' }); }
-            view.dispatch({ changes });
-          }
+          indentSelectionOrInsertTab(view);
           return true;
         },
       }]),
@@ -1274,8 +1332,12 @@
     // Clamp editor scroll on container resize (terminal drag, panel resize, etc.)
     const resizeObserver = new ResizeObserver(() => {
       if (editorSessions.get(tabId)?.view === view) {
-        const s = view.scrollDOM;
-        s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
+        const activeSession = editorSessions.get(tabId);
+        if (activeSession && isActiveEditorSession(activeSession)) {
+          void refreshEditorLayoutAfterPaint(activeSession);
+        } else {
+          clampEditorScroll(view);
+        }
       }
     });
     resizeObserver.observe(host);
@@ -1290,33 +1352,21 @@
     editorSessions.set(tabId, session);
     clipboardBridge = bridge;
 
-    // Ensure editor layout is recalculated after tab switch (container may have
-    // been display:none, causing CodeMirror to measure 0 dimensions on creation).
-    requestAnimationFrame(() => {
-      if (editorSessions.get(tabId)?.view === view) view.requestMeasure();
-    });
-
     setupVimLineNumbers(sessionLineNumberCompartment, view);
     setupAllVimCommands((text) => {
       outputText = text;
       outputVisible = true;
     });
-    // Tab switch restore: use cached scroll position, skip scrollIntoView.
-    // Double rAF ensures CodeMirror's internal measure cycles complete first.
     if (pendingEditorScrollTop >= 0) {
       const savedTop = pendingEditorScrollTop;
       pendingEditorScrollTop = -1;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (editorSessions.get(tabId)?.view === view) {
-            view.scrollDOM.scrollTop = savedTop;
-            view.scrollDOM.scrollTop = Math.max(0, Math.min(view.scrollDOM.scrollTop, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight));
-          }
-        });
+      void refreshEditorLayoutAfterPaint(session, () => {
+        view.scrollDOM.scrollTop = savedTop;
       });
     } else if (needsScroll) {
-      // Fresh entry (e.g. 'e' key from preview): center on target line
       scrollEditorToPos(view, view.state.selection.main.head);
+    } else {
+      void refreshEditorLayoutAfterPaint(session);
     }
 
     // Watch theme changes to swap syntax highlighting
@@ -1702,7 +1752,7 @@
   </div>
 
   <div class="panel-content">
-    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={!filePath && !batchRenameTempPath}>
+    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={!filePath && !batchRenameTempPath} class:modeHidden={mode !== 'global-normal'}>
       <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
       {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
         <TocSidebar
@@ -1714,7 +1764,7 @@
         />
       {/if}
     </div>
-    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} onclick={(e) => e.stopPropagation()} onmouseup={() => {
+    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} class:activeEditor={mode === 'editor-normal' || mode === 'editor-insert'} onclick={(e) => e.stopPropagation()} onmouseup={() => {
       // Re-focus overlay after mouse interactions (selection, click) pass through to CodeMirror.
       // pointer-events:none on the overlay lets mouse events reach CodeMirror, which steals focus.
       if (mode === 'editor-normal') {
@@ -1854,6 +1904,7 @@
   .panel-content { flex: 1; overflow: hidden; position: relative; }
 
   .preview-with-toc { display: flex; width: 100%; height: 100%; }
+  .preview-with-toc.modeHidden { display: none; }
   .preview-with-toc.hidden { display: none; }
 
   .preview-area { flex: 1; min-width: 0; height: 100%; overflow: hidden; position: relative; }
@@ -1867,6 +1918,7 @@
 
   .editor-area { width: 100%; height: 100%; display: none; position: relative; }
   .editor-area.hidden { display: none; }
+  .editor-area.activeEditor:not(.hidden) { display: block; }
   :global(.editor-session) { width: 100%; height: 100%; }
 
   .editor-overlay {
