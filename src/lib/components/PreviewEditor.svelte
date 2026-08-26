@@ -522,9 +522,25 @@
     }
   });
 
-  // When the active/preview tab changes, ensure only that tab's slot is visible
+  // When the active/preview tab changes, show the target slot.
+  // Only clear the slot's content if it holds a different file;
+  // keeping the rendered DOM for the same file avoids expensive
+  // re-renders (especially for markdown with syntax highlighting).
   $effect(() => {
+    const t0 = performance.now();
+    const slot = tabSlots.get(renderTabId);
+    const cleared = slot && slot.dataset.filePath !== filePath;
+    if (cleared) {
+      slot.innerHTML = '';
+      delete slot.dataset.rendered;
+      delete slot.dataset.filePath;
+      delete slot.dataset.fileMtime;
+    }
     showTabSlot(renderTabId);
+    const t1 = performance.now();
+    if (t1 - t0 > 1 || cleared) {
+      console.log(`[tab-perf] preview showSlot tab=${renderTabId} cleared=${cleared} time=${(t1-t0).toFixed(1)}ms`);
+    }
   });
 
   // Re-focus overlay after mouse selection (mouseup may fire outside editor panel)
@@ -569,9 +585,12 @@
     if (loadKey === _prevLoadKey) return;
     _prevLoadKey = loadKey;
     if (filePath) {
+      const t0 = performance.now();
       getOrCreateSlot(renderTabId);
       showTabSlot(renderTabId);
       loadFile(filePath);
+      const t1 = performance.now();
+      console.log(`[tab-perf] preview loadFile dispatch tab=${renderTabId} file=${filePath.split(/[/\\]/).pop()} time=${(t1-t0).toFixed(1)}ms`);
     }
   });
 
@@ -803,6 +822,7 @@
   let pdfRenderScale: number = 1.5;
 
   async function loadFile(path: string) {
+    const t0 = performance.now();
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
@@ -838,6 +858,7 @@
         tocHeadings = cached.tocHeadings;
       }
       mode = cached.mode;
+      const tCache = performance.now();
       if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
         pendingEditorPos = cached.editorCursorPos;
         pendingEditorScrollTop = cached.editorScrollTop;
@@ -845,6 +866,8 @@
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderPreview();
       }
+      const tRender = performance.now();
+      console.log(`[tab-perf] loadFile CACHE_HIT tab=${loadTabId} file=${fileName} cacheRestore=${(tCache-t0).toFixed(1)}ms render=${(tRender-tCache).toFixed(1)}ms total=${(tRender-t0).toFixed(1)}ms`);
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabEditorCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })

@@ -482,12 +482,16 @@
 
   // Tab operations
   function saveCurrentTabState() {
+    const t0 = performance.now();
     // Cache full editor state for tab restore
     const state = getTabsState();
     const snapshot = previewEditor?.getEditorStateSnapshot();
+    const t1 = performance.now();
     previewEditor?.cacheTabState(state.activeTabId);
+    const t2 = performance.now();
 
     const projectTree = currentDirectoryPanel?.getProjectTreeState();
+    const t3 = performance.now();
     tabs.saveActiveTabState({
       cursorIndex: currentDirectoryPanel?.getSelectedIndex() ?? 0,
       scrollOffset: currentDirectoryPanel?.getScrollOffset() ?? 0,
@@ -502,6 +506,8 @@
       projectSelectedPath: projectTree?.selectedPath ?? null,
       projectScrollOffset: projectTree?.scrollOffset ?? 0,
     });
+    const t4 = performance.now();
+    console.log(`[tab-perf] saveCurrentTabState total=${(t4-t0).toFixed(1)}ms snapshot=${(t1-t0).toFixed(1)}ms cache=${(t2-t1).toFixed(1)}ms projectTree=${(t3-t2).toFixed(1)}ms saveStore=${(t4-t3).toFixed(1)}ms`);
   }
 
   function handleTabNew() {
@@ -527,9 +533,14 @@
 
   function handleTabSwitch(tabId: number) {
     if (tabId === getTabsState().activeTabId) return;
+    const t0 = performance.now();
     saveCurrentTabState();
+    const t1 = performance.now();
     tabs.switchTab(tabId);
+    const t2 = performance.now();
     restoreTabAndFocus();
+    const t3 = performance.now();
+    console.log(`[tab-perf] handleTabSwitch total=${(t3-t0).toFixed(1)}ms save=${(t1-t0).toFixed(1)}ms switch=${(t2-t1).toFixed(1)}ms restore=${(t3-t2).toFixed(1)}ms`);
   }
 
   function startSwitcher(mode: 'mru' | 'physical', direction: 1 | -1 = 1) {
@@ -609,6 +620,7 @@
 
   function restoreTabContent(tab: TabState) {
     if (!tab) return;
+    const t0 = performance.now();
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
     // the filePath $effect-triggered loadFile sees mode=global-normal (no stale
@@ -621,6 +633,10 @@
     if (!tab.projectMode && (tab.cursorIndex > 0 || tab.scrollOffset > 0)) {
       currentDirectoryPanel?.setPendingRestore(tab.cursorIndex, tab.scrollOffset);
     }
+    if (tab.projectMode) {
+      currentDirectoryPanel?.setSuppressInitialSelect(true);
+    }
+    const t1 = performance.now();
     // Set activeColumn BEFORE restoreTabState so the editor's activeColumn
     // $effect sees the correct value when mode is restored to editor-normal,
     // preventing it from redirecting focus to the directory panel.
@@ -640,6 +656,7 @@
     // Sync PanelLayout local state
     currentPath = tab.currentPath;
     selectedFile = tab.selectedFile;
+    const t2 = performance.now();
     // Batch all layout store updates into one to avoid cascading reactive triggers
     layout.restoreTabState({
       columnRatios: tab.columnRatios,
@@ -656,8 +673,13 @@
     // Re-assert activeColumn — restoreTabState may have triggered reactive
     // effects that changed it (e.g. tab rename callback → layout subscription)
     layout.setActiveColumn(actualPanel);
+    const t3 = performance.now();
+    console.log(`[tab-perf] restoreTabContent total=${(t3-t0).toFixed(1)}ms deactivate=${(t1-t0).toFixed(1)}ms setColumn=${(t2-t1).toFixed(1)}ms restoreState=${(t3-t2).toFixed(1)}ms`);
     if (import.meta.env.DEV) performance.mark('tab-focus-restore-start');
+    const tickStart = performance.now();
     void tick().then(() => {
+      const tickDone = performance.now();
+      console.log(`[tab-perf] tick-wait=${(tickDone-tickStart).toFixed(1)}ms`);
       if (tab.projectMode) {
         void currentDirectoryPanel?.setProjectMode(true, {
           enabled: true,
@@ -665,15 +687,23 @@
           expandedPaths: tab.projectExpandedPaths,
           selectedPath: tab.projectSelectedPath,
           scrollOffset: tab.projectScrollOffset,
-        }).then(() => synchronizeProjectTreeWatcher());
+          skipAutoSelect: true,
+        }).then(() => {
+          currentDirectoryPanel?.setSuppressInitialSelect(false);
+          setTimeout(() => void synchronizeProjectTreeWatcher(), 0);
+        });
       } else {
-        void synchronizeProjectTreeWatcher();
+        setTimeout(() => void synchronizeProjectTreeWatcher(), 0);
       }
       focusPanelNow(actualPanel);
+      const focusDone = performance.now();
+      console.log(`[tab-perf] focusPanel=${(focusDone-tickDone).toFixed(1)}ms`);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
       setTimeout(() => {
+        const syncStart = performance.now();
         if (import.meta.env.DEV) performance.mark('directory-sync-schedule-start');
         void refreshCoordinator?.synchronizeActivePanels().finally(() => {
+          console.log(`[tab-perf] syncPanels=${(performance.now()-syncStart).toFixed(1)}ms`);
           if (import.meta.env.DEV) tracePerformance('directory-sync-schedule', 'directory-sync-schedule-start');
         });
       }, 0);
@@ -2089,7 +2119,12 @@
 
   function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal') {
     if (panel === 'terminal' && floatingTerminal) {
+      const _ft0 = performance.now();
       floatingTerminal.focus();
+      const _ft1 = performance.now();
+      if (_ft1 - _ft0 > 1) {
+        console.log(`[tab-perf] focusPanelNow terminal.focus=${(_ft1-_ft0).toFixed(1)}ms`);
+      }
     } else if (panel === 'parent' && parentDirectoryPanel) {
       parentDirectoryPanel.focus();
     } else if (panel === 'current' && currentDirectoryPanel) {
@@ -2507,7 +2542,6 @@
     overflow: hidden;
     gap: 1px;
     background-color: var(--border);
-    transition: grid-template-columns 0.2s ease;
   }
 
   .panel {

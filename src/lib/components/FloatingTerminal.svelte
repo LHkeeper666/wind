@@ -57,6 +57,7 @@
   $effect(() => {
     if (!terminalWrapper) return;
 
+    const t0 = performance.now();
     const prevTabId = activeTabId;
     activeTabId = currentTabId;
 
@@ -71,12 +72,15 @@
       const terminalCwd = initialCwd || currentPath;
       if (!initialCwd && terminalCwd) onInitialCwd(terminalCwd);
       terminalManager.createContainer(activeTabId, terminalWrapper);
+      const tCreate = performance.now();
       terminalManager.create(activeTabId, shellTypeProp, terminalCwd);
+      const tCreated = performance.now();
+      console.log(`[tab-perf] terminal createContainer=${(tCreate-t0).toFixed(1)}ms create=${(tCreated-tCreate).toFixed(1)}ms`);
       terminalManager.startShell(activeTabId, shellTypeProp);
     } else {
       terminalManager.setContainerVisible(activeTabId, true);
-      // Fit after becoming visible
-      setTimeout(() => terminalManager.fit(activeTabId), 50);
+      const t1 = performance.now();
+      console.log(`[tab-perf] terminal setVisible=${(t1-t0).toFixed(1)}ms`);
     }
 
     // Restore focus on tab switch (only when terminal is the active column)
@@ -93,13 +97,6 @@
     const instance = terminalManager.get(activeTabId);
     if (instance && instance.shellType !== shellTypeProp) {
       terminalManager.changeShell(activeTabId, shellTypeProp);
-    }
-  });
-
-  // Fit terminal when visibility changes
-  $effect(() => {
-    if (visible) {
-      setTimeout(() => terminalManager.fit(activeTabId), 50);
     }
   });
 
@@ -269,7 +266,9 @@
   }
 
   .floating-terminal.hidden {
-    display: none;
+    position: absolute;
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .floating-terminal.fullscreen {

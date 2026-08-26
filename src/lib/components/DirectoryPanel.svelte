@@ -39,6 +39,7 @@
     expandedPaths: string[];
     selectedPath: string | null;
     scrollOffset: number;
+    skipAutoSelect?: boolean;
   }
 
   let {
@@ -241,10 +242,15 @@
   // Pending cursor/scroll restoration, applied after next directory load
   let pendingCursorIndex: number = -1;
   let pendingScrollOffset: number = -1;
+  let _suppressInitialSelect = false;
 
   export function setPendingRestore(cursorIndex: number, scrollOffset: number) {
     pendingCursorIndex = cursorIndex;
     pendingScrollOffset = scrollOffset;
+  }
+
+  export function setSuppressInitialSelect(value: boolean) {
+    _suppressInitialSelect = value;
   }
 
   function applyPendingRestore() {
@@ -286,7 +292,7 @@
 
   export function focus() {
     if (panelElement) {
-      panelElement.focus();
+      panelElement.focus({ preventScroll: true });
       isFocused = true;
     }
   }
@@ -345,7 +351,7 @@
       if (node?.entry.is_dir) await expandTreeNode(node, generation);
     }
     if (state?.selectedPath) selectTreePathOrAncestor(state.selectedPath);
-    else selectByIndex(0);
+    else if (!state?.skipAutoSelect) selectByIndex(0);
     if (state?.scrollOffset) setScrollOffset(state.scrollOffset);
     return true;
   }
@@ -423,7 +429,7 @@
   });
 
   function selectInitialEntry() {
-    if (selectedIndex >= 0 || displayFiles.length === 0) return;
+    if (_suppressInitialSelect || selectedIndex >= 0 || displayFiles.length === 0) return;
     // If navigating back, try to highlight the directory we came from
     if (pendingSelectName) {
       const target = pendingSelectName;
@@ -432,6 +438,7 @@
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
+        console.log(`[tab-perf] selectInitialEntry pendingSelectName=${target} file=${displayFiles[idx].name}`);
         onSelect(displayFiles[idx].path);
         return;
       }
@@ -442,6 +449,7 @@
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
+        console.log(`[tab-perf] selectInitialEntry selectedPath file=${displayFiles[idx].name}`);
         onSelect(displayFiles[idx].path);
         return;
       }
@@ -449,6 +457,7 @@
     const firstReal = displayFiles.findIndex(f => f.name !== '..');
     selectedIndex = firstReal >= 0 ? firstReal : 0;
     selectedPathInternal = displayFiles[selectedIndex].path;
+    console.log(`[tab-perf] selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
     onSelect(displayFiles[selectedIndex].path);
   }
 
@@ -460,6 +469,7 @@
   }
 
   async function loadDirectory(dirPath: string, forceRefresh: boolean = false, version?: number): Promise<boolean> {
+    const t0 = performance.now();
     const gen = ++loadingGen;
     isLoading = true;
     errorMessage = '';
@@ -482,6 +492,7 @@
       applyPendingRestore();
       markDirectorySynchronized(dirPath, version);
       isLoading = false;
+      console.log(`[tab-perf] loadDirectory CACHE_HIT dir=${dirPath.split(/[/\\]/).pop()} time=${(performance.now()-t0).toFixed(1)}ms`);
       return true;
     }
 

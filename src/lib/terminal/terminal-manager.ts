@@ -78,9 +78,15 @@ export class TerminalManager {
   }
 
   setContainerVisible(tabId: number, visible: boolean) {
+    const t0 = performance.now();
     const container = this.tabContainers.get(tabId);
     if (container) {
-      container.style.display = visible ? '' : 'none';
+      container.style.visibility = visible ? '' : 'hidden';
+      container.style.zIndex = visible ? '1' : '0';
+    }
+    const t1 = performance.now();
+    if (t1 - t0 > 1) {
+      console.log(`[tab-perf] setContainerVisible tab=${tabId} visible=${visible} time=${(t1-t0).toFixed(1)}ms`);
     }
   }
 
@@ -197,7 +203,7 @@ export class TerminalManager {
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      if (fitAddon && container && container.offsetWidth > 0) {
+      if (fitAddon && container && container.offsetWidth > 0 && container.offsetHeight > 0) {
         fitAddon.fit();
       }
     });
