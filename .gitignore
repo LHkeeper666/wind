@@ -16,3 +16,9 @@ src-tauri/*.exe
 bash.exe.stackdump
 
 docs/
+
+.agents/
+.claudeignore
+.codex/
+
+*.bat
