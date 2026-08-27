@@ -8,6 +8,7 @@ import 'katex/contrib/copy-tex';
 import { createHighlighter, type Highlighter } from 'shiki';
 import { invoke } from '@tauri-apps/api/core';
 import 'katex/dist/katex.min.css';
+import * as yaml from 'js-yaml';
 
 /** Hash a string for content comparison — djb2, short & fast. */
 function hashStr(s: string): string {
@@ -136,7 +137,7 @@ export class MarkdownPreviewer implements Previewer {
 		return ext === 'md' || ext === 'markdown';
 	}
 
-	parseHeadings(text: string): TocHeading[] {
+	parseHeadings(text: string, fmLineOffset: number = 0): TocHeading[] {
 		const tokens = this.md.parse(text, {});
 		const headings: TocHeading[] = [];
 		const stack: TocHeading[] = [];
@@ -148,7 +149,8 @@ export class MarkdownPreviewer implements Previewer {
 				const text = contentToken?.children
 					?.map((c: any) => c.content || '')
 					.join('') || '';
-				const line = tokens[i].map ? tokens[i].map[0] : 0;
+				let line = tokens[i].map ? tokens[i].map[0] : 0;
+				line += fmLineOffset;
 				const heading: TocHeading = { level, text, line, children: [], expanded: false };
 
 				while (stack.length > 0 && stack[stack.length - 1].level >= level) {
@@ -173,19 +175,52 @@ export class MarkdownPreviewer implements Previewer {
 		this.container = container;
 		this.requestId++;
 		const reqId = this.requestId;
-		const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
+		const rawText = typeof content === 'string' ? content : new TextDecoder().decode(content);
+		const text = rawText.replace(/\r\n/g, '\n');
 		const filePath = container.dataset.filePath || '';
 
 		try {
 			const fileName = filePath.split(/[/\\]/).pop() || filePath;
 			const tMd = performance.now();
 
+			// Parse frontmatter
+			const fm = this.parseFrontmatter(text);
+			const fmHtml = fm ? this.renderFrontmatter(fm.data) : '';
+			const fmLineCount = fm ? text.split('\n').indexOf('---', 1) + 1 : 0;
+			const bodyText = fm ? fm.content : text;
+
 			if (this.onHeadings) {
-				this.onHeadings(this.parseHeadings(text));
+				this.onHeadings(this.parseHeadings(bodyText, fmLineCount));
 			}
 
-			const html = this.md.render(text);
-			container.innerHTML = `<div class="preview-markdown">${html}</div>`;
+			// Preprocess indented tables
+			const { text: preprocessedText, indentMap } = this.unindentTables(bodyText);
+
+			const html = this.md.render(preprocessedText);
+			let finalHtml = fmHtml + html;
+
+			// Post-process: wrap indented tables with margin-left
+			if (indentMap.size > 0) {
+				const tempDiv = document.createElement('div');
+				tempDiv.innerHTML = finalHtml;
+				const tables = tempDiv.querySelectorAll('table');
+				for (const table of tables) {
+					const dataLine = table.getAttribute('data-line');
+					if (dataLine !== null) {
+						const margin = indentMap.get(parseInt(dataLine));
+						if (margin) {
+							const wrapper = document.createElement('div');
+							wrapper.className = 'table-indent-wrapper';
+							wrapper.style.marginLeft = margin;
+							table.parentNode?.insertBefore(wrapper, table);
+							wrapper.appendChild(table);
+						}
+					}
+				}
+				finalHtml = tempDiv.innerHTML;
+			}
+
+			container.innerHTML = `<div class="preview-markdown">${finalHtml}</div>`;
 			const mdMs = (performance.now() - tMd).toFixed(0);
 
 			// Collect code blocks and images for parallel processing
@@ -266,7 +301,8 @@ export class MarkdownPreviewer implements Previewer {
 	async update(content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
 		this.requestId++;
 		const reqId = this.requestId;
-		const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
+		const rawText = typeof content === 'string' ? content : new TextDecoder().decode(content);
+		const text = rawText.replace(/\r\n/g, '\n');
 		const filePath = container.dataset.filePath || '';
 
 		// Full markdown render is cheap (<10ms for typical docs).
@@ -275,12 +311,44 @@ export class MarkdownPreviewer implements Previewer {
 		try {
 			const tMd = performance.now();
 
+			// Parse frontmatter
+			const fm = this.parseFrontmatter(text);
+			const fmHtml = fm ? this.renderFrontmatter(fm.data) : '';
+			const fmLineCount = fm ? text.split('\n').indexOf('---', 1) + 1 : 0;
+			const bodyText = fm ? fm.content : text;
+
 			if (this.onHeadings) {
-				this.onHeadings(this.parseHeadings(text));
+				this.onHeadings(this.parseHeadings(bodyText, fmLineCount));
 			}
 
-			const html = this.md.render(text);
-			container.innerHTML = `<div class="preview-markdown">${html}</div>`;
+			// Preprocess indented tables
+			const { text: preprocessedText, indentMap } = this.unindentTables(bodyText);
+
+			const html = this.md.render(preprocessedText);
+			let finalHtml = fmHtml + html;
+
+			// Post-process: wrap indented tables with margin-left
+			if (indentMap.size > 0) {
+				const tempDiv = document.createElement('div');
+				tempDiv.innerHTML = finalHtml;
+				const tables = tempDiv.querySelectorAll('table');
+				for (const table of tables) {
+					const dataLine = table.getAttribute('data-line');
+					if (dataLine !== null) {
+						const margin = indentMap.get(parseInt(dataLine));
+						if (margin) {
+							const wrapper = document.createElement('div');
+							wrapper.className = 'table-indent-wrapper';
+							wrapper.style.marginLeft = margin;
+							table.parentNode?.insertBefore(wrapper, table);
+							wrapper.appendChild(table);
+						}
+					}
+				}
+				finalHtml = tempDiv.innerHTML;
+			}
+
+			container.innerHTML = `<div class="preview-markdown">${finalHtml}</div>`;
 
 			// Collect code blocks and images
 			const codeBlocks = container.querySelectorAll('pre > code');
@@ -562,6 +630,120 @@ export class MarkdownPreviewer implements Previewer {
 			}
 		}
 		console.log(`[md-render-KaTeX] done ${kaCached}/${placeholders.length} formulas, katexCache.size:${this.katexCache.size}`);
+	}
+
+	private parseFrontmatter(text: string): { data: Record<string, any>; content: string } | null {
+		// Must start with --- on its own line (\r\n already normalized to \n)
+		if (!text.startsWith('---\n')) return null;
+
+		// Find closing --- (with or without trailing newline)
+		const closeIdx = text.indexOf('\n---\n', 4);
+		const closeIdxEnd = text.indexOf('\n---', 4);
+		let endIdx: number;
+		let contentStart: number;
+		if (closeIdx !== -1) {
+			endIdx = closeIdx;
+			contentStart = closeIdx + 5;
+		} else if (closeIdxEnd !== -1 && closeIdxEnd + 4 === text.length) {
+			endIdx = closeIdxEnd;
+			contentStart = closeIdxEnd + 4;
+		} else {
+			return null;
+		}
+
+		const fmText = text.substring(4, endIdx);
+		const content = text.substring(contentStart);
+
+		try {
+			const data = yaml.load(fmText) as Record<string, any>;
+			if (!data || typeof data !== 'object' || Object.keys(data).length === 0) return null;
+			return { data, content };
+		} catch {
+			return null;
+		}
+	}
+
+	private renderFrontmatter(data: Record<string, any>): string {
+		const rows = Object.entries(data).map(([key, value]) => {
+			let displayValue: string;
+			if (typeof value === 'object' && value !== null) {
+				displayValue = JSON.stringify(value);
+			} else {
+				displayValue = String(value);
+			}
+			// Replace newlines with <br> for multi-line values
+			const escaped = this.escapeHtml(displayValue).replace(/\n/g, '<br>');
+			return `<div class="fm-row"><span class="fm-key">${this.escapeHtml(key)}</span><span class="fm-sep">:</span> <span class="fm-value">${escaped}</span></div>`;
+		}).join('\n');
+		return `<div class="frontmatter-block">\n${rows}\n</div>`;
+	}
+
+	private unindentTables(text: string): { text: string; indentMap: Map<number, string> } {
+		const lines = text.split('\n');
+		const indentMap = new Map<number, string>();
+		const result: string[] = [];
+		let i = 0;
+
+		const tableRowRe = /^(\s*)\|([^|\n]+\|)+[^|\n]*\|?\s*$/;
+		const sepRowRe = /^(\s*)\|([-: |]+)\|?\s*$/;
+
+		while (i < lines.length) {
+			const line = lines[i];
+			const rowMatch = line.match(tableRowRe);
+
+			if (rowMatch && i + 1 < lines.length) {
+				const indent = rowMatch[1];
+				const nextLine = lines[i + 1];
+				const sepMatch = nextLine.match(sepRowRe);
+
+				if (sepMatch && sepMatch[1] === indent) {
+					// Detected an indented table block
+					const tableStartLine = i;
+					const tableLines: string[] = [];
+					tableLines.push(line.replace(indent, ''));
+					tableLines.push(nextLine.replace(indent, ''));
+					i += 2;
+
+					// Count columns from separator row
+					const sepCols = nextLine.replace(indent, '').split('|').filter(c => c.trim() !== '').length;
+
+					while (i < lines.length) {
+						const rowLine = lines[i];
+						const rowMatch2 = rowLine.match(tableRowRe);
+						if (rowMatch2 && rowMatch2[1] === indent) {
+							tableLines.push(rowLine.replace(indent, ''));
+							i++;
+						} else {
+							break;
+						}
+					}
+
+					// Normalize column counts: pad rows with fewer columns
+					const normalizedLines = tableLines.map((tl, idx) => {
+						if (idx === 1) return tl; // skip separator row
+						const parts = tl.split('|');
+						// Remove leading empty and trailing empty (from leading/trailing |)
+						let cells = parts.slice(1, -1);
+						if (cells.length < sepCols) {
+							while (cells.length < sepCols) cells.push(' ');
+						}
+						return '| ' + cells.join(' | ') + ' |';
+					});
+
+					// Calculate indent width in ch units
+					const indentWidth = indent.replace(/\t/g, '    ').length;
+					indentMap.set(tableStartLine, `${indentWidth}ch`);
+
+					result.push(...normalizedLines);
+					continue;
+				}
+			}
+
+			result.push(line);
+			i++;
+		}
+
+		return { text: result.join('\n'), indentMap };
 	}
 
 	private escapeAttr(text: string): string {

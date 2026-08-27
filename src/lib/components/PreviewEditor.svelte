@@ -2036,6 +2036,35 @@
   :global(.preview-markdown .mermaid-container svg) { max-width: 100%; height: auto; }
   :global(.preview-markdown pre.mermaid-error) { border-left: 3px solid var(--error, #e74c3c); }
 
+	/* Frontmatter block */
+	:global(.preview-markdown .frontmatter-block) {
+		margin-bottom: 1.5em;
+		padding-bottom: 0.8em;
+		border-bottom: 1px dashed var(--border);
+		font-size: 0.82em;
+		line-height: 1.6;
+		opacity: 0.75;
+	}
+	:global(.preview-markdown .fm-row) {
+		/* compact single line */
+	}
+	:global(.preview-markdown .fm-key) {
+		color: var(--accent);
+		font-weight: 500;
+	}
+	:global(.preview-markdown .fm-sep) {
+		color: var(--text-muted);
+		margin: 0 0.3em;
+	}
+	:global(.preview-markdown .fm-value) {
+		color: var(--text-secondary);
+	}
+
+	/* Indented table wrapper */
+	:global(.preview-markdown .table-indent-wrapper) {
+		display: block;
+	}
+
   /* Output panel */
   .panel-output {
     display: flex;
