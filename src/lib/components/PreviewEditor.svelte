@@ -19,7 +19,7 @@
     syntaxHighlighting, defaultHighlightStyle, foldKeymap,
   } from '@codemirror/language';
   import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-  import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
+  import { history, historyKeymap, defaultKeymap, toggleComment } from '@codemirror/commands';
   import { lintKeymap } from '@codemirror/lint';
   import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
@@ -1583,6 +1583,12 @@
       if (event.code === 'KeyH' || event.code === 'KeyL' || event.code === 'KeyJ' || event.code === 'KeyK' || event.code === 'KeyM') {
         return;
       }
+    }
+
+    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.code === 'Slash') {
+      event.preventDefault(); event.stopPropagation();
+      if (editorView) toggleComment(editorView);
+      return;
     }
 
     event.preventDefault(); event.stopPropagation();

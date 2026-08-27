@@ -53,7 +53,14 @@ const langMap: Record<string, () => Extension> = {
 };
 
 export function getLanguage(filePath: string): Extension | null {
+  const fileName = filePath.split(/[/\\]/).pop() || '';
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+  // Dotfiles that use # comments
+  if (fileName.startsWith('.env')) {
+    return StreamLanguage.define(shell);
+  }
+
   const factory = langMap[ext];
   return factory ? factory() : null;
 }
