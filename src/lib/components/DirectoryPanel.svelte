@@ -1234,7 +1234,7 @@
         break;
       case 'R':
         event.preventDefault();
-        if (path) loadDirectory(path, true); // Force refresh
+        refresh();
         break;
       case 'r':
         event.preventDefault();
