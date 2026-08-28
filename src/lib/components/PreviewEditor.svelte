@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
   import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
   import type { VideoMeta, TocHeading } from '$lib/previewers';
@@ -155,6 +156,8 @@
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined = $state(undefined);
   let editorFilePath: string | null = $state(null);
+  let archiveEditPath: string | null = $state(null);
+  let archiveEditInternalPath: string | null = $state(null);
   let themeObserver: MutationObserver | null = null;
   interface TextContentSnapshot {
     tabId: number;
@@ -826,9 +829,23 @@
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
+    // Check if we're in archive mode
+    const layoutVal = get(layout);
+    const archiveStateVal = layoutVal.archiveState;
+    const browsingArchive = archiveStateVal !== null;
+
+    // Track archive context for save operations
+    if (browsingArchive && archiveStateVal) {
+      archiveEditPath = archiveStateVal.archivePath;
+      archiveEditInternalPath = path;
+    } else {
+      archiveEditPath = null;
+      archiveEditInternalPath = null;
+    }
+
     const loadTabId = renderTabId;
     const cached = tabEditorCache.get(loadTabId);
-    if (cached && cached.filePath === path) {
+    if (cached && cached.filePath === path && !browsingArchive) {
       if (gen !== loadGeneration) return;
       content = cached.content;
       savedContent = cached.savedContent;
@@ -887,6 +904,80 @@
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
     if (!isMarkdown) { tocHeadings = []; tocActiveLine = -1; }
+
+    // Archive file: read from archive
+    if (browsingArchive && archiveStateVal) {
+      try {
+        const bytes = await invoke<number[]>('read_archive_file', {
+          archivePath: archiveStateVal.archivePath,
+          internalPath: path,
+        });
+        if (gen !== loadGeneration) return;
+        const uint8 = new Uint8Array(bytes);
+        const isBinary = isTextFile(path) ? false : uint8.slice(0, Math.min(uint8.length, 8192)).some(b => b === 0);
+        if (isBinary) {
+          binaryContent = uint8.buffer;
+          content = '';
+          readyTextContent = null;
+          destroyEditorSession(loadTabId);
+          mode = 'global-normal';
+          renderPreview();
+        } else {
+          const text = new TextDecoder().decode(uint8.slice(0, Math.min(uint8.length, 1024 * 1024)));
+          content = text;
+          binaryContent = null;
+          readyTextContent = { tabId: loadTabId, path, generation: gen, content };
+          if (isDirectEditorFile(path)) {
+            mode = 'editor-normal';
+          } else {
+            destroyEditorSession(loadTabId);
+            mode = 'global-normal';
+            renderPreview();
+          }
+        }
+        stopWatching();
+        return;
+      } catch (e) {
+        // Try reading as archive directory (for directory preview in archive mode)
+        try {
+          const dirEntries = await invoke<FileEntry[]>('read_archive_directory', {
+            archivePath: archiveStateVal.archivePath,
+            internalPath: path,
+          });
+          if (gen !== loadGeneration) return;
+          content = ''; binaryContent = null;
+          destroyEditorSession(loadTabId);
+          mode = 'global-normal';
+          // Render archive directory entries directly
+          const slot = getOrCreateSlot(renderTabId);
+          showTabSlot(renderTabId);
+          slot.dataset.filePath = path;
+          const rows = dirEntries.map((entry: any) => {
+            const safeName = entry.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            const name = entry.is_dir ? safeName + '/' : safeName;
+            const nameClass = entry.is_dir ? 'entry-name is-dir' : 'entry-name';
+            const size = entry.is_dir || entry.size == null ? '' : formatSize(entry.size);
+            const sizeClass = entry.is_dir ? 'dir' : 'file';
+            return `<div class="dir-entry"><span class="${nameClass}">${name}</span><span class="entry-size ${sizeClass}">${size}</span></div>`;
+          });
+          slot.innerHTML = dirEntries.length === 0
+            ? '<p class="preview-empty">Empty directory</p>'
+            : `<div class="dir-list">${rows.join('')}</div>`;
+          stopWatching();
+          return;
+        } catch {
+          // Not a directory either, show error
+        }
+        content = `[Error reading archive file: ${e}]`;
+        binaryContent = null;
+        readyTextContent = null;
+        destroyEditorSession(loadTabId);
+        mode = 'global-normal';
+        renderPreview();
+        stopWatching();
+        return;
+      }
+    }
 
     // Directory
     try {
@@ -1660,19 +1751,30 @@
   async function saveFile() {
     if (!filePath || !isModified) return;
     try {
-      await invoke('write_file', { path: filePath, content });
-      savedContent = content; isModified = false;
-      // Get actual file mtime after save so metadata check doesn't
-      // falsely invalidate cached content on tab switch
-      const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
-      currentFileMtime = meta.modified;
-      const cached = tabEditorCache.get(renderTabId);
-      if (cached && cached.filePath === filePath) {
-        cached.content = content;
-        cached.savedContent = savedContent;
-        cached.isModified = false;
-        cached.fileMtime = meta.modified;
+      if (archiveEditPath && archiveEditInternalPath) {
+        // Save to archive (ZIP only)
+        const encoder = new TextEncoder();
+        const bytes = Array.from(encoder.encode(content));
+        await invoke('archive_write_file', {
+          archivePath: archiveEditPath,
+          internalPath: archiveEditInternalPath,
+          content: bytes,
+        });
+      } else {
+        await invoke('write_file', { path: filePath, content });
+        // Get actual file mtime after save so metadata check doesn't
+        // falsely invalidate cached content on tab switch
+        const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
+        currentFileMtime = meta.modified;
+        const cached = tabEditorCache.get(renderTabId);
+        if (cached && cached.filePath === filePath) {
+          cached.content = content;
+          cached.savedContent = savedContent;
+          cached.isModified = false;
+          cached.fileMtime = meta.modified;
+        }
       }
+      savedContent = content; isModified = false;
       const saveSlot = getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
     } catch (error) { console.error('Failed to save file:', error); }

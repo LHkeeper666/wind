@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import { layout } from '$lib/stores/layout';
+  import { layout, type ArchiveFormat } from '$lib/stores/layout';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import { transfer } from '$lib/stores/transfer';
   import SearchModal from './SearchModal.svelte';
@@ -75,6 +75,10 @@
     onDirectorySynchronized?: (directory: DirectoryKey, version: number) => void;
   } = $props();
 
+  // Archive mode: read from layout store
+  let archiveState: { archivePath: string; internalPath: string; format: ArchiveFormat } | null = $derived($layout.archiveState);
+  let isArchiveMode: boolean = $derived(archiveState !== null);
+
   let files: FileEntry[] = $state([]);
   let isLoading: boolean = $state(false);
   let errorMessage: string = $state('');
@@ -115,6 +119,19 @@
   // Derived values that depend on state declared above
   let normalDisplayFiles: FileEntry[] = $derived.by(() => {
     let result = showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden);
+
+    // Add .. for parent directory navigation (computed here, not stored in files)
+    if (isArchiveMode && archiveState && archiveState.internalPath !== '') {
+      const parentPath = archiveState.internalPath.split('/').slice(0, -1).join('/');
+      if (!result.some(f => f.name === '..')) {
+        result = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...result];
+      }
+    } else if (!isArchiveMode && !isVirtualRoot(path)) {
+      const parentPath = getParentPath(path);
+      if (!result.some(f => f.name === '..')) {
+        result = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...result];
+      }
+    }
 
     // Apply filter
     if (filterPattern) {
@@ -187,7 +204,7 @@
   let inputValue: string = $state('');
   let inputPlaceholder: string = $state('');
   let inputPrompt: string = $state('');
-  let inputMode: 'rename' | 'create-file' | 'create-dir' | 'filter' = $state('rename');
+  let inputMode: 'rename' | 'create-file' | 'create-dir' | 'filter' | 'compress' = $state('rename');
 
   // Delete confirmation state
   let showDeleteConfirm: boolean = $state(false);
@@ -304,6 +321,10 @@
 
   export function refresh() {
     if (projectMode) return refreshProjectTree();
+    if (isArchiveMode && archiveState) {
+      const key = `${archiveState.archivePath}::${archiveState.internalPath}`;
+      return loadDirectory(key, true);
+    }
     return loadDirectory(path, true);
   }
 
@@ -374,6 +395,28 @@
       selectedPathInternal = null;
       clearSelection();
       untrack(() => loadDirectory(path, false));
+    }
+  });
+
+  // Load archive directory when archiveState changes
+  let prevArchiveKey: string = '';
+  $effect.pre(() => {
+    if (archiveState) {
+      const key = `${archiveState.archivePath}::${archiveState.internalPath}`;
+      if (key !== prevArchiveKey) {
+        prevArchiveKey = key;
+        selectedIndex = -1;
+        selectedPathInternal = null;
+        clearSelection();
+        untrack(() => loadDirectory(key, false));
+      }
+    } else if (prevArchiveKey !== '') {
+      // Exited archive mode: reload the original directory
+      prevArchiveKey = '';
+      selectedIndex = -1;
+      selectedPathInternal = null;
+      clearSelection();
+      untrack(() => loadDirectory(path, true));
     }
   });
 
@@ -493,11 +536,6 @@
     // Check cache first
     if (!forceRefresh && directoryCache.has(dirPath)) {
       files = directoryCache.get(dirPath)!;
-      // Inject .. for non-root directories (virtual root has no ..)
-      if (!isVirtual) {
-        const parentPath = getParentPath(dirPath);
-        files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
-      }
       // Safety dedup
       const seen = new Set<string>();
       files = files.filter(f => { if (seen.has(f.path)) return false; seen.add(f.path); return true; });
@@ -514,6 +552,17 @@
       if (isVirtual) {
         // Virtual root: list drives
         files = await invoke<FileEntry[]>('list_drives');
+      } else if (archiveState) {
+        // Archive mode: list entries within the archive
+        files = await invoke<FileEntry[]>('read_archive_directory', {
+          archivePath: archiveState.archivePath,
+          internalPath: archiveState.internalPath,
+        });
+        files.sort((a, b) => {
+          if (a.is_dir && !b.is_dir) return -1;
+          if (!a.is_dir && b.is_dir) return 1;
+          return a.name.localeCompare(b.name);
+        });
       } else {
         files = await invoke<FileEntry[]>('read_directory', { path: dirPath });
         files.sort((a, b) => {
@@ -521,9 +570,6 @@
           if (!a.is_dir && b.is_dir) return 1;
           return a.name.localeCompare(b.name);
         });
-        // Inject .. for parent directory navigation
-        const parentPath = getParentPath(dirPath);
-        files = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...files];
       }
       // Client-side dedup by path (safety net, backend should already handle this)
       const seen = new Set<string>();
@@ -777,6 +823,14 @@
     inputVisible = true;
   }
 
+  function startCompress(defaultName: string) {
+    inputMode = 'compress';
+    inputValue = defaultName;
+    inputPlaceholder = 'Archive name';
+    inputPrompt = 'Archive name:';
+    inputVisible = true;
+  }
+
   function getSelectedProjectNodes(): TreeNode[] {
     if (!projectRoot) return [];
     const nodes: TreeNode[] = [];
@@ -897,7 +951,20 @@
     try {
       if (inputMode === 'rename') {
         const entry = displayFiles[selectedIndex];
-        if (entry.path.startsWith('ftp://')) {
+        if (isArchiveMode && archiveState) {
+          // Rename within ZIP archive
+          const oldInternalPath = entry.path;
+          const parentParts = oldInternalPath.split('/');
+          parentParts.pop();
+          const newInternalPath = parentParts.length > 0 ? parentParts.join('/') + '/' + value : value;
+          await invoke('archive_rename_entry', {
+            archivePath: archiveState.archivePath,
+            oldPath: oldInternalPath,
+            newPath: newInternalPath,
+          });
+          refresh();
+          onToast(`Renamed to ${value}`);
+        } else if (entry.path.startsWith('ftp://')) {
           const parentBase = path.replace(/\/+$/, '');
           const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value });
           loadDirectory(path, true);
@@ -912,7 +979,21 @@
           onToast(`Renamed to ${value}`);
         }
       } else if (inputMode === 'create-file') {
-        if (path.startsWith('ftp://')) {
+        if (isArchiveMode && archiveState) {
+          if (archiveState.format !== 'zip') {
+            onToast('Create file is only supported for ZIP archives');
+            return;
+          }
+          const parentPath = archiveState.internalPath;
+          const newInternalPath = parentPath ? parentPath + '/' + value : value;
+          await invoke('archive_create_entry', {
+            archivePath: archiveState.archivePath,
+            internalPath: newInternalPath,
+            isDir: false,
+          });
+          refresh();
+          onToast(`Created ${value}`);
+        } else if (path.startsWith('ftp://')) {
           const remotePath = path.replace(/\/+$/, '') + '/' + value;
           await invoke('ftp_create_file', { path: remotePath });
           loadDirectory(path, true);
@@ -926,7 +1007,21 @@
           onToast(`Created ${value}`);
         }
       } else if (inputMode === 'create-dir') {
-        if (path.startsWith('ftp://')) {
+        if (isArchiveMode && archiveState) {
+          if (archiveState.format !== 'zip') {
+            onToast('Create directory is only supported for ZIP archives');
+            return;
+          }
+          const parentPath = archiveState.internalPath;
+          const newInternalPath = parentPath ? parentPath + '/' + value : value;
+          await invoke('archive_create_entry', {
+            archivePath: archiveState.archivePath,
+            internalPath: newInternalPath,
+            isDir: true,
+          });
+          refresh();
+          onToast(`Created ${value}/`);
+        } else if (path.startsWith('ftp://')) {
           const remotePath = path.replace(/\/+$/, '') + '/' + value;
           await invoke('ftp_mkdir', { path: remotePath });
           loadDirectory(path, true);
@@ -945,6 +1040,17 @@
           onToast(`Filter: ${value}`);
         } else {
           onToast('Filter cleared');
+        }
+      } else if (inputMode === 'compress') {
+        const entries = getEntriesToOperate();
+        if (entries.length === 0) return;
+        const destPath = path.replace(/[\\\/]+$/, '') + '\\' + value;
+        try {
+          await invoke('compress_files', { sources: entries.map(e => e.path), destPath });
+          onToast(`Archive created: ${value}`);
+          refresh();
+        } catch (e) {
+          onToast(`Compress failed: ${e}`);
         }
       }
     } catch (e) {
@@ -1204,6 +1310,106 @@
     else selectTreeNode(node);
   }
 
+  function isArchiveFile(name: string): boolean {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.tar.gz')
+      || lower.endsWith('.tgz') || lower.endsWith('.7z');
+  }
+
+  function getArchiveFormat(name: string): ArchiveFormat {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'tar.gz';
+    if (lower.endsWith('.tar')) return 'tar';
+    if (lower.endsWith('.7z')) return '7z';
+    return 'zip';
+  }
+
+  function enterArchive(archivePath: string) {
+    const format = getArchiveFormat(archivePath);
+    layout.setArchiveState({ archivePath, internalPath: '', format });
+  }
+
+  function handleArchiveUp() {
+    if (!archiveState) return;
+    if (archiveState.internalPath === '') {
+      // At root: exit archive mode
+      layout.clearArchiveState();
+    } else {
+      // Go up one level within archive
+      const parts = archiveState.internalPath.split('/');
+      parts.pop();
+      layout.setArchiveInternalPath(parts.join('/'));
+    }
+  }
+
+  async function handleArchiveExtract() {
+    if (!archiveState) return;
+    const entries = getEntriesToOperate();
+    if (entries.length === 0) return;
+    const internalPaths = entries.map(e => e.path);
+    const destDir = archiveState.archivePath.replace(/[\\/][^\\/]*$/, "");
+    try {
+      await invoke('extract_archive_files', {
+        archivePath: archiveState.archivePath,
+        internalPaths,
+        destDir,
+      });
+      onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} extracted`);
+    } catch (e) {
+      onToast(`Extract failed: ${e}`);
+    }
+  }
+
+  async function handleArchiveDelete() {
+    if (!archiveState) return;
+    if (archiveState.format !== 'zip') {
+      onToast('Delete is only supported for ZIP archives');
+      return;
+    }
+    const entries = getEntriesToOperate();
+    if (entries.length === 0) return;
+    const internalPaths = entries.map(e => e.path);
+    try {
+      await invoke('archive_delete_entry', {
+        archivePath: archiveState.archivePath,
+        internalPaths,
+      });
+      onToast(`${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} deleted`);
+      refresh();
+    } catch (e) {
+      onToast(`Delete failed: ${e}`);
+    }
+  }
+
+  async function handleArchiveRename() {
+    if (!archiveState) return;
+    if (archiveState.format !== 'zip') {
+      onToast('Rename is only supported for ZIP archives');
+      return;
+    }
+    startRename();
+  }
+
+  async function handleExtractHere(archivePath: string) {
+    const destDir = path;
+    try {
+      await invoke('extract_archive', { archivePath, destDir });
+      onToast('Archive extracted');
+      refresh();
+    } catch (e) {
+      onToast(`Extract failed: ${e}`);
+    }
+  }
+
+  async function handleCompress() {
+    const entries = getEntriesToOperate();
+    if (entries.length === 0) return;
+    const defaultName = entries.length === 1
+      ? entries[0].name.replace(/\.\w+$/, '') + '.zip'
+      : 'archive.zip';
+    startCompress(defaultName);
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     // Only handle if this panel has focus
     if (!isFocused) {
@@ -1269,19 +1475,37 @@
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
             if (projectMode) void expandTreeNode(treeVisibleNodes[selectedIndex]);
-            else onNavigate(entry.path);
+            else if (isArchiveMode) {
+              // Navigate within archive
+              if (entry.name === '..') {
+                handleArchiveUp();
+              } else {
+                layout.setArchiveInternalPath(entry.path);
+              }
+            } else onNavigate(entry.path);
           } else {
-            onActivate(entry.path);
+            if (isArchiveMode) {
+              // Preview file in archive: select it for preview panel
+              onSelect(entry.path);
+            } else {
+              onActivate(entry.path);
+            }
           }
         }
         break;
       case 'R':
         event.preventDefault();
-        refresh();
+        if (isArchiveMode) {
+          refresh();
+        } else {
+          refresh();
+        }
         break;
       case 'r':
         event.preventDefault();
-        if (getSelectedProjectNodes().filter(node => !node.entry.is_dir).length > 1) {
+        if (isArchiveMode) {
+          handleArchiveRename();
+        } else if (getSelectedProjectNodes().filter(node => !node.entry.is_dir).length > 1) {
           startBatchRename();
         } else {
           startRename();
@@ -1293,7 +1517,48 @@
         break;
       case 'E':
         event.preventDefault();
-        onFullscreen();
+        if (isArchiveMode) {
+          break; // E not available in archive mode
+        }
+        // Extract mark: mark archive file for extraction
+        if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+          const entry = displayFiles[selectedIndex];
+          if (entry.is_dir) break;
+          if (isArchiveFile(entry.name)) {
+            layout.setMark('extract', [entry.path]);
+            onToast(`Archive marked for extraction. Navigate to target and press p.`);
+          } else {
+            onToast('E key only works on archive files');
+          }
+        }
+        break;
+      case 'e':
+        event.preventDefault();
+        if (isArchiveMode) break; // e not available in archive mode
+        if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+          const entry = displayFiles[selectedIndex];
+          if (entry.is_dir) break;
+          if (isArchiveFile(entry.name)) {
+            handleExtractHere(entry.path);
+          }
+        }
+        break;
+      case 'c':
+        event.preventDefault();
+        if (isArchiveMode) break; // c not available in archive mode
+        handleCompress();
+        break;
+      case 'C':
+        event.preventDefault();
+        if (isArchiveMode) break; // C not available in archive mode
+        {
+          const entries = getEntriesToOperate();
+          if (entries.length > 0) {
+            layout.setMark('compress', entries.map(e => e.path));
+            clearSelection();
+            onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} marked for compression. Press p to compress.`);
+          }
+        }
         break;
       case 'i':
         event.preventDefault();
@@ -1362,6 +1627,18 @@
               }
               break;
             }
+            if (isArchiveMode) {
+              event.preventDefault();
+              if (archiveState && archiveState.internalPath) {
+                const parts = archiveState.internalPath.split('/');
+                pendingSelectName = parts[parts.length - 1] || null;
+              } else if (archiveState) {
+                // Exiting archive: remember the archive file name to restore focus
+                pendingSelectName = archiveState.archivePath.split(/[/\\]/).pop() || null;
+              }
+              handleArchiveUp();
+              break;
+            }
             if (type === 'current' || type === 'parent') {
               event.preventDefault();
               const shouldRestore = isFocused;
@@ -1389,9 +1666,31 @@
               if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
                 const entry = displayFiles[selectedIndex];
                 if (entry.is_dir) {
-                  onNavigate(entry.path);
+                  if (isArchiveMode) {
+                    if (entry.name === '..') {
+                      handleArchiveUp();
+                    } else {
+                      layout.setArchiveInternalPath(entry.path);
+                    }
+                  } else {
+                    onNavigate(entry.path);
+                  }
                 } else {
-                  onActivate(entry.path);
+                  if (isArchiveMode) {
+                    // Check if it's a nested archive (first phase: don't enter)
+                    if (isArchiveFile(entry.name)) {
+                      onToast('Nested archives not supported in this phase');
+                    } else {
+                      onSelect(entry.path);
+                    }
+                  } else {
+                    // Normal mode: if it's an archive, enter archive mode
+                    if (isArchiveFile(entry.name)) {
+                      enterArchive(entry.path);
+                    } else {
+                      onActivate(entry.path);
+                    }
+                  }
                 }
               }
             }
@@ -1435,10 +1734,19 @@
             break;
           case 'KeyY':
             event.preventDefault();
-            {
+            if (isArchiveMode) {
+              const entries = getEntriesToOperate();
+              if (entries.length > 0 && archiveState) {
+                clipboard.yankFromArchive(archiveState.archivePath, entries);
+                layout.setMark('copy', entries.map(e => e.path));
+                clearSelection();
+                onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked from archive`);
+              }
+            } else {
               const entries = getEntriesToOperate();
               if (entries.length > 0) {
                 clipboard.yank(entries);
+                layout.setMark('copy', entries.map(e => e.path));
                 clearSelection();
                 onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked`);
               }
@@ -1446,10 +1754,13 @@
             break;
           case 'KeyX':
             event.preventDefault();
-            {
+            if (isArchiveMode) {
+              handleArchiveExtract();
+            } else {
               const entries = getEntriesToOperate();
               if (entries.length > 0) {
                 clipboard.cut(entries);
+                layout.setMark('cut', entries.map(e => e.path));
                 clearSelection();
                 onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} cut`);
               }
@@ -1476,7 +1787,11 @@
             break;
           case 'KeyD':
             event.preventDefault();
-            handleDelete(false);
+            if (isArchiveMode) {
+              handleArchiveDelete();
+            } else {
+              handleDelete(false);
+            }
             break;
         }
         break;
@@ -1547,7 +1862,17 @@
   tabindex="0"
 >
   <div class="panel-header">
-    {#if path}
+    {#if isArchiveMode && archiveState}
+      {#if detached}
+        <span class="detach-marker" title="Manual mode (detached)">&#9679;</span>
+      {/if}
+      <span class="panel-path archive-path" title={archiveState.archivePath}>
+        {archiveState.archivePath.split('\\').pop() || archiveState.archivePath}
+        {#if archiveState.internalPath}
+          <span class="archive-internal"> / {archiveState.internalPath.replace(/\//g, ' / ')}</span>
+        {/if}
+      </span>
+    {:else if path}
       {#if detached}
         <span class="detach-marker" title="Manual mode (detached)">&#9679;</span>
       {/if}

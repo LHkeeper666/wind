@@ -11,6 +11,7 @@ export interface ClipboardEntry {
 interface ClipboardState {
   entries: ClipboardEntry[];
   operation: 'copy' | 'cut' | null;
+  archivePath?: string;
 }
 
 function createClipboardStore() {
@@ -27,6 +28,16 @@ function createClipboardStore() {
         ...state,
         entries,
         operation: 'copy',
+        archivePath: undefined,
+      }));
+    },
+
+    yankFromArchive(archivePath: string, entries: ClipboardEntry[]) {
+      update(state => ({
+        ...state,
+        entries,
+        operation: 'copy',
+        archivePath,
       }));
     },
 
@@ -39,7 +50,7 @@ function createClipboardStore() {
     },
 
     clear() {
-      set({ entries: [], operation: null });
+      set({ entries: [], operation: null, archivePath: undefined });
     },
 
     hasItems(): boolean {
@@ -65,5 +76,14 @@ export const clipboardSummary = derived(clipboard, ($clipboard) => {
   const count = $clipboard.entries.length;
   const label = count === 1 ? 'file' : 'files';
   const op = $clipboard.operation === 'copy' ? 'yanked' : 'cut';
-  return `${count} ${label} ${op}`;
+  const prefix = $clipboard.archivePath ? '[archive] ' : '';
+  return `${prefix}${count} ${label} ${op}`;
+});
+
+// Extract mark status (from layout store, not clipboard)
+import { layout } from './layout';
+
+export const markSummary = derived(layout, ($layout) => {
+  if ($layout.markType === 'extract') return 'Archive marked for extraction';
+  return '';
 });

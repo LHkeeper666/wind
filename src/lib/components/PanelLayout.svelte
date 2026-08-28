@@ -3,6 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
@@ -22,9 +23,10 @@
   import TabBar from './TabBar.svelte';
   import WindowTitlebar from './WindowTitlebar.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
+  import InputDialog from './InputDialog.svelte';
   import TransferManager from './TransferManager.svelte';
   import { transfer, activeTransferCount } from '$lib/stores/transfer';
-  import { clipboard, clipboardSummary } from '$lib/stores/clipboard';
+  import { clipboard, clipboardSummary, markSummary } from '$lib/stores/clipboard';
   import { directoryCache } from '$lib/utils/directory-cache';
   import {
     adaptLegacyTransferEvent,
@@ -56,6 +58,11 @@
   let pendingDirectoryChanges = new Set<string>();
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
+
+  // Compress mark dialog state
+  let compressDialogVisible: boolean = $state(false);
+  let compressDialogValue: string = $state('');
+  let compressMarkPaths: string[] = $state([]);
 
   // Paste conflict state
   let showConfirmModal: boolean = $state(false);
@@ -933,10 +940,77 @@
   }
 
   async function handlePaste(force: boolean = false) {
+    // Check for extract mark first (from layout store)
+    const layoutVal = get(layout);
+    if (layoutVal.markType === 'extract' && layoutVal.markPaths.length > 0) {
+      const archivePath = layoutVal.markPaths[0];
+      const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
+      try {
+        await invoke('extract_archive', { archivePath, destDir });
+        showToast('Archive extracted');
+        layout.clearMark();
+        currentDirectoryPanel?.refresh();
+      } catch (e) {
+        showToast(`Extract failed: ${e}`);
+      }
+      return;
+    }
+
+    // Check for compress mark (C key marks files, p shows compress dialog)
+    if (layoutVal.markType === 'compress' && layoutVal.markPaths.length > 0) {
+      compressMarkPaths = layoutVal.markPaths;
+      const defaultName = compressMarkPaths.length === 1
+        ? (compressMarkPaths[0].split(/[/\\]/).pop() || 'file').replace(/\.\w+$/, '') + '.zip'
+        : 'archive.zip';
+      compressDialogValue = defaultName;
+      compressDialogVisible = true;
+      return;
+    }
+
     let state: any;
     const unsub = clipboard.subscribe(v => state = v)();
     if (!state.entries || state.entries.length === 0) {
       showToast('Clipboard empty');
+      return;
+    }
+
+    // Check for archive clipboard entries (yanked from within an archive)
+    if (state.archivePath) {
+      const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
+      const internalPaths = state.entries.map((e: any) => e.path);
+      try {
+        await invoke('extract_archive_files', {
+          archivePath: state.archivePath,
+          internalPaths,
+          destDir,
+        });
+        showToast(`${state.entries.length} ${state.entries.length === 1 ? 'file' : 'files'} extracted from archive`);
+        clipboard.clear();
+        layout.clearMark();
+        currentDirectoryPanel?.refresh();
+      } catch (e) {
+        showToast(`Extract failed: ${e}`);
+      }
+      return;
+    }
+
+    // Check if we're in archive mode: paste files INTO the archive (ZIP only)
+    const archiveState = layoutVal.archiveState;
+    if (archiveState && !state.archivePath) {
+      const sourcePaths = state.entries.map((e: any) => e.path);
+      try {
+        await invoke('archive_add_files', {
+          archivePath: archiveState.archivePath,
+          sourcePaths,
+          internalPath: archiveState.internalPath,
+        });
+        showToast(`${sourcePaths.length} ${sourcePaths.length === 1 ? 'file' : 'files'} added to archive`);
+        clipboard.clear();
+        layout.clearMark();
+        currentDirectoryPanel?.refresh();
+      } catch (e) {
+        showToast(`Add to archive failed: ${e}`);
+      }
       return;
     }
 
@@ -1404,6 +1478,28 @@
     selectedFile = null;
     currentDirectoryPanel?.focus();
     showToast('Batch rename cancelled');
+  }
+
+  async function handleCompressDialogConfirm(value: string) {
+    compressDialogVisible = false;
+    if (!value || compressMarkPaths.length === 0) {
+      layout.clearMark();
+      return;
+    }
+    const destPath = currentPath.replace(/[\\/]+$/, '') + '\\' + value;
+    try {
+      await invoke('compress_files', { sources: compressMarkPaths, destPath });
+      showToast(`Archive created: ${value}`);
+      layout.clearMark();
+      currentDirectoryPanel?.refresh();
+    } catch (e) {
+      showToast(`Compress failed: ${e}`);
+    }
+  }
+
+  function handleCompressDialogCancel() {
+    compressDialogVisible = false;
+    layout.clearMark();
   }
 
   function handleCloseTerminal() {
@@ -2522,7 +2618,9 @@
     <span class="status-mode">{$layout.activeColumn.toUpperCase()}</span>
     <span class="status-path">{currentPath || 'No path'}</span>
     <span class="status-prefix">{$layout.keyPrefix || ''}</span>
-    {#if $clipboardSummary}
+    {#if $markSummary}
+      <span class="status-clipboard">{$markSummary}</span>
+    {:else if $clipboardSummary}
       <span class="status-clipboard">{$clipboardSummary}</span>
     {/if}
     {#if $activeTransferCount > 0}
@@ -2604,6 +2702,16 @@
       { key: 'i', label: 'gnore all', action: () => resolveStreamConflict('skip-all') },
       { key: 'c', label: 'ancel', action: () => resolveStreamConflict('abort') },
     ]}
+  />
+
+  <!-- Compress Mark Dialog -->
+  <InputDialog
+    visible={compressDialogVisible}
+    value={compressDialogValue}
+    placeholder="Archive name"
+    prompt="Archive name:"
+    onConfirm={handleCompressDialogConfirm}
+    onCancel={handleCompressDialogCancel}
   />
 
   <!-- Conflict scanning loading indicator -->

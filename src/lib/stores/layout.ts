@@ -1,5 +1,15 @@
 import { writable, derived } from 'svelte/store';
 
+export type ArchiveFormat = 'zip' | 'tar' | 'tar.gz' | '7z';
+
+export interface ArchiveState {
+  archivePath: string;
+  internalPath: string;
+  format: ArchiveFormat;
+}
+
+export type MarkType = 'copy' | 'cut' | 'extract' | 'compress' | null;
+
 export interface LayoutState {
   // Column ratios [parent, current, preview]
   columnRatios: [number, number, number];
@@ -53,6 +63,13 @@ export interface LayoutState {
   // Recycle bin mode
   recycleBinMode: boolean;
   recycleBinOriginalRatios: [number, number, number];
+
+  // Archive browsing state
+  archiveState: ArchiveState | null;
+
+  // Unified mark state for E/y/x mutual exclusion
+  markType: MarkType;
+  markPaths: string[];
 }
 
 const initialState: LayoutState = {
@@ -77,6 +94,9 @@ const initialState: LayoutState = {
   preTerminalColumn: 'current',
   recycleBinMode: false,
   recycleBinOriginalRatios: [1, 1, 3],
+  archiveState: null,
+  markType: null,
+  markPaths: [],
 };
 
 function createLayoutStore() {
@@ -98,6 +118,7 @@ function createLayoutStore() {
       fullscreenTerminalOpen: boolean;
       leftMode?: 'auto' | 'manual';
       leftPath?: string;
+      archiveState?: ArchiveState | null;
     }) {
       update(state => {
         let normalized: string;
@@ -130,6 +151,7 @@ function createLayoutStore() {
           fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
           leftMode: partial.leftMode ?? state.leftMode,
           leftPath: partial.leftPath ?? state.leftPath,
+          archiveState: partial.archiveState ?? state.archiveState,
         };
       });
     },
@@ -383,6 +405,34 @@ function createLayoutStore() {
         recycleBinMode: false,
         columnRatios: [...state.recycleBinOriginalRatios] as [number, number, number],
       }));
+    },
+
+    // Set archive browsing state (enter archive)
+    setArchiveState(state: ArchiveState) {
+      update(s => ({ ...s, archiveState: state }));
+    },
+
+    // Update internal path within archive
+    setArchiveInternalPath(internalPath: string) {
+      update(s => {
+        if (!s.archiveState) return s;
+        return { ...s, archiveState: { ...s.archiveState, internalPath } };
+      });
+    },
+
+    // Clear archive state (exit archive)
+    clearArchiveState() {
+      update(s => ({ ...s, archiveState: null }));
+    },
+
+    // Set mark (E/y/x mutual exclusion — clears previous mark)
+    setMark(type: MarkType, paths: string[]) {
+      update(s => ({ ...s, markType: type, markPaths: paths }));
+    },
+
+    // Clear mark
+    clearMark() {
+      update(s => ({ ...s, markType: null, markPaths: [] }));
     },
 
     // Reset to initial state

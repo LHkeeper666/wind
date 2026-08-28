@@ -42,4 +42,7 @@ notify = "6"
 suppaftp = { version = "8", default-features = false, features = ["tokio-rustls-aws-lc-rs"] }
 chardetng = "0.1"
 encoding_rs = "0.8"
+tar = "0.4"
+flate2 = "1"
+sevenz-rust = "0.6"
 
