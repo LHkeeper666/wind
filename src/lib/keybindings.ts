@@ -106,6 +106,22 @@ export const keybindingGroups: KeybindingGroup[] = [
     ],
   },
   {
+    title: 'Recycle Bin',
+    items: [
+      { key: 'g r', context: 'global', description: 'Toggle recycle bin view' },
+      { key: 'j/k', context: 'recycle bin', description: 'Navigate up/down' },
+      { key: 'gg / G', context: 'recycle bin', description: 'Jump to top/bottom' },
+      { key: 'Enter', context: 'recycle bin', description: 'Preview file' },
+      { key: 'Space', context: 'recycle bin', description: 'Toggle multi-select' },
+      { key: 'r', context: 'recycle bin', description: 'Restore selected items' },
+      { key: 'd', context: 'recycle bin', description: 'Permanently delete selected items' },
+      { key: 'g d', context: 'recycle bin', description: 'Empty recycle bin' },
+      { key: 'R', context: 'recycle bin', description: 'Refresh list' },
+      { key: 'i', context: 'recycle bin', description: 'File info' },
+      { key: 'h', context: 'recycle bin', description: 'Exit recycle bin view' },
+    ],
+  },
+  {
     title: 'Commands',
     items: [
       { key: 'ratio X:Y:Z', context: 'global', description: 'Set column ratios' },

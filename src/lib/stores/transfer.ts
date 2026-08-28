@@ -96,6 +96,7 @@ interface EnqueueTask {
   total_bytes: number;
   conn_name?: string;
   skip_rel_paths?: string[];
+  permanent?: boolean;
 }
 
 function createTransferStore() {
@@ -260,6 +261,31 @@ function createTransferStore() {
     update(entries => entries.filter(e => e.id !== id));
   }
 
+  function addSyntheticEntry(opts: {
+    opType: TransferEntry['opType'];
+    source: string;
+    destination: string;
+    totalBytes: number;
+    status: 'done' | 'failed';
+    error?: string;
+  }) {
+    const id = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+    update(entries => [...entries, {
+      id,
+      batchId: id,
+      opType: opts.opType,
+      source: opts.source,
+      destination: opts.destination,
+      totalBytes: opts.totalBytes,
+      bytesDone: opts.status === 'done' ? opts.totalBytes : 0,
+      speedBps: 0,
+      status: opts.status,
+      error: opts.error,
+      startTime: Date.now(),
+      elapsedMs: 0,
+    }]);
+  }
+
   async function reorderTransfers(ids: number[]) {
     // Optimistic local update
     update(entries => {
@@ -331,6 +357,7 @@ function createTransferStore() {
     cancelAllTransfers,
     retryTransfer,
     clearTransfer,
+    addSyntheticEntry,
     reorderTransfers,
     loadHistory,
     clearHistory,

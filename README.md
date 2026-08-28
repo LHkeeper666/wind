@@ -17,6 +17,7 @@ Inspired by [Yazi](https://github.com/sxyazi/yazi), Wind combines a three-column
 - **File search** — `Ctrl+P` fuzzy search across the current directory
 - **Content zoom** — `Ctrl+=`/`Ctrl+-`/`Ctrl+0` and `Ctrl+wheel` for panel content scaling
 - **Theme system** — dark/light mode with Gruvbox-inspired design
+- **Recycle bin management** — view, restore, permanently delete, and empty Windows Recycle Bin via `gr`
 - **Chinese IME** — full keyboard navigation support with IME input
 
 ## Prerequisites
@@ -99,6 +100,21 @@ npm run tauri build
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
 | `Ctrl+wheel` | Zoom in/out |
+
+### Recycle Bin
+| Key | Action |
+|---|---|
+| `gr` | Toggle recycle bin view |
+| `j` / `k` | Navigate down / up |
+| `gg` / `G` | Jump to top / bottom |
+| `Enter` | Preview file |
+| `Space` | Toggle multi-select |
+| `r` | Restore selected items |
+| `d` | Permanently delete selected items |
+| `gd` | Empty recycle bin |
+| `R` | Refresh list |
+| `i` | File info |
+| `h` | Exit recycle bin view |
 
 ## Command Palette
 

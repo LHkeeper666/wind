@@ -52,6 +52,8 @@ pub struct TransferTask {
     pub cancel_flag: Option<Arc<AtomicBool>>,
     #[serde(skip)]
     pub skip_rel_paths: Vec<String>,
+    #[serde(skip)]
+    pub permanent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub struct EnqueueTask {
     pub conn_name: Option<String>,
     #[serde(default)]
     pub skip_rel_paths: Vec<String>,
+    #[serde(default)]
+    pub permanent: bool,
 }
 
 struct ActiveTask {
@@ -183,6 +187,7 @@ impl TransferScheduler {
                 conn_name: task.conn_name.clone(),
                 cancel_flag: None,
                 skip_rel_paths: task.skip_rel_paths.clone(),
+                permanent: task.permanent,
             };
             // Emit queued event so frontend creates the entry immediately
             let _ = self.app.emit("transfer-progress", serde_json::json!({
@@ -561,6 +566,7 @@ impl TransferScheduler {
                 total_bytes: *size,
                 conn_name: Some(conn_name.to_string()),
                 skip_rel_paths: Vec::new(),
+                permanent: false,
             }
         }).collect();
 
@@ -665,6 +671,7 @@ impl TransferScheduler {
                     total_bytes: *size,
                     conn_name: Some(conn_name.to_string()),
                     skip_rel_paths: Vec::new(),
+                    permanent: false,
                 }
             })
             .collect();

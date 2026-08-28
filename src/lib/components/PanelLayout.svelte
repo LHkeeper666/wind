@@ -8,6 +8,7 @@
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
   import { vimOptions } from '$lib/utils/vim-options';
   import DirectoryPanel from './DirectoryPanel.svelte';
+  import RecycleBinPanel from './RecycleBinPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
@@ -75,6 +76,14 @@
   // Ctrl+W prefix state for vim-style window navigation
   let waitingForWindowKey: boolean = $state(false);
   let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // g prefix state for recycle bin and other g-prefix shortcuts
+  let waitingForGKey: boolean = $state(false);
+  let gKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Recycle bin state
+  let recycleBinPanel: RecycleBinPanel | undefined = $state(undefined);
+  let recycleBinPreviewItem: { id: string; name: string; original_path: string; date_deleted: number; size: number | null } | null = $state(null);
 
   let altHeld: boolean = $state(false);
   let switcherActive: boolean = $state(false);
@@ -1574,6 +1583,44 @@
       return;
     }
 
+    // g prefix for recycle bin (gr) — don't consume 'g', let panels handle gg/gd/g/
+    // Only intercept 'r' when it follows 'g' within 500ms
+    if (event.key === 'g' && !event.ctrlKey && !event.altKey && !event.metaKey
+      && !waitingForWindowKey && !$layout.fullscreenEditorOpen
+      && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen
+      && !$layout.fullscreenVideoPlayerOpen) {
+      waitingForGKey = true;
+      layout.setKeyPrefix('g');
+      if (gKeyTimeout) clearTimeout(gKeyTimeout);
+      gKeyTimeout = setTimeout(() => { waitingForGKey = false; layout.clearKeyPrefix(); }, 500);
+      // Don't return — let the event propagate to panels
+    }
+
+    if (waitingForGKey && event.key === 'r' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      waitingForGKey = false;
+      layout.clearKeyPrefix();
+      if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
+      event.preventDefault();
+      event.stopPropagation();
+      if (!$layout.recycleBinMode) {
+        layout.recycleBinEnter();
+        focusPanel('current');
+        tick().then(() => recycleBinPanel?.reload());
+        showToast('Recycle Bin');
+      } else {
+        layout.recycleBinExit();
+        focusPanel('current');
+        showToast('Exited Recycle Bin');
+      }
+      return;
+    }
+
+    if (waitingForGKey && event.key !== 'g' && event.key !== 'r') {
+      waitingForGKey = false;
+      layout.clearKeyPrefix();
+      if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
+    }
+
     // Ctrl+W prefix for vim-style window navigation
     // Skip when fullscreen terminal is open (no panel switching in fullscreen)
     if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen) {
@@ -1807,6 +1854,7 @@
 
       // cd command
       if (q === 'cd' || q.startsWith('cd ')) {
+        layout.recycleBinExit();
         const arg = q.substring(2).trim();
         const isLeftManual = $layout.activeColumn === 'parent' && $layout.leftMode === 'manual';
         const keepProjectTree = !isLeftManual && currentDirectoryPanel?.getProjectTreeState().enabled;
@@ -2127,6 +2175,8 @@
       }
     } else if (panel === 'parent' && parentDirectoryPanel) {
       parentDirectoryPanel.focus();
+    } else if (panel === 'current' && $layout.recycleBinMode && recycleBinPanel) {
+      recycleBinPanel.focus();
     } else if (panel === 'current' && currentDirectoryPanel) {
       currentDirectoryPanel.focus();
     } else if (panel === 'preview' && previewPanel) {
@@ -2234,7 +2284,7 @@
     <div class="panel-layout" style="
       grid-template-columns: {$columnWidths.parent}fr 4px {$columnWidths.current}fr 4px {$columnWidths.preview}fr;
     ">
-    <!-- Parent Directory Column -->
+    <!-- Parent Directory Column (or Recycle Bin Overview) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="panel parent-panel"
@@ -2242,30 +2292,50 @@
       onclick={() => focusPanel('parent')}
       onkeydown={() => {}}
       role="region"
-      aria-label="Parent Directory"
+      aria-label={$layout.recycleBinMode ? 'Recycle Bin Overview' : 'Parent Directory'}
       tabindex="-1"
     >
-      <DirectoryPanel
-        bind:this={parentDirectoryPanel}
-        type="parent"
-        path={leftPanelPath}
-        selectedPath={$layout.currentPath}
-        detached={$layout.leftMode === 'manual'}
-        onNavigate={(p) => $layout.leftMode === 'manual' ? handleLeftNavigate(p) : handleNavigate(p)}
-        onNavigateUp={() => {
-          if ($layout.leftMode === 'manual') {
-            const parent = getParentPathForNavigate(leftPanelPath);
-            handleLeftNavigate(parent);
-          } else {
-            handleNavigate($layout.parentPath);
-          }
-        }}
-        onSelect={() => {}}  // Parent column doesn't need to select files
-        onSwitchPanel={handleSwitchPanel}
-        onToast={showToast}
-        getDirectoryVersion={getDirectoryVersion}
-        onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('left', directory, version)}
-      />
+      <div style="display: {$layout.recycleBinMode ? 'contents' : 'none'}">
+        <div class="recycle-overview">
+          <div class="recycle-overview-header">&#x1F5D1; Recycle Bin</div>
+          <div class="recycle-overview-content">
+            <div class="recycle-stat">
+              <span class="recycle-stat-label">Shortcuts</span>
+              <div class="recycle-shortcut-list">
+                <div class="recycle-shortcut"><kbd>r</kbd> Restore</div>
+                <div class="recycle-shortcut"><kbd>d</kbd> Permanent delete</div>
+                <div class="recycle-shortcut"><kbd>g d</kbd> Empty recycle bin</div>
+                <div class="recycle-shortcut"><kbd>h</kbd> Exit recycle bin</div>
+                <div class="recycle-shortcut"><kbd>g r</kbd> Toggle recycle bin</div>
+                <div class="recycle-shortcut"><kbd>Space</kbd> Multi-select</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display: {!$layout.recycleBinMode ? 'contents' : 'none'}">
+        <DirectoryPanel
+          bind:this={parentDirectoryPanel}
+          type="parent"
+          path={leftPanelPath}
+          selectedPath={$layout.currentPath}
+          detached={$layout.leftMode === 'manual'}
+          onNavigate={(p) => $layout.leftMode === 'manual' ? handleLeftNavigate(p) : handleNavigate(p)}
+          onNavigateUp={() => {
+            if ($layout.leftMode === 'manual') {
+              const parent = getParentPathForNavigate(leftPanelPath);
+              handleLeftNavigate(parent);
+            } else {
+              handleNavigate($layout.parentPath);
+            }
+          }}
+          onSelect={() => {}}  // Parent column doesn't need to select files
+          onSwitchPanel={handleSwitchPanel}
+          onToast={showToast}
+          getDirectoryVersion={getDirectoryVersion}
+          onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('left', directory, version)}
+        />
+      </div>
     </div>
 
     <!-- First Resize Handle -->
@@ -2279,7 +2349,7 @@
       tabindex="-1"
     ></div>
 
-    <!-- Current Directory Column -->
+    <!-- Current Directory Column (or Recycle Bin) -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="panel current-panel"
@@ -2287,25 +2357,43 @@
       onclick={() => focusPanel('current')}
       onkeydown={() => {}}
       role="region"
-      aria-label="Current Directory"
+      aria-label={$layout.recycleBinMode ? 'Recycle Bin' : 'Current Directory'}
       tabindex="-1"
     >
-      <DirectoryPanel
-        bind:this={currentDirectoryPanel}
-        type="current"
-        path={$layout.currentPath}
-        selectedPath={selectedFile}
-        onNavigate={handleNavigate}
-        onSelect={handleSelect}
-        onActivate={handleActivate}
-        onSwitchPanel={handleSwitchPanel}
-        onFullscreen={handleFullscreenEditor}
-        onNavigateUp={() => handleNavigate($layout.parentPath)}
-        onToast={showToast}
-        onBatchRenameStart={handleBatchRenameStart}
-        getDirectoryVersion={getDirectoryVersion}
-        onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('current', directory, version)}
-      />
+      <div style="display: {$layout.recycleBinMode ? 'contents' : 'none'}">
+        <RecycleBinPanel
+          bind:this={recycleBinPanel}
+          onPreview={(id, item) => {
+            recycleBinPreviewItem = item;
+            selectedFile = id;
+            layout.setSelectedFile(id);
+          }}
+          onExit={() => {
+            layout.recycleBinExit();
+            focusPanel('current');
+            showToast('Exited Recycle Bin');
+          }}
+          onToast={showToast}
+        />
+      </div>
+      <div style="display: {!$layout.recycleBinMode ? 'contents' : 'none'}">
+        <DirectoryPanel
+          bind:this={currentDirectoryPanel}
+          type="current"
+          path={$layout.currentPath}
+          selectedPath={selectedFile}
+          onNavigate={handleNavigate}
+          onSelect={handleSelect}
+          onActivate={handleActivate}
+          onSwitchPanel={handleSwitchPanel}
+          onFullscreen={handleFullscreenEditor}
+          onNavigateUp={() => handleNavigate($layout.parentPath)}
+          onToast={showToast}
+          onBatchRenameStart={handleBatchRenameStart}
+          getDirectoryVersion={getDirectoryVersion}
+          onDirectorySynchronized={(directory, version) => handleDirectorySynchronized('current', directory, version)}
+        />
+      </div>
     </div>
 
     <!-- Second Resize Handle -->
@@ -2331,6 +2419,24 @@
       aria-label="Preview/Editor"
       tabindex="-1"
     >
+      {#if $layout.recycleBinMode && recycleBinPreviewItem}
+        <div class="recycle-preview-info">
+          <div class="recycle-preview-row">
+            <span class="recycle-preview-label">Original path:</span>
+            <span class="recycle-preview-value" title={recycleBinPreviewItem.original_path}>{recycleBinPreviewItem.original_path}</span>
+          </div>
+          <div class="recycle-preview-row">
+            <span class="recycle-preview-label">Deleted:</span>
+            <span class="recycle-preview-value">{new Date(recycleBinPreviewItem.date_deleted * 1000).toLocaleString('zh-CN')}</span>
+          </div>
+          {#if recycleBinPreviewItem.size !== null}
+            <div class="recycle-preview-row">
+              <span class="recycle-preview-label">Size:</span>
+              <span class="recycle-preview-value">{recycleBinPreviewItem.size < 1024 ? `${recycleBinPreviewItem.size} B` : recycleBinPreviewItem.size < 1048576 ? `${(recycleBinPreviewItem.size / 1024).toFixed(1)} KB` : `${(recycleBinPreviewItem.size / 1048576).toFixed(1)} MB`}</span>
+            </div>
+          {/if}
+        </div>
+      {/if}
       <PreviewEditor
         bind:this={previewEditor}
         filePath={selectedFile}
@@ -2721,5 +2827,84 @@
     10% { opacity: 1; }
     80% { opacity: 1; }
     100% { opacity: 0; }
+  }
+
+  /* Recycle bin overview sidebar */
+  .recycle-overview {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 12px;
+    overflow-y: auto;
+  }
+
+  .recycle-overview-header {
+    font-size: 14px;
+    font-weight: 600;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--warning);
+  }
+
+  .recycle-overview-content {
+    padding-top: 12px;
+  }
+
+  .recycle-stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .recycle-shortcut-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .recycle-shortcut {
+    font-size: 12px;
+    color: var(--text-color);
+  }
+
+  .recycle-shortcut kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    margin-right: 4px;
+    min-width: 20px;
+    text-align: center;
+  }
+
+  /* Recycle bin preview info bar */
+  .recycle-preview-info {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .recycle-preview-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 2px;
+  }
+
+  .recycle-preview-label {
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .recycle-preview-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

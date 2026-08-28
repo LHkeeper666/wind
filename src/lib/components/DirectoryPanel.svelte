@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
   import { layout } from '$lib/stores/layout';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import { transfer } from '$lib/stores/transfer';
@@ -377,6 +378,8 @@
   });
 
   // Subscribe to clipboard for cut file indicators
+  let transferCompleteUnlisten: (() => void) | null = null;
+
   onMount(() => {
     clipboardUnsub = clipboard.subscribe(state => {
       if (state.operation === 'cut') {
@@ -385,10 +388,21 @@
         cutPaths = new Set();
       }
     });
+
+    // Auto-refresh when a transfer completes in the current directory
+    listen<{ source: string; destination: string }>('transfer-complete', (event) => {
+      const src = event.payload.source;
+      const srcDir = src.replace(/[\\/][^\\/]+$/, '');
+      const dstDir = event.payload.destination ? event.payload.destination.replace(/[\\/][^\\/]+$/, '') : '';
+      if (srcDir === path || dstDir === path) {
+        loadDirectory(path, true);
+      }
+    }).then(unlisten => { transferCompleteUnlisten = unlisten; });
   });
 
   onDestroy(() => {
     if (clipboardUnsub) { clipboardUnsub(); clipboardUnsub = null; }
+    if (transferCompleteUnlisten) { transferCompleteUnlisten(); transferCompleteUnlisten = null; }
   });
 
   // Sync from selectedPath prop only when it actually changes
@@ -1068,23 +1082,52 @@
     const confirmed = await promptDelete(permanent);
     if (!confirmed) return;
 
-    // Route through TransferManager for unified progress display
-    const tasks = entries.map((entry: ClipboardEntry) => {
-      const isFtp = entry.path.startsWith('ftp://');
-      return {
-        op_type: 'delete' as const,
-        source: entry.path,
-        destination: '', // Delete has no destination
-        total_bytes: entry.size || 0,
-        conn_name: isFtp ? entry.path.slice(6).split('/')[0] : undefined,
-        skip_rel_paths: entry.skip_rel_paths || [],
-      };
-    });
-    const ids = await transfer.enqueueTransfers(tasks);
-    window.dispatchEvent(new CustomEvent('transfer:open'));
+    if (permanent) {
+      // Permanent delete: route through TransferManager for progress display
+      const tasks = entries.map((entry: ClipboardEntry) => {
+        const isFtp = entry.path.startsWith('ftp://');
+        return {
+          op_type: 'delete' as const,
+          source: entry.path,
+          destination: '',
+          total_bytes: entry.size || 0,
+          conn_name: isFtp ? entry.path.slice(6).split('/')[0] : undefined,
+          skip_rel_paths: entry.skip_rel_paths || [],
+          permanent: true,
+        };
+      });
+      const ids = await transfer.enqueueTransfers(tasks);
+      window.dispatchEvent(new CustomEvent('transfer:open'));
+      onToast(`Deleting ${ids.length} ${ids.length === 1 ? 'file' : 'files'}...`);
+    } else {
+      // Move to trash: invoke directly, add synthetic transfer entries
+      for (const entry of entries) {
+        try {
+          await invoke('delete_file', { path: entry.path });
+          transfer.addSyntheticEntry({
+            opType: 'delete',
+            source: entry.path,
+            destination: 'Recycle Bin',
+            totalBytes: entry.size || 0,
+            status: 'done',
+          });
+        } catch (e) {
+          transfer.addSyntheticEntry({
+            opType: 'delete',
+            source: entry.path,
+            destination: 'Recycle Bin',
+            totalBytes: entry.size || 0,
+            status: 'failed',
+            error: String(e),
+          });
+        }
+      }
+      window.dispatchEvent(new CustomEvent('transfer:open'));
+      loadDirectory(path, true);
+    }
 
     clearSelection();
-    onToast(`Deleting ${ids.length} ${ids.length === 1 ? 'file' : 'files'}...`);
+    refocusPanel();
   }
 
   function getEntriesToOperate(): ClipboardEntry[] {

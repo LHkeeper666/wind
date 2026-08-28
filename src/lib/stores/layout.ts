@@ -49,6 +49,10 @@ export interface LayoutState {
 
   // Pre-terminal active column for focus restore on close
   preTerminalColumn: 'parent' | 'current' | 'preview' | 'terminal';
+
+  // Recycle bin mode
+  recycleBinMode: boolean;
+  recycleBinOriginalRatios: [number, number, number];
 }
 
 const initialState: LayoutState = {
@@ -71,6 +75,8 @@ const initialState: LayoutState = {
   previewExpanded: false,
   originalRatios: [1, 1, 3],
   preTerminalColumn: 'current',
+  recycleBinMode: false,
+  recycleBinOriginalRatios: [1, 1, 3],
 };
 
 function createLayoutStore() {
@@ -357,6 +363,25 @@ function createLayoutStore() {
       update(state => ({
         ...state,
         leftPath: path,
+      }));
+    },
+
+    // Enter recycle bin mode with ratio adjustment
+    recycleBinEnter() {
+      update(state => ({
+        ...state,
+        recycleBinMode: true,
+        recycleBinOriginalRatios: [...state.columnRatios] as [number, number, number],
+        columnRatios: [1, 2, 2],
+      }));
+    },
+
+    // Exit recycle bin mode and restore ratios
+    recycleBinExit() {
+      update(state => ({
+        ...state,
+        recycleBinMode: false,
+        columnRatios: [...state.recycleBinOriginalRatios] as [number, number, number],
       }));
     },
 
