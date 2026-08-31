@@ -30,7 +30,9 @@
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
+  import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
   import {
+    EDITOR_TAB_SIZE,
     editorAutocompleteKeymap,
     handleInsertModeEnter,
     handleInsertModeShiftTab,
@@ -722,12 +724,12 @@
 
   export function pressTab() {
     if (!editorView || mode !== 'editor-insert') return;
-    handleInsertModeTab(editorView);
+    handleInsertModeTab(editorView, { indentPolicy: getEditorIndentPolicy(editorFilePath || filePath) });
   }
 
   export function pressShiftTab() {
     if (!editorView || mode !== 'editor-insert') return;
-    handleInsertModeShiftTab(editorView);
+    handleInsertModeShiftTab(editorView, { indentPolicy: getEditorIndentPolicy(editorFilePath || filePath) });
   }
 
   function getPreviewRouter(): PreviewRouter {
@@ -1351,6 +1353,7 @@
     const sessionThemeCompartment = new Compartment();
     editorFilePath = targetPath;
     const language = getLanguage(targetPath);
+    const indentPolicy = getEditorIndentPolicy(targetPath);
     const extensions = [
       highlightActiveLineGutter(), highlightSpecialChars(), history(),
       foldGutter(), drawSelection(), dropCursor(), autocompletion({ defaultKeymap: false }),
@@ -1361,7 +1364,8 @@
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...editorAutocompleteKeymap, ...lintKeymap]),
       sessionLineNumberCompartment.of(lineNumbers()),
       search({ top: true }), sMatchField, EditorView.lineWrapping,
-      indentUnit.of('    '),
+      EditorState.tabSize.of(EDITOR_TAB_SIZE),
+      indentUnit.of(getEditorIndentUnit(indentPolicy)),
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
@@ -1467,7 +1471,7 @@
 
     view.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || mode !== 'editor-insert') return;
-      if (handleInsertModeEnter(view)) {
+      if (handleInsertModeEnter(view, { indentPolicy })) {
         e.preventDefault();
         e.stopPropagation();
       }

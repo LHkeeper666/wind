@@ -8,8 +8,17 @@ import { insertNewlineAndIndent } from '@codemirror/commands';
 import { countColumn, findColumn } from '@codemirror/state';
 import type { KeyBinding } from '@codemirror/view';
 import type { EditorView } from 'codemirror';
+import {
+  isHardTabIndentPolicy,
+  isLiteralTabInsertionPolicy,
+} from './editor-indent-policy.js';
+import type { EditorIndentPolicy } from './editor-indent-policy';
 
 export const EDITOR_TAB_SIZE = 4;
+export type EditorTextKeyOptions = {
+  tabSize?: number;
+  indentPolicy?: EditorIndentPolicy;
+};
 export const editorAutocompleteKeymap: KeyBinding[] = [
   { key: 'Ctrl-Space', run: startCompletion },
   { mac: 'Alt-`', run: startCompletion },
@@ -48,6 +57,16 @@ interface MarkdownListTransformResult {
 
 function getLeadingWhitespace(text: string): string {
   return text.match(/^[ \t]*/)?.[0] ?? '';
+}
+
+function normalizeTextKeyOptions(options: number | EditorTextKeyOptions = {}): Required<EditorTextKeyOptions> {
+  if (typeof options === 'number') {
+    return { tabSize: options, indentPolicy: 'space-indent' };
+  }
+  return {
+    tabSize: options.tabSize ?? EDITOR_TAB_SIZE,
+    indentPolicy: options.indentPolicy ?? 'space-indent',
+  };
 }
 
 export function spacesToNextTabStop(column: number, tabSize: number = EDITOR_TAB_SIZE): number {
@@ -314,11 +333,21 @@ function markdownListTreeChangesForLines(
   return { handled: true, changes: lineTextChanges(state, lines) };
 }
 
-function indentChangesForLines(state: EditorView['state'], from: number, to: number, tabSize: number = EDITOR_TAB_SIZE): TextChange[] {
+function indentChangesForLines(
+  state: EditorView['state'],
+  from: number,
+  to: number,
+  tabSize: number = EDITOR_TAB_SIZE,
+  indentPolicy: EditorIndentPolicy = 'space-indent',
+): TextChange[] {
   const range = selectedLineRange(state, from, to);
   const changes: TextChange[] = [];
   for (let i = range.from + 1; i <= range.to + 1; i++) {
     const line = state.doc.line(i);
+    if (isHardTabIndentPolicy(indentPolicy)) {
+      changes.push({ from: line.from, insert: '\t' });
+      continue;
+    }
     const leadingWhitespace = getLeadingWhitespace(line.text);
     const leadingColumns = countColumn(leadingWhitespace, tabSize);
     const insertCount = spacesToNextTabStop(leadingColumns, tabSize);
@@ -327,11 +356,21 @@ function indentChangesForLines(state: EditorView['state'], from: number, to: num
   return changes;
 }
 
-function dedentChangesForLines(state: EditorView['state'], from: number, to: number, tabSize: number = EDITOR_TAB_SIZE): TextChange[] {
+function dedentChangesForLines(
+  state: EditorView['state'],
+  from: number,
+  to: number,
+  tabSize: number = EDITOR_TAB_SIZE,
+  indentPolicy: EditorIndentPolicy = 'space-indent',
+): TextChange[] {
   const range = selectedLineRange(state, from, to);
   const changes: TextChange[] = [];
   for (let i = range.from + 1; i <= range.to + 1; i++) {
     const line = state.doc.line(i);
+    if (isHardTabIndentPolicy(indentPolicy) && line.text.startsWith('\t')) {
+      changes.push({ from: line.from, to: line.from + 1 });
+      continue;
+    }
     const leadingWhitespace = getLeadingWhitespace(line.text);
     const leadingColumns = countColumn(leadingWhitespace, tabSize);
     if (leadingColumns > 0) {
@@ -347,20 +386,45 @@ function dedentChangesForLines(state: EditorView['state'], from: number, to: num
   return changes;
 }
 
-export function handleInsertModeTab(view: EditorView, tabSize: number = EDITOR_TAB_SIZE): boolean {
-  if (acceptCompletion(view)) return true;
-
+function insertNewlineAndPreserveLeadingWhitespace(view: EditorView): boolean {
   const { state } = view;
   const { main } = state.selection;
-  const listTreeResult = markdownListTreeChangesForLines(state, main.from, main.to, 'indent', tabSize);
-  if (listTreeResult.handled) {
-    if (listTreeResult.changes.length > 0) {
-      view.dispatch({ changes: listTreeResult.changes });
+  const line = state.doc.lineAt(main.head);
+  const leadingWhitespace = getLeadingWhitespace(line.text);
+  const from = main.from;
+  const insert = `\n${leadingWhitespace}`;
+  view.dispatch({
+    changes: { from, to: main.to, insert },
+    selection: { anchor: from + insert.length },
+  });
+  return true;
+}
+
+export function handleInsertModeTab(view: EditorView, options: number | EditorTextKeyOptions = {}): boolean {
+  if (acceptCompletion(view)) return true;
+
+  const { tabSize, indentPolicy } = normalizeTextKeyOptions(options);
+  const { state } = view;
+  const { main } = state.selection;
+  if (indentPolicy === 'space-indent') {
+    const listTreeResult = markdownListTreeChangesForLines(state, main.from, main.to, 'indent', tabSize);
+    if (listTreeResult.handled) {
+      if (listTreeResult.changes.length > 0) {
+        view.dispatch({ changes: listTreeResult.changes });
+      }
+      return true;
     }
-    return true;
   }
 
   if (main.empty) {
+    if (isLiteralTabInsertionPolicy(indentPolicy)) {
+      view.dispatch({
+        changes: { from: main.head, insert: '\t' },
+        selection: { anchor: main.head + 1 },
+      });
+      return true;
+    }
+
     const line = state.doc.lineAt(main.head);
     const cursorColumn = countColumn(line.text, tabSize, main.head - line.from);
     const insertCount = spacesToNextTabStop(cursorColumn, tabSize);
@@ -372,35 +436,51 @@ export function handleInsertModeTab(view: EditorView, tabSize: number = EDITOR_T
     return true;
   }
 
-  const changes = indentChangesForLines(state, main.from, main.to, tabSize);
+  if (indentPolicy === 'tab-delimited') {
+    view.dispatch({
+      changes: { from: main.from, to: main.to, insert: '\t' },
+      selection: { anchor: main.from + 1 },
+    });
+    return true;
+  }
+
+  const changes = indentChangesForLines(state, main.from, main.to, tabSize, indentPolicy);
   if (changes.length === 0) return false;
   view.dispatch({ changes });
   return true;
 }
 
-export function handleInsertModeShiftTab(view: EditorView, tabSize: number = EDITOR_TAB_SIZE): boolean {
+export function handleInsertModeShiftTab(view: EditorView, options: number | EditorTextKeyOptions = {}): boolean {
+  const { tabSize, indentPolicy } = normalizeTextKeyOptions(options);
   const { state } = view;
   const { main } = state.selection;
   const from = main.empty ? main.head : main.from;
   const to = main.empty ? main.head : main.to;
-  const listTreeResult = markdownListTreeChangesForLines(state, from, to, 'dedent', tabSize);
-  if (listTreeResult.handled) {
-    if (listTreeResult.changes.length > 0) {
-      view.dispatch({ changes: listTreeResult.changes });
+  if (indentPolicy === 'space-indent') {
+    const listTreeResult = markdownListTreeChangesForLines(state, from, to, 'dedent', tabSize);
+    if (listTreeResult.handled) {
+      if (listTreeResult.changes.length > 0) {
+        view.dispatch({ changes: listTreeResult.changes });
+      }
+      return true;
     }
-    return true;
   }
 
-  const changes = dedentChangesForLines(state, from, to, tabSize);
+  const changes = dedentChangesForLines(state, from, to, tabSize, indentPolicy);
   if (changes.length === 0) return false;
   view.dispatch({ changes });
   return true;
 }
 
-export function handleInsertModeEnter(view: EditorView): boolean {
+export function handleInsertModeEnter(view: EditorView, options: number | EditorTextKeyOptions = {}): boolean {
+  const { indentPolicy } = normalizeTextKeyOptions(options);
   const { state } = view;
   const { main } = state.selection;
   const line = state.doc.lineAt(main.head);
+  if (isHardTabIndentPolicy(indentPolicy)) {
+    return insertNewlineAndPreserveLeadingWhitespace(view);
+  }
+
   const prefix = parseMarkdownListPrefix(line.text);
 
   if (!prefix) {

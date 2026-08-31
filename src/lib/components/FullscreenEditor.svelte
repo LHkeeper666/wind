@@ -22,7 +22,9 @@
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
+  import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
   import {
+    EDITOR_TAB_SIZE,
     editorAutocompleteKeymap,
     handleInsertModeEnter,
     handleInsertModeShiftTab,
@@ -177,12 +179,12 @@
 
   export function pressTab() {
     if (!editorView || overlayVisible) return;
-    handleInsertModeTab(editorView);
+    handleInsertModeTab(editorView, { indentPolicy: getEditorIndentPolicy(filePath) });
   }
 
   export function pressShiftTab() {
     if (!editorView || overlayVisible) return;
-    handleInsertModeShiftTab(editorView);
+    handleInsertModeShiftTab(editorView, { indentPolicy: getEditorIndentPolicy(filePath) });
   }
 
   function handleOutputKeydown(event: KeyboardEvent) {
@@ -370,6 +372,7 @@
     themeObserver = null;
 
     const language = getLanguage(filePath);
+    const indentPolicy = getEditorIndentPolicy(filePath);
     const extensions = [
       highlightActiveLineGutter(), highlightSpecialChars(), history(),
       foldGutter(), drawSelection(), dropCursor(), autocompletion({ defaultKeymap: false }),
@@ -380,23 +383,24 @@
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...editorAutocompleteKeymap, ...lintKeymap]),
       lineNumberCompartment.of(lineNumbers()),
       EditorView.lineWrapping,
-      indentUnit.of('    '),
+      EditorState.tabSize.of(EDITOR_TAB_SIZE),
+      indentUnit.of(getEditorIndentUnit(indentPolicy)),
       keymap.of([{
         key: 'Tab',
         run: (view) => {
-          handleInsertModeTab(view);
+          handleInsertModeTab(view, { indentPolicy });
           return true;
         },
       }, {
         key: 'Shift-Tab',
         run: (view) => {
-          handleInsertModeShiftTab(view);
+          handleInsertModeShiftTab(view, { indentPolicy });
           return true;
         },
       }, {
         key: 'Enter',
         run: (view) => {
-          handleInsertModeEnter(view);
+          handleInsertModeEnter(view, { indentPolicy });
           return true;
         },
       }]),
