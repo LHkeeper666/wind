@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
   interface FileInfo {
     name: string;
     path: string;
@@ -24,6 +27,50 @@
   } = $props();
 
   let overlayEl: HTMLDivElement | undefined = $state(undefined);
+  let folderSize: number = $state(0);
+  let folderFileCount: number = $state(0);
+  let isCalculating: boolean = $state(false);
+
+  $effect(() => {
+    if (visible && info?.is_dir) {
+      folderSize = 0;
+      folderFileCount = 0;
+      isCalculating = true;
+
+      invoke('calculate_folder_size', { path: info.path });
+
+      let unlistenTick: UnlistenFn | undefined;
+      let unlistenDone: UnlistenFn | undefined;
+
+      listen<{ path: string; total_bytes: number; files: number; dirs: number }>(
+        'folder-size-tick',
+        (event) => {
+          if (event.payload.path === info.path) {
+            folderSize = event.payload.total_bytes;
+            folderFileCount = event.payload.files;
+          }
+        }
+      ).then(fn => { unlistenTick = fn; });
+
+      listen<{ path: string; total_bytes: number; files: number; dirs: number }>(
+        'folder-size-done',
+        (event) => {
+          if (event.payload.path === info.path) {
+            folderSize = event.payload.total_bytes;
+            folderFileCount = event.payload.files;
+            isCalculating = false;
+          }
+        }
+      ).then(fn => { unlistenDone = fn; });
+
+      return () => {
+        invoke('cancel_folder_size', { path: info!.path });
+        if (unlistenTick) unlistenTick();
+        if (unlistenDone) unlistenDone();
+        isCalculating = false;
+      };
+    }
+  });
 
   $effect(() => {
     if (visible && overlayEl) {
@@ -58,8 +105,22 @@
         </div>
         <div class="info-row">
           <span class="info-label">Size</span>
-          <span class="info-value">{formatSize(info.size)}</span>
+          <span class="info-value">
+            {#if info.is_dir && isCalculating}
+              {formatSize(folderSize)}
+            {:else if info.is_dir && !isCalculating && folderSize > 0}
+              {formatSize(folderSize)}
+            {:else}
+              {formatSize(info.size)}
+            {/if}
+          </span>
         </div>
+        {#if info.is_dir && (isCalculating || folderSize > 0)}
+          <div class="info-row">
+            <span class="info-label">Files</span>
+            <span class="info-value">{folderFileCount.toLocaleString()}</span>
+          </div>
+        {/if}
         {#if info.is_dir && info.item_count !== null}
           <div class="info-row">
             <span class="info-label">Items</span>

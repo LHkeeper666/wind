@@ -15,11 +15,13 @@ mod video;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::Mutex as TokioMutex;
 use windows::Win32::UI::Input::Ime::{
@@ -28,6 +30,134 @@ use windows::Win32::UI::Input::Ime::{
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 static SEARCH_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+static FOLDER_SIZE_CALCS: LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn register_folder_size_calc(path: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    FOLDER_SIZE_CALCS.lock().unwrap().insert(path.to_string(), flag.clone());
+    flag
+}
+
+fn unregister_folder_size_calc(path: &str) {
+    FOLDER_SIZE_CALCS.lock().unwrap().remove(path);
+}
+
+fn cancel_folder_size_calc(path: &str) -> bool {
+    if let Some(flag) = FOLDER_SIZE_CALCS.lock().unwrap().get(path) {
+        flag.store(true, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
+
+fn walk_dir(
+    dir: &Path,
+    root_path: &str,
+    cancel_flag: &AtomicBool,
+    total_bytes: &mut u64,
+    files: &mut u64,
+    dirs: &mut u64,
+    last_emit: &mut Instant,
+    app: &tauri::AppHandle,
+) {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let file_type = match path.symlink_metadata() {
+            Ok(m) => m.file_type(),
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        if metadata.is_dir() {
+            *dirs += 1;
+            walk_dir(&path, root_path, cancel_flag, total_bytes, files, dirs, last_emit, app);
+        } else {
+            *files += 1;
+            *total_bytes += metadata.len();
+        }
+
+        if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
+            let _ = app.emit(
+                "folder-size-tick",
+                serde_json::json!({
+                    "path": root_path,
+                    "total_bytes": *total_bytes,
+                    "files": *files,
+                    "dirs": *dirs,
+                }),
+            );
+            *last_emit = Instant::now();
+        }
+    }
+}
+
+#[tauri::command]
+async fn calculate_folder_size(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let cancel_flag = register_folder_size_calc(&path);
+
+    let path_owned = path.clone();
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let mut total_bytes = 0u64;
+        let mut files = 0u64;
+        let mut dirs = 0u64;
+        let mut last_emit = Instant::now();
+        let dir_path = Path::new(&path_owned);
+
+        walk_dir(
+            dir_path,
+            &path_owned,
+            &cancel_flag,
+            &mut total_bytes,
+            &mut files,
+            &mut dirs,
+            &mut last_emit,
+            &app_handle,
+        );
+
+        let _ = app_handle.emit(
+            "folder-size-done",
+            serde_json::json!({
+                "path": path_owned,
+                "total_bytes": total_bytes,
+                "files": files,
+                "dirs": dirs,
+            }),
+        );
+        unregister_folder_size_calc(&path_owned);
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_folder_size(path: String) -> Result<(), String> {
+    cancel_folder_size_calc(&path);
+    Ok(())
+}
 
 #[tauri::command]
 async fn list_virtual_root(state: State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
@@ -2888,6 +3018,8 @@ pub fn run() {
             transfer_get_slots,
             get_file_size,
             get_file_info,
+            calculate_folder_size,
+            cancel_folder_size,
             open_file,
             open_with_dialog,
             read_file,
