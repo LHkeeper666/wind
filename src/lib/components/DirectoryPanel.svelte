@@ -11,6 +11,11 @@
   import FileInfoPanel from './FileInfoPanel.svelte';
   import { directoryCache } from '$lib/utils/directory-cache';
   import { directoryKeyId, normalizeDirectoryKey, type DirectoryKey } from '$lib/utils/directory-refresh';
+  import {
+    getCollapseSelectionTarget,
+    isProjectTreePathWithin as isTreePathWithin,
+    projectTreePathKey as treePathKey,
+  } from '$lib/utils/project-tree-focus.js';
 
   interface FileEntry {
     name: string;
@@ -32,6 +37,12 @@
     loadPromise: Promise<void> | null;
     error: string;
     children: TreeNode[];
+  }
+
+  type SelectNotifyMode = 'debounced' | 'immediate' | 'silent';
+
+  interface SelectOptions {
+    notify?: SelectNotifyMode;
   }
 
   export interface ProjectTreeState {
@@ -658,17 +669,17 @@
     }
   }
 
-  function selectTreePathOrAncestor(nodePath: string): void {
+  function selectTreePathOrAncestor(nodePath: string, options: SelectOptions = {}): void {
     let candidate: string | null = nodePath;
     while (candidate) {
       const candidatePath = candidate;
       const index = treeVisibleNodes.findIndex(node => directoryKeyId(node.entry.path) === directoryKeyId(candidatePath));
-      if (index >= 0) { selectByIndex(index); return; }
+      if (index >= 0) { selectByIndex(index, options); return; }
       const node = findTreeNode(candidate);
       const parent: string | null = node?.parentPath ?? getParentPath(candidate);
       candidate = parent === candidate ? null : parent;
     }
-    selectByIndex(0);
+    selectByIndex(0, options);
   }
 
   async function refreshProjectTree(version?: number): Promise<boolean> {
@@ -722,26 +733,34 @@
   function collapseDeepestTreeLevel(): void {
     const deepest = treeVisibleNodes.filter(node => node !== projectRoot && node.expanded)
       .sort((a, b) => b.depth - a.depth)[0];
-    if (deepest) {
-      deepest.expanded = false;
-      projectRoot = projectRoot ? { ...projectRoot } : null;
-    }
+    if (deepest) collapseTreeNode(deepest);
   }
 
-  function selectByIndex(index: number) {
+  function selectByIndex(index: number, options: SelectOptions = {}) {
     if (index >= 0 && index < displayFiles.length) {
       selectedIndex = index;
       selectedPathInternal = displayFiles[index].path;
+      const selectedPath = displayFiles[index].path;
+      const notify = options.notify ?? 'debounced';
 
       // Debounce onSelect to avoid rapid file loading
       if (selectTimeout) {
         clearTimeout(selectTimeout);
+        selectTimeout = null;
+      }
+      if (notify === 'silent') {
+        return;
+      }
+      if (notify === 'immediate') {
+        onSelect(selectedPath);
+        return;
       }
       const capturedIndex = index;
+      const capturedPath = selectedPath;
       selectTimeout = setTimeout(() => {
         // Only fire if user is still on the same item
-        if (selectedIndex === capturedIndex) {
-          onSelect(displayFiles[capturedIndex].path);
+        if (selectedIndex === capturedIndex && displayFiles[capturedIndex]?.path === capturedPath) {
+          onSelect(capturedPath);
         }
       }, 200);
     }
@@ -840,17 +859,6 @@
     };
     visit(projectRoot);
     return nodes;
-  }
-
-  function treePathKey(nodePath: string): string {
-    const normalized = nodePath.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
-    return /^[a-z]:$/.test(normalized) ? `${normalized}\\` : normalized;
-  }
-
-  function isTreePathWithin(nodePath: string, ancestorPath: string): boolean {
-    const nodeKey = treePathKey(nodePath);
-    const ancestorKey = treePathKey(ancestorPath);
-    return nodeKey === ancestorKey || nodeKey.startsWith(`${ancestorKey}\\`);
   }
 
   function getSelectedTreeRoot(nodePath: string): string | null {
@@ -1614,15 +1622,10 @@
               } else {
                 const node = treeVisibleNodes[selectedIndex];
                 if (node?.expanded) {
-                  node.expanded = false;
-                  projectRoot = projectRoot ? { ...projectRoot } : null;
+                  collapseTreeNode(node);
                 } else if (node?.parentPath) {
                   const parent = findTreeNode(node.parentPath);
-                  if (parent?.expanded) {
-                    parent.expanded = false;
-                    projectRoot = projectRoot ? { ...projectRoot } : null;
-                  }
-                  selectTreePathOrAncestor(node.parentPath);
+                  if (parent?.expanded) collapseTreeNode(parent);
                 }
               }
               break;
@@ -1843,9 +1846,31 @@
 
   function toggleTreeNode(node: TreeNode): void {
     if (node.expanded) {
-      node.expanded = false;
-      projectRoot = projectRoot ? { ...projectRoot } : null;
+      collapseTreeNode(node);
     } else void expandTreeNode(node);
+  }
+
+  function collapseTreeNode(node: TreeNode): void {
+    const previousSelectedPath = selectedFile?.path ?? selectedPathInternal;
+    node.expanded = false;
+    projectRoot = projectRoot ? { ...projectRoot } : null;
+    ensureSelectionVisibleAfterCollapse(node.entry.path, previousSelectedPath);
+  }
+
+  function ensureSelectionVisibleAfterCollapse(collapsedDirPath: string, previousSelectedPath: string | null = selectedPathInternal): void {
+    const targetPath = getCollapseSelectionTarget(previousSelectedPath, collapsedDirPath);
+    if (!targetPath) return;
+    const selectedChanged = !previousSelectedPath || treePathKey(previousSelectedPath) !== treePathKey(targetPath);
+    selectTreePathOrAncestor(targetPath, { notify: selectedChanged ? 'immediate' : 'silent' });
+    void restoreSelectedTreeNodeFocusAfterRender();
+  }
+
+  async function restoreSelectedTreeNodeFocusAfterRender(): Promise<void> {
+    await tick();
+    if (!projectMode || selectedIndex < 0) return;
+    const focusedItem = panelElement?.querySelector<HTMLElement>(`.file-item[data-index="${selectedIndex}"]`);
+    (focusedItem ?? panelElement)?.focus({ preventScroll: true });
+    isFocused = true;
   }
 </script>
 
@@ -1859,6 +1884,7 @@
   onclick={(e) => (e.currentTarget as HTMLDivElement).focus()}
   role="tree"
   aria-label="{type === 'parent' ? 'Parent Directory' : 'Current Directory'}"
+  aria-activedescendant={projectMode && selectedIndex >= 0 ? `project-tree-${type}-${selectedIndex}` : undefined}
   tabindex="0"
 >
   <div class="panel-header">
@@ -1909,6 +1935,10 @@
             class:cut-marked={cutPaths.has(file.path)}
             class:directory={file.is_dir}
             class:hidden-file={file.is_hidden}
+            id={projectMode ? `project-tree-${type}-${index}` : undefined}
+            role={projectMode ? 'treeitem' : undefined}
+            tabindex="-1"
+            aria-expanded={projectMode && file.is_dir ? treeVisibleNodes[index]?.expanded : undefined}
             onclick={(event) => handleItemClick(index, event)}
             ondblclick={(event) => handleItemDblClick(file, event, index)}
             onkeydown={() => {}}
