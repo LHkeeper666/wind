@@ -94,3 +94,47 @@ The system SHALL automatically detect the archive format from the file extension
 - **WHEN** a file has extension `.ZIP` or `.Zip`
 - **THEN** the system treats it as a ZIP archive
 
+### Requirement: Archive preview shows root-level directory structure
+The system SHALL display the root-level directory structure of an archive file in the preview panel when the archive file is selected.
+
+#### Scenario: Preview ZIP archive root-level entries
+- **WHEN** user selects a .zip file in the file panel
+- **THEN** the preview panel SHALL display the archive's root-level entries
+- **AND** directory entries SHALL be visually distinguished from file entries (e.g., trailing `/` and different styling)
+- **AND** only direct children of the root SHALL be shown (one level deep)
+
+#### Scenario: Preview TAR archive root-level entries
+- **WHEN** user selects a .tar file in the file panel
+- **THEN** the preview panel SHALL display the archive's root-level entries
+
+#### Scenario: Preview TAR.GZ archive root-level entries
+- **WHEN** user selects a .tar.gz or .tgz file in the file panel
+- **THEN** the preview panel SHALL display the archive's root-level entries
+
+#### Scenario: Preview 7Z archive root-level entries
+- **WHEN** user selects a .7z file in the file panel
+- **THEN** the preview panel SHALL display the archive's root-level entries
+
+#### Scenario: Preview shows file sizes
+- **WHEN** the archive preview displays file entries
+- **THEN** each file entry SHALL show its size in human-readable format (B/KB/MB/GB)
+- **AND** directory entries SHALL NOT show a size
+
+#### Scenario: Preview shows entry count summary
+- **WHEN** the archive preview is displayed
+- **THEN** a header SHALL show the archive name, total file count, and total size
+
+#### Scenario: Empty archive preview
+- **WHEN** an archive contains no entries
+- **THEN** the preview panel SHALL display "Empty archive"
+
+#### Scenario: Archive preview error handling
+- **WHEN** the system fails to read the archive (e.g., corrupted file)
+- **THEN** the preview panel SHALL display an error message
+- **AND** SHALL NOT crash the application
+
+#### Scenario: Unsupported archive format in preview
+- **WHEN** a file has an extension not in the supported set (zip, tar, tar.gz, tgz, 7z)
+- **THEN** the ArchivePreviewer SHALL NOT match the file
+- **AND** the file SHALL be handled by other previewers in the chain
+

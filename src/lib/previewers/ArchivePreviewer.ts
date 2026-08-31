@@ -5,24 +5,24 @@ interface ArchiveEntry {
   name: string;
   path: string;
   is_dir: boolean;
-  size: number;
+  size: number | null;
 }
 
-function formatSize(bytes: number): string {
+function formatSize(bytes: number | null): string {
+  if (bytes === null || bytes === undefined) return '';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-const ARCHIVE_EXTENSIONS = new Set(['zip']);
-
 export class ArchivePreviewer implements Previewer {
   private container: HTMLElement | null = null;
 
   match(filePath: string): boolean {
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
-    return ARCHIVE_EXTENSIONS.has(ext);
+    const lower = filePath.toLowerCase();
+    return lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.tar.gz')
+      || lower.endsWith('.tgz') || lower.endsWith('.7z');
   }
 
   async render(_content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
@@ -31,7 +31,10 @@ export class ArchivePreviewer implements Previewer {
     if (!filePath) return;
 
     try {
-      const entries = await invoke<ArchiveEntry[]>('list_archive_entries', { path: filePath });
+      const entries = await invoke<ArchiveEntry[]>('read_archive_directory', {
+        archivePath: filePath,
+        internalPath: '',
+      });
       container.innerHTML = this.renderEntries(filePath, entries);
     } catch (err) {
       container.innerHTML = `<p class="preview-unsupported">Failed to read archive: ${err}</p>`;
@@ -40,12 +43,12 @@ export class ArchivePreviewer implements Previewer {
 
   private renderEntries(filePath: string, entries: ArchiveEntry[]): string {
     const fileName = filePath.split(/[/\\]/).pop() || filePath;
-    const totalSize = entries.reduce((sum, e) => sum + e.size, 0);
     const fileCount = entries.filter(e => !e.is_dir).length;
+    const totalSize = entries.reduce((sum, e) => sum + (e.size ?? 0), 0);
 
     const header = `<div class="archive-header">
       <span class="archive-name">${this.escapeHtml(fileName)}</span>
-      <span class="archive-meta">${fileCount} files · ${formatSize(totalSize)}</span>
+      <span class="archive-meta">${fileCount} files${totalSize > 0 ? ' · ' + formatSize(totalSize) : ''}</span>
     </div>`;
 
     if (entries.length === 0) {

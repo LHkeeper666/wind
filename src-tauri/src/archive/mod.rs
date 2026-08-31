@@ -1,9 +1,14 @@
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::FileEntry;
+
+static ENCODING_CACHE: Mutex<Option<HashMap<String, Option<&'static encoding_rs::Encoding>>>> =
+    Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -363,9 +368,156 @@ fn collect_entries_at_path(
     entries
 }
 
+// ── Encoding Detection ──────────────────────────────────────────────
+
+/// Parsed ZIP central directory entry with raw filename bytes
+struct ZipCdEntry {
+    name_bytes: Vec<u8>,
+    utf8_flag: bool,
+}
+
+/// Try to detect the encoding for a ZIP archive's entry names.
+/// Returns the detected encoding, or None if detection failed.
+fn detect_archive_encoding(archive_path: &str, name_bytes: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    // Check cache first
+    {
+        let cache = ENCODING_CACHE.lock().unwrap();
+        if let Some(ref map) = *cache {
+            if let Some(cached) = map.get(archive_path) {
+                return *cached;
+            }
+        }
+    }
+
+    let encoding = detect_encoding_from_bytes(name_bytes);
+    let mut cache = ENCODING_CACHE.lock().unwrap();
+    if cache.is_none() {
+        *cache = Some(HashMap::new());
+    }
+    cache.as_mut().unwrap().insert(archive_path.to_string(), encoding);
+    encoding
+}
+
+fn detect_encoding_from_bytes(bytes: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    if String::from_utf8(bytes.to_vec()).is_ok() {
+        return Some(encoding_rs::UTF_8);
+    }
+
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, true);
+    if encoding == encoding_rs::UTF_8 {
+        // chardetng defaults to UTF-8 for short/ambiguous input; trust it
+        Some(encoding_rs::UTF_8)
+    } else {
+        Some(encoding)
+    }
+}
+
+fn decode_name(raw: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> String {
+    match encoding {
+        Some(enc) => enc.decode_without_bom_handling(raw).0.into_owned(),
+        None => String::from_utf8_lossy(raw).to_string(),
+    }
+}
+
+/// Parse ZIP central directory to extract raw filename bytes and UTF-8 flags.
+/// Returns a Vec of (normalized_path, raw_name_bytes, utf8_flag).
+fn parse_zip_central_dir(path: &str) -> Result<Vec<ZipCdEntry>, String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file_len = file.seek(SeekFrom::End(0)).map_err(|e| format!("Failed to seek: {}", e))?;
+
+    let eocd_offset = find_eocd(&mut file, file_len)?;
+    let cd_offset = read_cd_info(&mut file, eocd_offset)?;
+
+    if cd_offset >= file_len {
+        return Err("Invalid central directory offset".to_string());
+    }
+
+    file.seek(SeekFrom::Start(cd_offset))
+        .map_err(|e| format!("Failed to seek to central directory: {}", e))?;
+
+    let mut entries = Vec::new();
+    let cd_sig: u32 = 0x02014b50;
+
+    loop {
+        let mut sig_buf = [0u8; 4];
+        if file.read_exact(&mut sig_buf).is_err() {
+            break;
+        }
+        let sig = u32::from_le_bytes(sig_buf);
+        if sig != cd_sig {
+            break;
+        }
+
+        let mut header = [0u8; 42];
+        file.read_exact(&mut header)
+            .map_err(|e| format!("Failed to read CD header: {}", e))?;
+
+        let gp_flag = u16::from_le_bytes([header[4], header[5]]);
+        let name_len = u16::from_le_bytes([header[24], header[25]]) as usize;
+        let extra_len = u16::from_le_bytes([header[26], header[27]]) as usize;
+        let comment_len = u16::from_le_bytes([header[28], header[29]]) as usize;
+
+        let utf8_flag = (gp_flag & 0x0800) != 0;
+
+        let mut name_bytes = vec![0u8; name_len];
+        file.read_exact(&mut name_bytes)
+            .map_err(|e| format!("Failed to read filename: {}", e))?;
+
+        if extra_len > 0 {
+            file.seek(SeekFrom::Current(extra_len as i64))
+                .map_err(|e| format!("Failed to skip extra field: {}", e))?;
+        }
+        if comment_len > 0 {
+            file.seek(SeekFrom::Current(comment_len as i64))
+                .map_err(|e| format!("Failed to skip comment: {}", e))?;
+        }
+
+        entries.push(ZipCdEntry {
+            name_bytes,
+            utf8_flag,
+        });
+    }
+
+    Ok(entries)
+}
+
+fn find_eocd(file: &mut File, file_len: u64) -> Result<u64, String> {
+    let search_start = if file_len > 65557 { file_len - 65557 } else { 0 };
+    let search_len = file_len - search_start;
+    file.seek(SeekFrom::Start(search_start))
+        .map_err(|e| format!("Failed to seek: {}", e))?;
+
+    let mut buf = vec![0u8; search_len as usize];
+    file.read_exact(&mut buf)
+        .map_err(|e| format!("Failed to read EOCD search area: {}", e))?;
+
+    let eocd_sig: u32 = 0x06054b50;
+    for i in (0..buf.len().saturating_sub(4)).rev() {
+        let sig = u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
+        if sig == eocd_sig {
+            return Ok(search_start + i as u64);
+        }
+    }
+    Err("EOCD not found in ZIP file".to_string())
+}
+
+fn read_cd_info(file: &mut File, eocd_offset: u64) -> Result<u64, String> {
+    file.seek(SeekFrom::Start(eocd_offset + 16))
+        .map_err(|e| format!("Failed to seek to CD info: {}", e))?;
+    let mut buf = [0u8; 4];
+    file.read_exact(&mut buf)
+        .map_err(|e| format!("Failed to read CD offset: {}", e))?;
+    Ok(u64::from(u32::from_le_bytes(buf)))
+}
+
 // ── ZIP ────────────────────────────────────────────────────────────
 
 fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
+    // Try to parse CD for raw name bytes and encoding detection
+    let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
+
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
@@ -377,10 +529,19 @@ fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String
         let entry = archive
             .by_index(i)
             .map_err(|e| format!("Failed to read entry: {}", e))?;
-        let entry_path = entry
-            .enclosed_name()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| entry.name().to_string());
+        let entry_path = if let Some(cd) = cd_entries.get(i) {
+            let encoding = if cd.utf8_flag {
+                Some(encoding_rs::UTF_8)
+            } else {
+                detect_archive_encoding(path, &cd.name_bytes)
+            };
+            decode_name(&cd.name_bytes, encoding)
+        } else {
+            entry
+                .enclosed_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.name().to_string())
+        };
         let norm = entry_path.replace('\\', "/");
 
         if entry.is_dir() {
@@ -404,6 +565,8 @@ fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String
 }
 
 fn read_zip_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
+    let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
+
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
@@ -413,10 +576,19 @@ fn read_zip_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("Failed to read entry: {}", e))?;
-        let entry_path = entry
-            .enclosed_name()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| entry.name().to_string());
+        let entry_path = if let Some(cd) = cd_entries.get(i) {
+            let encoding = if cd.utf8_flag {
+                Some(encoding_rs::UTF_8)
+            } else {
+                detect_archive_encoding(path, &cd.name_bytes)
+            };
+            decode_name(&cd.name_bytes, encoding)
+        } else {
+            entry
+                .enclosed_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.name().to_string())
+        };
         let norm = entry_path.replace('\\', "/").trim_end_matches('/').to_string();
         if norm == internal {
             if entry.is_dir() {
@@ -437,6 +609,8 @@ fn extract_zip_files(
     internal_paths: &[String],
     dest_dir: &str,
 ) -> Result<(), String> {
+    let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
+
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
@@ -450,10 +624,19 @@ fn extract_zip_files(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("Failed to read entry: {}", e))?;
-        let entry_path = entry
-            .enclosed_name()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| entry.name().to_string());
+        let entry_path = if let Some(cd) = cd_entries.get(i) {
+            let encoding = if cd.utf8_flag {
+                Some(encoding_rs::UTF_8)
+            } else {
+                detect_archive_encoding(path, &cd.name_bytes)
+            };
+            decode_name(&cd.name_bytes, encoding)
+        } else {
+            entry
+                .enclosed_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.name().to_string())
+        };
         let norm = entry_path.replace('\\', "/").trim_end_matches('/').to_string();
 
         if target_set.contains(&norm) {
@@ -481,6 +664,8 @@ fn extract_zip_files(
 }
 
 fn extract_zip_all(path: &str, dest_dir: &str) -> Result<u64, String> {
+    let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
+
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
@@ -490,10 +675,19 @@ fn extract_zip_all(path: &str, dest_dir: &str) -> Result<u64, String> {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("Failed to read entry: {}", e))?;
-        let entry_path = entry
-            .enclosed_name()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| entry.name().to_string());
+        let entry_path = if let Some(cd) = cd_entries.get(i) {
+            let encoding = if cd.utf8_flag {
+                Some(encoding_rs::UTF_8)
+            } else {
+                detect_archive_encoding(path, &cd.name_bytes)
+            };
+            decode_name(&cd.name_bytes, encoding)
+        } else {
+            entry
+                .enclosed_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.name().to_string())
+        };
 
         let dest = Path::new(dest_dir).join(&entry_path);
         if entry.is_dir() {
@@ -850,6 +1044,12 @@ fn create_zip_entry(archive_path: &str, internal_path: &str, is_dir: bool) -> Re
 
 // ── TAR ────────────────────────────────────────────────────────────
 
+fn decode_tar_name(path: &str, entry: &tar::Entry<impl Read>) -> String {
+    let raw = entry.path_bytes();
+    let encoding = detect_archive_encoding(path, &raw);
+    decode_name(&raw, encoding)
+}
+
 fn list_tar_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive = tar::Archive::new(file);
@@ -862,11 +1062,7 @@ fn list_tar_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/");
 
         if entry.header().entry_type().is_dir() {
@@ -898,10 +1094,7 @@ fn read_tar_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
 
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
+        let path_str = decode_tar_name(path, &entry)
             .replace('\\', "/")
             .trim_end_matches('/')
             .to_string();
@@ -936,11 +1129,7 @@ fn extract_tar_files(
         .map_err(|e| format!("Failed to read tar: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/").trim_end_matches('/').to_string();
 
         if target_set.contains(&norm) {
@@ -977,11 +1166,7 @@ fn extract_tar_all(path: &str, dest_dir: &str) -> Result<u64, String> {
     let mut total_bytes: u64 = 0;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let dest = Path::new(dest_dir).join(&path_str);
 
         if entry.header().entry_type().is_dir() {
@@ -1021,11 +1206,7 @@ fn list_tar_gz_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, Str
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/");
 
         if entry.header().entry_type().is_dir() {
@@ -1058,10 +1239,7 @@ fn read_tar_gz_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
 
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
+        let path_str = decode_tar_name(path, &entry)
             .replace('\\', "/")
             .trim_end_matches('/')
             .to_string();
@@ -1097,11 +1275,7 @@ fn extract_tar_gz_files(
         .map_err(|e| format!("Failed to read tar.gz: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/").trim_end_matches('/').to_string();
 
         if target_set.contains(&norm) {
@@ -1139,11 +1313,7 @@ fn extract_tar_gz_all(path: &str, dest_dir: &str) -> Result<u64, String> {
     let mut total_bytes: u64 = 0;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path_str = entry
-            .path()
-            .map_err(|e| format!("Invalid path: {}", e))?
-            .to_string_lossy()
-            .to_string();
+        let path_str = decode_tar_name(path, &entry);
         let dest = Path::new(dest_dir).join(&path_str);
 
         if entry.header().entry_type().is_dir() {
