@@ -10,6 +10,7 @@
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
   import { directoryCache } from '$lib/utils/directory-cache';
+  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
   import { directoryKeyId, normalizeDirectoryKey, type DirectoryKey } from '$lib/utils/directory-refresh';
   import {
     getCollapseSelectionTarget,
@@ -60,7 +61,7 @@
     selectedPath = null,
     detached = false,
     onNavigate = (path: string) => {},
-    onSelect = (path: string) => {},
+    onSelect = (path: string, _isDir?: boolean) => {},
     onActivate = (path: string) => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
@@ -75,7 +76,7 @@
     selectedPath: string | null;
     detached?: boolean;
     onNavigate?: (path: string) => void;
-    onSelect?: (path: string) => void;
+    onSelect?: (path: string, isDir?: boolean) => void;
     onActivate?: (path: string) => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
@@ -247,6 +248,12 @@
 
   export function getSelectedIndex(): number {
     return selectedIndex;
+  }
+
+  export function getSelectedEntry(): FileEntry | null {
+    return selectedIndex >= 0 && selectedIndex < displayFiles.length
+      ? displayFiles[selectedIndex]
+      : null;
   }
 
   export function getScrollOffset(): number {
@@ -507,7 +514,7 @@
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
         console.log(`[tab-perf] selectInitialEntry pendingSelectName=${target} file=${displayFiles[idx].name}`);
-        onSelect(displayFiles[idx].path);
+        onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
     }
@@ -518,7 +525,7 @@
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
         console.log(`[tab-perf] selectInitialEntry selectedPath file=${displayFiles[idx].name}`);
-        onSelect(displayFiles[idx].path);
+        onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
     }
@@ -526,7 +533,7 @@
     selectedIndex = firstReal >= 0 ? firstReal : 0;
     selectedPathInternal = displayFiles[selectedIndex].path;
     console.log(`[tab-perf] selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
-    onSelect(displayFiles[selectedIndex].path);
+    onSelect(displayFiles[selectedIndex].path, displayFiles[selectedIndex].is_dir);
   }
 
   let loadingGen = 0;
@@ -565,10 +572,21 @@
         files = await invoke<FileEntry[]>('list_drives');
       } else if (archiveState) {
         // Archive mode: list entries within the archive
-        files = await invoke<FileEntry[]>('read_archive_directory', {
-          archivePath: archiveState.archivePath,
-          internalPath: archiveState.internalPath,
-        });
+        const archiveEntries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
+          'read_archive_directory',
+          {
+            archivePath: archiveState.archivePath,
+            internalPath: archiveState.internalPath,
+          },
+          'password'
+        );
+        if (archiveEntries === null) {
+          if (archiveState.internalPath === '') {
+            layout.clearArchiveState();
+          }
+          return false;
+        }
+        files = archiveEntries;
         files.sort((a, b) => {
           if (a.is_dir && !b.is_dir) return -1;
           if (!a.is_dir && b.is_dir) return 1;
@@ -752,7 +770,7 @@
         return;
       }
       if (notify === 'immediate') {
-        onSelect(selectedPath);
+        onSelect(selectedPath, displayFiles[index].is_dir);
         return;
       }
       const capturedIndex = index;
@@ -760,7 +778,7 @@
       selectTimeout = setTimeout(() => {
         // Only fire if user is still on the same item
         if (selectedIndex === capturedIndex && displayFiles[capturedIndex]?.path === capturedPath) {
-          onSelect(capturedPath);
+          onSelect(capturedPath, displayFiles[capturedIndex]?.is_dir);
         }
       }, 200);
     }
@@ -781,14 +799,14 @@
   function handleSearchSelect(filePath: string, isDir: boolean, isHidden: boolean) {
     if (projectMode) {
       void revealTreePath(filePath, isHidden).then(() => {
-        if (!isDir) onSelect(filePath);
+        if (!isDir) onSelect(filePath, false);
       });
       return;
     }
     if (isDir) {
       onNavigate(filePath);
     } else {
-      onSelect(filePath);
+      onSelect(filePath, false);
     }
   }
 
@@ -976,14 +994,14 @@
           const parentBase = path.replace(/\/+$/, '');
           const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value });
           loadDirectory(path, true);
-          onSelect(newPath);
+          onSelect(newPath, false);
           onToast(`Renamed to ${value}`);
         } else {
           const parentPath = path.replace(/[\\\/]+$/, '');
           const newPath = parentPath + '\\' + value;
           await invoke('rename_file', { oldPath: entry.path, newName: value });
           await currentDirectoryPanel_refresh();
-          onSelect(newPath);
+          onSelect(newPath, false);
           onToast(`Renamed to ${value}`);
         }
       } else if (inputMode === 'create-file') {
@@ -1011,7 +1029,7 @@
           const newPath = parentPath + '\\' + value;
           await invoke('create_file', { path: newPath, isDir: false });
           await currentDirectoryPanel_refresh();
-          onSelect(newPath);
+          onSelect(newPath, false);
           onToast(`Created ${value}`);
         }
       } else if (inputMode === 'create-dir') {
@@ -1039,7 +1057,7 @@
           const newPath = parentPath + '\\' + value;
           await invoke('create_file', { path: newPath, isDir: true });
           await currentDirectoryPanel_refresh();
-          onSelect(newPath);
+          onSelect(newPath, true);
           onToast(`Created ${value}/`);
         }
       } else if (inputMode === 'filter') {
@@ -1337,6 +1355,21 @@
     layout.setArchiveState({ archivePath, internalPath: '', format });
   }
 
+  async function markArchiveForExtraction(entry: FileEntry) {
+    try {
+      const entries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
+        'read_archive_directory',
+        { archivePath: entry.path, internalPath: '' },
+        'password'
+      );
+      if (entries === null) return;
+      layout.setMark('extract', [entry.path]);
+      onToast('Archive marked for extraction. Navigate to target and press p.');
+    } catch (error) {
+      onToast(`Failed to verify archive: ${error}`);
+    }
+  }
+
   function handleArchiveUp() {
     if (!archiveState) return;
     if (archiveState.internalPath === '') {
@@ -1357,11 +1390,16 @@
     const internalPaths = entries.map(e => e.path);
     const destDir = archiveState.archivePath.replace(/[\\/][^\\/]*$/, "");
     try {
-      await invoke('extract_archive_files', {
-        archivePath: archiveState.archivePath,
-        internalPaths,
-        destDir,
-      });
+      const extracted = await invokeArchiveWithOptionalPassword<number>(
+        'extract_archive_files',
+        {
+          archivePath: archiveState.archivePath,
+          internalPaths,
+          destDir,
+        },
+        'password'
+      );
+      if (extracted === null) return;
       onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} extracted`);
     } catch (e) {
       onToast(`Extract failed: ${e}`);
@@ -1401,7 +1439,12 @@
   async function handleExtractHere(archivePath: string) {
     const destDir = path;
     try {
-      await invoke('extract_archive', { archivePath, destDir });
+      const extracted = await invokeArchiveWithOptionalPassword<number>(
+        'extract_archive',
+        { archivePath, destDir },
+        'password'
+      );
+      if (extracted === null) return;
       onToast('Archive extracted');
       refresh();
     } catch (e) {
@@ -1494,7 +1537,7 @@
           } else {
             if (isArchiveMode) {
               // Preview file in archive: select it for preview panel
-              onSelect(entry.path);
+              onSelect(entry.path, entry.is_dir);
             } else {
               onActivate(entry.path);
             }
@@ -1533,8 +1576,7 @@
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) break;
           if (isArchiveFile(entry.name)) {
-            layout.setMark('extract', [entry.path]);
-            onToast(`Archive marked for extraction. Navigate to target and press p.`);
+            void markArchiveForExtraction(entry);
           } else {
             onToast('E key only works on archive files');
           }
@@ -1684,7 +1726,7 @@
                     if (isArchiveFile(entry.name)) {
                       onToast('Nested archives not supported in this phase');
                     } else {
-                      onSelect(entry.path);
+                      onSelect(entry.path, entry.is_dir);
                     }
                   } else {
                     // Normal mode: if it's an archive, enter archive mode

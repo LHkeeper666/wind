@@ -4,11 +4,130 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use crate::FileEntry;
 
 static ENCODING_CACHE: Mutex<Option<HashMap<String, Option<&'static encoding_rs::Encoding>>>> =
     Mutex::new(None);
+static ARCHIVE_PASSWORD_CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn archive_cache_key(archive_path: &str) -> String {
+    let path = Path::new(archive_path);
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let metadata = fs::metadata(path).ok();
+    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let modified = metadata
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}|{}|{}", canonical.to_string_lossy(), size, modified)
+}
+
+fn cached_archive_password(archive_path: &str) -> Option<String> {
+    let key = archive_cache_key(archive_path);
+    let mut cache = ARCHIVE_PASSWORD_CACHE.lock().unwrap();
+    let map = cache.get_or_insert_with(HashMap::new);
+    map.get(&key).cloned()
+}
+
+fn store_archive_password(archive_path: &str, password: &str) {
+    let key = archive_cache_key(archive_path);
+    let mut cache = ARCHIVE_PASSWORD_CACHE.lock().unwrap();
+    let map = cache.get_or_insert_with(HashMap::new);
+    map.insert(key, password.to_string());
+}
+
+fn resolve_archive_password(archive_path: &str, password: Option<String>) -> Option<String> {
+    password.or_else(|| cached_archive_password(archive_path))
+}
+
+fn remember_archive_password(archive_path: &str, password: Option<&str>) {
+    if let Some(password) = password {
+        store_archive_password(archive_path, password);
+    }
+}
+
+fn password_required_error(archive_path: &str) -> String {
+    format!("ARCHIVE_PASSWORD_REQUIRED: {}", archive_path)
+}
+
+fn password_incorrect_error(archive_path: &str) -> String {
+    format!("ARCHIVE_PASSWORD_INCORRECT: {}", archive_path)
+}
+
+fn is_zip_password_error(err: &zip::result::ZipError) -> bool {
+    matches!(
+        err,
+        zip::result::ZipError::InvalidPassword
+            | zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
+    )
+}
+
+fn map_zip_error(path: &str, err: zip::result::ZipError) -> String {
+    if is_zip_password_error(&err) {
+        match err {
+            zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED) => {
+                password_required_error(path)
+            }
+            zip::result::ZipError::InvalidPassword => password_incorrect_error(path),
+            _ => format!("Failed to read zip: {}", err),
+        }
+    } else {
+        format!("Failed to read zip: {}", err)
+    }
+}
+
+fn map_7z_error(path: &str, err: sevenz_rust::Error) -> String {
+    match err {
+        sevenz_rust::Error::PasswordRequired => password_required_error(path),
+        sevenz_rust::Error::MaybeBadPassword(_) => password_incorrect_error(path),
+        other => format!("Failed to read 7z: {}", other),
+    }
+}
+
+fn zip_entry_requires_password(archive: &mut zip::ZipArchive<File>) -> Result<Option<usize>, String> {
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index_raw(i)
+            .map_err(|e| format!("Failed to read entry: {}", e))?;
+        if entry.encrypted() {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_zip_password(
+    archive: &mut zip::ZipArchive<File>,
+    path: &str,
+    password: &str,
+) -> Result<(), String> {
+    let Some(index) = zip_entry_requires_password(archive)? else {
+        return Ok(());
+    };
+    archive
+        .by_index_decrypt(index, password.as_bytes())
+        .map_err(|e| map_zip_error(path, e))?;
+    Ok(())
+}
+
+fn read_zip_entry<'a>(
+    archive: &'a mut zip::ZipArchive<File>,
+    path: &str,
+    index: usize,
+    password: Option<&str>,
+) -> Result<zip::read::ZipFile<'a>, String> {
+    match password {
+        Some(password) => archive
+            .by_index_decrypt(index, password.as_bytes())
+            .map_err(|e| map_zip_error(path, e)),
+        None => archive
+            .by_index(index)
+            .map_err(|e| map_zip_error(path, e)),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -39,25 +158,35 @@ impl ArchiveFormat {
     }
 }
 
-pub fn list_entries(archive_path: &str, internal_path: &str) -> Result<Vec<FileEntry>, String> {
+pub fn list_entries(
+    archive_path: &str,
+    internal_path: &str,
+    password: Option<String>,
+) -> Result<Vec<FileEntry>, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => list_zip_entries(archive_path, internal_path),
+        ArchiveFormat::Zip => list_zip_entries(archive_path, internal_path, password.as_deref()),
         ArchiveFormat::Tar => list_tar_entries(archive_path, internal_path),
         ArchiveFormat::TarGz => list_tar_gz_entries(archive_path, internal_path),
-        ArchiveFormat::SevenZ => list_7z_entries(archive_path, internal_path),
+        ArchiveFormat::SevenZ => list_7z_entries(archive_path, internal_path, password.as_deref()),
     }
 }
 
-pub fn read_file_bytes(archive_path: &str, internal_path: &str) -> Result<Vec<u8>, String> {
+pub fn read_file_bytes(
+    archive_path: &str,
+    internal_path: &str,
+    password: Option<String>,
+) -> Result<Vec<u8>, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => read_zip_file(archive_path, internal_path),
+        ArchiveFormat::Zip => read_zip_file(archive_path, internal_path, password.as_deref()),
         ArchiveFormat::Tar => read_tar_file(archive_path, internal_path),
         ArchiveFormat::TarGz => read_tar_gz_file(archive_path, internal_path),
-        ArchiveFormat::SevenZ => read_7z_file(archive_path, internal_path),
+        ArchiveFormat::SevenZ => read_7z_file(archive_path, internal_path, password.as_deref()),
     }
 }
 
@@ -65,25 +194,32 @@ pub fn extract_files(
     archive_path: &str,
     internal_paths: &[String],
     dest_dir: &str,
+    password: Option<String>,
 ) -> Result<(), String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => extract_zip_files(archive_path, internal_paths, dest_dir),
+        ArchiveFormat::Zip => extract_zip_files(archive_path, internal_paths, dest_dir, password.as_deref()),
         ArchiveFormat::Tar => extract_tar_files(archive_path, internal_paths, dest_dir),
         ArchiveFormat::TarGz => extract_tar_gz_files(archive_path, internal_paths, dest_dir),
-        ArchiveFormat::SevenZ => extract_7z_files(archive_path, internal_paths, dest_dir),
+        ArchiveFormat::SevenZ => extract_7z_files(archive_path, internal_paths, dest_dir, password.as_deref()),
     }
 }
 
-pub fn extract_all(archive_path: &str, dest_dir: &str) -> Result<u64, String> {
+pub fn extract_all(
+    archive_path: &str,
+    dest_dir: &str,
+    password: Option<String>,
+) -> Result<u64, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => extract_zip_all(archive_path, dest_dir),
+        ArchiveFormat::Zip => extract_zip_all(archive_path, dest_dir, password.as_deref()),
         ArchiveFormat::Tar => extract_tar_all(archive_path, dest_dir),
         ArchiveFormat::TarGz => extract_tar_gz_all(archive_path, dest_dir),
-        ArchiveFormat::SevenZ => extract_7z_all(archive_path, dest_dir),
+        ArchiveFormat::SevenZ => extract_7z_all(archive_path, dest_dir, password.as_deref()),
     }
 }
 
@@ -514,7 +650,7 @@ fn read_cd_info(file: &mut File, eocd_offset: u64) -> Result<u64, String> {
 
 // ── ZIP ────────────────────────────────────────────────────────────
 
-fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
+fn list_zip_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
     // Try to parse CD for raw name bytes and encoding detection
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
@@ -522,13 +658,20 @@ fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
 
+    if let Some(password) = password {
+        validate_zip_password(&mut archive, path, password)?;
+        remember_archive_password(path, Some(password));
+    } else if zip_entry_requires_password(&mut archive)?.is_some() {
+        return Err(password_required_error(path));
+    }
+
     let mut all_paths: Vec<String> = Vec::new();
     let mut all_dirs = std::collections::HashSet::new();
 
     for i in 0..archive.len() {
         let entry = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .by_index_raw(i)
+            .map_err(|e| map_zip_error(path, e))?;
         let entry_path = if let Some(cd) = cd_entries.get(i) {
             let encoding = if cd.utf8_flag {
                 Some(encoding_rs::UTF_8)
@@ -564,18 +707,26 @@ fn list_zip_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String
     Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal)))
 }
 
-fn read_zip_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
+fn read_zip_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+
+    let needs_password = zip_entry_requires_password(&mut archive)?;
+    if needs_password.is_some() {
+        if let Some(password) = password {
+            validate_zip_password(&mut archive, path, password)?;
+            remember_archive_password(path, Some(password));
+        } else {
+            return Err(password_required_error(path));
+        }
+    }
     let internal = normalize_internal(internal);
 
     for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = read_zip_entry(&mut archive, path, i, password)?;
         let entry_path = if let Some(cd) = cd_entries.get(i) {
             let encoding = if cd.utf8_flag {
                 Some(encoding_rs::UTF_8)
@@ -608,6 +759,7 @@ fn extract_zip_files(
     path: &str,
     internal_paths: &[String],
     dest_dir: &str,
+    password: Option<&str>,
 ) -> Result<(), String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
@@ -615,15 +767,23 @@ fn extract_zip_files(
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
 
+    let needs_password = zip_entry_requires_password(&mut archive)?;
+    if needs_password.is_some() {
+        if let Some(password) = password {
+            validate_zip_password(&mut archive, path, password)?;
+            remember_archive_password(path, Some(password));
+        } else {
+            return Err(password_required_error(path));
+        }
+    }
+
     let target_set: std::collections::HashSet<String> = internal_paths
         .iter()
         .map(|p| normalize_internal(p))
         .collect();
 
     for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = read_zip_entry(&mut archive, path, i, password)?;
         let entry_path = if let Some(cd) = cd_entries.get(i) {
             let encoding = if cd.utf8_flag {
                 Some(encoding_rs::UTF_8)
@@ -663,18 +823,26 @@ fn extract_zip_files(
     Ok(())
 }
 
-fn extract_zip_all(path: &str, dest_dir: &str) -> Result<u64, String> {
+fn extract_zip_all(path: &str, dest_dir: &str, password: Option<&str>) -> Result<u64, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
 
+    let needs_password = zip_entry_requires_password(&mut archive)?;
+    if needs_password.is_some() {
+        if let Some(password) = password {
+            validate_zip_password(&mut archive, path, password)?;
+            remember_archive_password(path, Some(password));
+        } else {
+            return Err(password_required_error(path));
+        }
+    }
+
     let mut total_bytes: u64 = 0;
     for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = read_zip_entry(&mut archive, path, i, password)?;
         let entry_path = if let Some(cd) = cd_entries.get(i) {
             let encoding = if cd.utf8_flag {
                 Some(encoding_rs::UTF_8)
@@ -1340,49 +1508,66 @@ fn extract_tar_gz_all(path: &str, dest_dir: &str) -> Result<u64, String> {
 
 // ── 7Z ─────────────────────────────────────────────────────────────
 
-fn list_7z_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
+fn make_7z_password(password: Option<&str>) -> sevenz_rust::Password {
+    match password {
+        Some(password) => sevenz_rust::Password::from(password),
+        None => sevenz_rust::Password::empty(),
+    }
+}
+
+fn list_7z_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, sevenz_rust::Password::empty())
-        .map_err(|e| format!("Failed to read 7z: {}", e))?;
-
-    let mut all_paths: Vec<String> = Vec::new();
-    let mut all_dirs = std::collections::HashSet::new();
+    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
 
     reader
-        .for_each_entries(|entry, _reader| {
-            let norm = entry.name.replace('\\', "/");
-            if entry.is_directory {
-                all_dirs.insert(norm.trim_end_matches('/').to_string());
-            } else {
-                all_paths.push(norm);
-                let mut parent = Path::new(&entry.name).parent();
-                while let Some(p) = parent {
-                    let s = p.to_string_lossy().replace('\\', "/");
-                    if s.is_empty() {
-                        break;
-                    }
-                    all_dirs.insert(s);
-                    parent = p.parent();
-                }
+        .for_each_entries(|entry, reader| {
+            if !entry.is_directory && entry.has_stream && entry.size > 0 {
+                std::io::copy(reader, &mut std::io::sink()).map_err(sevenz_rust::Error::io)?;
+                return Ok(false);
             }
             Ok(true)
         })
-        .map_err(|e| format!("Failed to iterate 7z: {}", e))?;
+        .map_err(|e| map_7z_error(path, e))?;
 
+    let mut all_paths: Vec<String> = Vec::new();
+    let mut all_dirs = std::collections::HashSet::new();
+    for entry in &reader.archive().files {
+        let norm = entry.name.replace('\\', "/");
+        if entry.is_directory {
+            all_dirs.insert(norm.trim_end_matches('/').to_string());
+        } else {
+            all_paths.push(norm);
+            let mut parent = Path::new(&entry.name).parent();
+            while let Some(p) = parent {
+                let s = p.to_string_lossy().replace('\\', "/");
+                if s.is_empty() {
+                    break;
+                }
+                all_dirs.insert(s);
+                parent = p.parent();
+            }
+        }
+    }
+
+    remember_archive_password(path, password);
     Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal)))
 }
 
-fn read_7z_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
+fn read_7z_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, sevenz_rust::Password::empty())
-        .map_err(|e| format!("Failed to read 7z: {}", e))?;
+    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
     let internal = normalize_internal(internal);
 
     let mut result: Option<Vec<u8>> = None;
     reader
         .for_each_entries(|entry, reader| {
+            if result.is_some() {
+                return Ok(false);
+            }
             let norm = entry.name.replace('\\', "/").trim_end_matches('/').to_string();
             if norm == internal && !entry.is_directory {
                 let mut buf = Vec::new();
@@ -1390,10 +1575,14 @@ fn read_7z_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
                 result = Some(buf);
                 return Ok(false);
             }
+            if !entry.is_directory {
+                std::io::copy(reader, &mut std::io::sink()).map_err(sevenz_rust::Error::io)?;
+            }
             Ok(true)
         })
-        .map_err(|e| format!("Failed to iterate 7z: {}", e))?;
+        .map_err(|e| map_7z_error(path, e))?;
 
+    remember_archive_password(path, password);
     result.ok_or_else(|| format!("Entry not found in archive: {}", internal))
 }
 
@@ -1401,23 +1590,29 @@ fn extract_7z_files(
     path: &str,
     internal_paths: &[String],
     dest_dir: &str,
+    password: Option<&str>,
 ) -> Result<(), String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, sevenz_rust::Password::empty())
-        .map_err(|e| format!("Failed to read 7z: {}", e))?;
+    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
     let target_set: std::collections::HashSet<String> = internal_paths
         .iter()
         .map(|p| normalize_internal(p))
         .collect();
+    let mut remaining_targets = target_set.clone();
 
     reader
         .for_each_entries(|entry, reader| {
+            if remaining_targets.is_empty() {
+                return Ok(false);
+            }
             let norm = entry.name.replace('\\', "/").trim_end_matches('/').to_string();
             if target_set.contains(&norm) {
                 let dest = Path::new(dest_dir).join(&entry.name);
                 if entry.is_directory {
                     fs::create_dir_all(&dest)?;
+                    remaining_targets.remove(&norm);
                 } else {
                     if let Some(parent) = dest.parent() {
                         fs::create_dir_all(parent)?;
@@ -1426,19 +1621,23 @@ fn extract_7z_files(
                     reader.read_to_end(&mut buf)?;
                     let mut out = File::create(&dest)?;
                     out.write_all(&buf)?;
+                    remaining_targets.remove(&norm);
                 }
+            } else if !entry.is_directory {
+                std::io::copy(reader, &mut std::io::sink()).map_err(sevenz_rust::Error::io)?;
             }
             Ok(true)
         })
-        .map_err(|e| format!("Failed to extract 7z: {}", e))?;
+        .map_err(|e| map_7z_error(path, e))?;
+    remember_archive_password(path, password);
     Ok(())
 }
 
-fn extract_7z_all(path: &str, dest_dir: &str) -> Result<u64, String> {
+fn extract_7z_all(path: &str, dest_dir: &str, password: Option<&str>) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, sevenz_rust::Password::empty())
-        .map_err(|e| format!("Failed to read 7z: {}", e))?;
+    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
     let mut total_bytes: u64 = 0;
 
     reader
@@ -1458,6 +1657,7 @@ fn extract_7z_all(path: &str, dest_dir: &str) -> Result<u64, String> {
             }
             Ok(true)
         })
-        .map_err(|e| format!("Failed to extract 7z: {}", e))?;
+        .map_err(|e| map_7z_error(path, e))?;
+    remember_archive_password(path, password);
     Ok(total_bytes)
 }

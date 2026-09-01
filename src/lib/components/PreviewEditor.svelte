@@ -31,6 +31,7 @@
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
   import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
+  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
   import {
     EDITOR_TAB_SIZE,
     editorAutocompleteKeymap,
@@ -124,6 +125,7 @@
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
     activeColumn = '',
+    selectedEntryIsDir = null,
   }: {
     filePath: string | null;
     currentTabId?: number;
@@ -136,6 +138,7 @@
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
     activeColumn?: string;
+    selectedEntryIsDir?: boolean | null;
   } = $props();
 
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
@@ -910,10 +913,47 @@
     // Archive file: read from archive
     if (browsingArchive && archiveStateVal) {
       try {
-        const bytes = await invoke<number[]>('read_archive_file', {
-          archivePath: archiveStateVal.archivePath,
-          internalPath: path,
-        });
+        if (selectedEntryIsDir) {
+          const dirEntries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
+            'read_archive_directory',
+            {
+              archivePath: archiveStateVal.archivePath,
+              internalPath: path,
+            },
+            'password'
+          );
+          if (dirEntries === null) return;
+          if (gen !== loadGeneration) return;
+          content = ''; binaryContent = null;
+          destroyEditorSession(loadTabId);
+          mode = 'global-normal';
+          const slot = getOrCreateSlot(renderTabId);
+          showTabSlot(renderTabId);
+          slot.dataset.filePath = path;
+          const rows = dirEntries.map((entry: any) => {
+            const safeName = entry.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            const name = entry.is_dir ? safeName + '/' : safeName;
+            const nameClass = entry.is_dir ? 'entry-name is-dir' : 'entry-name';
+            const size = entry.is_dir || entry.size == null ? '' : formatSize(entry.size);
+            const sizeClass = entry.is_dir ? 'dir' : 'file';
+            return `<div class="dir-entry"><span class="${nameClass}">${name}</span><span class="entry-size ${sizeClass}">${size}</span></div>`;
+          });
+          slot.innerHTML = dirEntries.length === 0
+            ? '<p class="preview-empty">Empty directory</p>'
+            : `<div class="dir-list">${rows.join('')}</div>`;
+          stopWatching();
+          return;
+        }
+
+        const bytes = await invokeArchiveWithOptionalPassword<number[]>(
+          'read_archive_file',
+          {
+            archivePath: archiveStateVal.archivePath,
+            internalPath: path,
+          },
+          'password'
+        );
+        if (bytes === null) return;
         if (gen !== loadGeneration) return;
         const uint8 = new Uint8Array(bytes);
         const isBinary = isTextFile(path) ? false : uint8.slice(0, Math.min(uint8.length, 8192)).some(b => b === 0);
@@ -940,36 +980,6 @@
         stopWatching();
         return;
       } catch (e) {
-        // Try reading as archive directory (for directory preview in archive mode)
-        try {
-          const dirEntries = await invoke<FileEntry[]>('read_archive_directory', {
-            archivePath: archiveStateVal.archivePath,
-            internalPath: path,
-          });
-          if (gen !== loadGeneration) return;
-          content = ''; binaryContent = null;
-          destroyEditorSession(loadTabId);
-          mode = 'global-normal';
-          // Render archive directory entries directly
-          const slot = getOrCreateSlot(renderTabId);
-          showTabSlot(renderTabId);
-          slot.dataset.filePath = path;
-          const rows = dirEntries.map((entry: any) => {
-            const safeName = entry.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            const name = entry.is_dir ? safeName + '/' : safeName;
-            const nameClass = entry.is_dir ? 'entry-name is-dir' : 'entry-name';
-            const size = entry.is_dir || entry.size == null ? '' : formatSize(entry.size);
-            const sizeClass = entry.is_dir ? 'dir' : 'file';
-            return `<div class="dir-entry"><span class="${nameClass}">${name}</span><span class="entry-size ${sizeClass}">${size}</span></div>`;
-          });
-          slot.innerHTML = dirEntries.length === 0
-            ? '<p class="preview-empty">Empty directory</p>'
-            : `<div class="dir-list">${rows.join('')}</div>`;
-          stopWatching();
-          return;
-        } catch {
-          // Not a directory either, show error
-        }
         content = `[Error reading archive file: ${e}]`;
         binaryContent = null;
         readyTextContent = null;

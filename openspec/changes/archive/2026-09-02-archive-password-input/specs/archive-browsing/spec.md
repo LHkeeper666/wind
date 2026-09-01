@@ -1,8 +1,39 @@
-# archive-browsing Specification
+## ADDED Requirements
 
-## Purpose
-TBD - created by archiving change archive-browsing-and-management. Update Purpose after archive.
-## Requirements
+### Requirement: Visible archive password prompt
+The system SHALL display a visible password input when an encrypted `zip` or `7z` archive requires credentials for entering the archive or starting a password-aware archive action.
+
+#### Scenario: Preview shows password hint
+- **WHEN** the user selects an encrypted `zip` or `7z` archive in the file panel
+- **THEN** the preview panel shows that a password is required to preview the archive
+- **AND** the system does not automatically open the password dialog
+
+#### Scenario: Prompt appears when entering encrypted archive
+- **WHEN** the user presses `l` on an encrypted `zip` or `7z` archive
+- **THEN** the system shows a password input dialog before entering archive mode
+- **AND** the password is shown in plain text while typing
+
+#### Scenario: Wrong password keeps dialog open
+- **WHEN** the entered password is rejected by the backend
+- **THEN** the dialog remains open
+- **AND** the system shows an error message indicating the password is incorrect
+- **AND** the user can edit and resubmit the password
+
+### Requirement: Archive password cache for session
+The system SHALL cache successful archive passwords in memory until the application closes.
+
+#### Scenario: Reopen same archive without reprompt
+- **WHEN** the user opens the same encrypted archive again during the same application session
+- **THEN** the system reuses the cached password
+- **AND** does not prompt again unless the archive file has changed or the cache is unavailable
+
+#### Scenario: Cache cleared on application exit
+- **WHEN** the application exits
+- **THEN** all cached archive passwords are discarded
+- **AND** no password is persisted to disk
+
+## MODIFIED Requirements
+
 ### Requirement: Archive virtual directory navigation
 The system SHALL allow users to enter a supported archive file (.zip, .tar, .tar.gz, .7z) as a virtual directory using the `l` key, and navigate within it using the same `j/k/l/h` keybindings as regular directories.
 
@@ -63,49 +94,6 @@ The system SHALL allow users to enter a supported archive file (.zip, .tar, .tar
 - **WHEN** user presses `l` on a file with an unsupported archive extension
 - **THEN** the file opens in the preview panel as a regular file (existing behavior)
 
-### Requirement: ArchiveState management
-The system SHALL maintain an `ArchiveState` in the layout store that tracks the current archive path, internal path, and format when browsing an archive.
-
-#### Scenario: ArchiveState set on enter
-- **WHEN** user enters an archive
-- **THEN** `archiveState` is set with `archivePath`, `internalPath: ""`, and auto-detected `format`
-
-#### Scenario: ArchiveState updated on navigate
-- **WHEN** user navigates to a subdirectory within an archive
-- **THEN** `archiveState.internalPath` is updated to the new internal path
-
-#### Scenario: ArchiveState cleared on exit
-- **WHEN** user exits the archive
-- **THEN** `archiveState` is set to null
-
-#### Scenario: ArchiveState prevents entering sub-archives
-- **WHEN** user is already in archive mode and presses `l` on a nested archive file
-- **THEN** the nested archive file is previewed as a regular file, not entered
-- **AND** `archiveState` remains unchanged
-
-### Requirement: Archive format detection
-The system SHALL automatically detect the archive format from the file extension.
-
-#### Scenario: Detect ZIP format
-- **WHEN** a file has extension `.zip`
-- **THEN** the system treats it as a ZIP archive
-
-#### Scenario: Detect TAR format
-- **WHEN** a file has extension `.tar`
-- **THEN** the system treats it as a TAR archive
-
-#### Scenario: Detect TAR.GZ format
-- **WHEN** a file has extension `.tar.gz` or `.tgz`
-- **THEN** the system treats it as a gzip-compressed TAR archive
-
-#### Scenario: Detect 7Z format
-- **WHEN** a file has extension `.7z`
-- **THEN** the system treats it as a 7Z archive
-
-#### Scenario: Case-insensitive detection
-- **WHEN** a file has extension `.ZIP` or `.Zip`
-- **THEN** the system treats it as a ZIP archive
-
 ### Requirement: Archive preview shows root-level directory structure
 The system SHALL display the root-level directory structure of an archive file in the preview panel when the archive file is selected.
 
@@ -117,43 +105,10 @@ The system SHALL display the root-level directory structure of an archive file i
 
 #### Scenario: Preview encrypted archive root-level entries
 - **WHEN** user selects an encrypted `zip` or `7z` file in the file panel
-- **THEN** the preview panel shows that a password is required to preview the archive
-- **AND** the system does not automatically open the password dialog
+- **THEN** the system shows the password prompt if required to read the archive
 - **AND** after a correct password, the preview panel SHALL display the archive's root-level entries
 - **AND** directory entries SHALL be visually distinguished from file entries (e.g., trailing `/` and different styling)
 - **AND** only direct children of the root SHALL be shown (one level deep)
-
-### Requirement: Visible archive password prompt
-The system SHALL provide a visible password input for encrypted `zip` or `7z` archives when credentials are required for entering the archive or previewing an internal file.
-
-#### Scenario: Preview shows password hint
-- **WHEN** the user selects an encrypted `zip` or `7z` archive in the file panel
-- **THEN** the preview panel shows that a password is required to preview the archive
-- **AND** the system does not automatically open the password dialog
-
-#### Scenario: Prompt appears when entering encrypted archive
-- **WHEN** the user presses `l` on an encrypted `zip` or `7z` archive
-- **THEN** the system shows a password input dialog before entering archive mode
-- **AND** the password is shown in plain text while typing
-
-#### Scenario: Wrong password keeps dialog open
-- **WHEN** the entered password is rejected by the backend
-- **THEN** the dialog remains open
-- **AND** the system shows an error message indicating the password is incorrect
-- **AND** the user can edit and resubmit the password
-
-### Requirement: Archive password cache for session
-The system SHALL cache successful archive passwords in memory until the application closes.
-
-#### Scenario: Reopen same archive without reprompt
-- **WHEN** the user opens the same encrypted archive again during the same application session
-- **THEN** the system reuses the cached password
-- **AND** does not prompt again unless the archive file has changed or the cache is unavailable
-
-#### Scenario: Cache cleared on application exit
-- **WHEN** the application exits
-- **THEN** all cached archive passwords are discarded
-- **AND** no password is persisted to disk
 
 #### Scenario: Preview TAR archive root-level entries
 - **WHEN** user selects a .tar file in the file panel

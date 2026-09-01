@@ -1,10 +1,7 @@
-# archive-operations Specification
+## ADDED Requirements
 
-## Purpose
-TBD - created by archiving change archive-browsing-and-management. Update Purpose after archive.
-## Requirements
 ### Requirement: Visible password prompt for archive extraction
-The system SHALL provide a visible password input when an encrypted `zip` or `7z` archive requires credentials for extraction.
+The system SHALL display a visible password input when an encrypted `zip` or `7z` archive needs credentials for extraction.
 
 #### Scenario: Prompt appears on extraction failure
 - **WHEN** the user starts extracting an encrypted `zip` or `7z` archive and the backend reports that credentials are required
@@ -16,6 +13,8 @@ The system SHALL provide a visible password input when an encrypted `zip` or `7z
 - **THEN** the dialog remains open
 - **AND** the system shows an error message indicating the password is incorrect
 - **AND** the user can edit and resubmit the password
+
+## MODIFIED Requirements
 
 ### Requirement: Extract selected files from archive
 The system SHALL allow users to extract selected files from within an archive to an external directory using the `x` key in archive mode.
@@ -105,7 +104,7 @@ The system SHALL allow users to extract an entire archive to the current directo
 - **AND** displays progress in the Transfer Manager
 
 #### Scenario: Extract encrypted archive with e key
-- **WHEN** user presses `e` on an encrypted `zip` or `7z` archive file in the current panel
+- **WHEN** user presses `e` on an encrypted `zip` or `7z` archive file
 - **THEN** the system shows the password prompt if the backend reports that credentials are required
 - **AND** after a correct password, the system extracts the entire archive to the current directory
 - **AND** displays progress in the Transfer Manager

@@ -402,25 +402,42 @@ async fn read_directory(
 // ── Archive commands ────────────────────────────────────────────────
 
 #[tauri::command]
-fn read_archive_directory(
+async fn read_archive_directory(
     archive_path: String,
     internal_path: String,
+    password: Option<String>,
 ) -> Result<Vec<FileEntry>, String> {
-    archive::list_entries(&archive_path, &internal_path)
+    tokio::task::spawn_blocking(move || {
+        archive::list_entries(&archive_path, &internal_path, password)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
-fn read_archive_file(archive_path: String, internal_path: String) -> Result<Vec<u8>, String> {
-    archive::read_file_bytes(&archive_path, &internal_path)
+async fn read_archive_file(
+    archive_path: String,
+    internal_path: String,
+    password: Option<String>,
+) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        archive::read_file_bytes(&archive_path, &internal_path, password)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
 fn extract_archive_files(
+    app: tauri::AppHandle,
     archive_path: String,
     internal_paths: Vec<String>,
     dest_dir: String,
+    password: Option<String>,
 ) -> Result<(), String> {
-    archive::extract_files(&archive_path, &internal_paths, &dest_dir)
+    archive::extract_files(&archive_path, &internal_paths, &dest_dir, password)?;
+    let _ = app.emit("directory-changed", vec![dest_dir]);
+    Ok(())
 }
 
 #[tauri::command]
@@ -428,11 +445,13 @@ async fn extract_archive(
     app: tauri::AppHandle,
     archive_path: String,
     dest_dir: String,
+    password: Option<String>,
 ) -> Result<(), String> {
     let archive_path_clone = archive_path.clone();
     let dest_dir_clone = dest_dir.clone();
+    let password_clone = password.clone();
     let total_bytes = tokio::task::spawn_blocking(move || {
-        archive::extract_all(&archive_path_clone, &dest_dir_clone)
+        archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -447,6 +466,7 @@ async fn extract_archive(
         serde_json::json!({ "archive": archive_name, "dest": dest_dir, "total_bytes": total_bytes }),
     )
     .ok();
+    let _ = app.emit("directory-changed", vec![dest_dir]);
     Ok(())
 }
 

@@ -25,18 +25,22 @@
   import ConfirmModal from './ConfirmModal.svelte';
   import InputDialog from './InputDialog.svelte';
   import TransferManager from './TransferManager.svelte';
+  import ArchivePasswordDialog from './ArchivePasswordDialog.svelte';
   import { transfer, activeTransferCount } from '$lib/stores/transfer';
   import { clipboard, clipboardSummary, markSummary } from '$lib/stores/clipboard';
   import { directoryCache } from '$lib/utils/directory-cache';
+  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
   import {
     adaptLegacyTransferEvent,
     DirectoryRefreshCoordinator,
     type DirectoryKey,
+    directoryKeyId,
   } from '$lib/utils/directory-refresh';
 
   let currentPath: string = $state('');
   let leftPanelPath: string = $derived($layout.leftMode === 'manual' ? $layout.leftPath : $layout.parentPath);
   let selectedFile: string | null = $state(null);
+  let selectedFileIsDir: boolean | null = $state(null);
   let showCommandPalette: boolean = $state(false);
   let commandQuery: string = $state('');
   let commandInput: HTMLInputElement | undefined = $state(undefined);
@@ -346,6 +350,31 @@
     ];
   }
 
+  function panelMatchesChangedPath(panel: DirectoryPanel | undefined, paths: string[]): boolean {
+    if (!panel) return false;
+    const panelId = directoryKeyId(panel.getDirectoryKey());
+    return paths.some(path => directoryKeyId(path) === panelId);
+  }
+
+  async function refreshPanelsForDirectoryChanges(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+    if (currentDirectoryPanel?.getProjectTreeState().enabled) {
+      await currentDirectoryPanel.refreshProjectDirectories(paths);
+      return;
+    }
+
+    const refreshTargets = [currentDirectoryPanel, parentDirectoryPanel].filter(
+      (panel): panel is DirectoryPanel => !!panel && panelMatchesChangedPath(panel, paths)
+    );
+
+    if (refreshTargets.length > 0) {
+      await Promise.all(refreshTargets.map(panel => panel.refresh()));
+      return;
+    }
+
+    await currentDirectoryPanel?.refresh();
+  }
+
   onMount(async () => {
     refreshCoordinator = new DirectoryRefreshCoordinator({
       cache: directoryCache,
@@ -357,7 +386,7 @@
       directoryWatchTimer = setTimeout(() => {
         const paths = [...pendingDirectoryChanges];
         pendingDirectoryChanges.clear();
-        void currentDirectoryPanel?.refreshProjectDirectories(paths);
+        void refreshPanelsForDirectoryChanges(paths);
       }, 250);
     });
 
@@ -742,9 +771,10 @@
     return result;
   }
 
-  function handleSelect(filePath: string) {
+  function handleSelect(filePath: string, isDir: boolean | null = null) {
     layout.setSelectedFile(filePath);
     selectedFile = filePath;
+    selectedFileIsDir = isDir;
   }
 
   function handleActivate(filePath: string) {
@@ -757,6 +787,7 @@
     }
     layout.setSelectedFile(filePath);
     selectedFile = filePath;
+    selectedFileIsDir = false;
     if (!$layout.previewExpanded) {
       layout.expandPreview();
     }
@@ -946,10 +977,15 @@
       const archivePath = layoutVal.markPaths[0];
       const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
       try {
-        await invoke('extract_archive', { archivePath, destDir });
+        const extracted = await invokeArchiveWithOptionalPassword<number>(
+          'extract_archive',
+          { archivePath, destDir },
+          'password'
+        );
+        if (extracted === null) return;
         showToast('Archive extracted');
         layout.clearMark();
-        currentDirectoryPanel?.refresh();
+        await refreshPanelsForDirectoryChanges([destDir]);
       } catch (e) {
         showToast(`Extract failed: ${e}`);
       }
@@ -979,15 +1015,20 @@
       const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
       const internalPaths = state.entries.map((e: any) => e.path);
       try {
-        await invoke('extract_archive_files', {
-          archivePath: state.archivePath,
-          internalPaths,
-          destDir,
-        });
+        const extracted = await invokeArchiveWithOptionalPassword<number>(
+          'extract_archive_files',
+          {
+            archivePath: state.archivePath,
+            internalPaths,
+            destDir,
+          },
+          'password'
+        );
+        if (extracted === null) return;
         showToast(`${state.entries.length} ${state.entries.length === 1 ? 'file' : 'files'} extracted from archive`);
         clipboard.clear();
         layout.clearMark();
-        currentDirectoryPanel?.refresh();
+        await refreshPanelsForDirectoryChanges([destDir]);
       } catch (e) {
         showToast(`Extract failed: ${e}`);
       }
@@ -2536,6 +2577,7 @@
       <PreviewEditor
         bind:this={previewEditor}
         filePath={selectedFile}
+        selectedEntryIsDir={selectedFileIsDir}
         currentTabId={$activeTab.id}
         previewTabId={switcherActive ? switcherSelectionId : $activeTab.id}
         activeColumn={$layout.activeColumn}
@@ -2607,11 +2649,13 @@
     />
 
     <!-- Transfer Manager -->
-    <TransferManager
-      visible={showTransfer}
-      onClose={() => showTransfer = false}
-    />
-  </div>
+  <TransferManager
+    visible={showTransfer}
+    onClose={() => showTransfer = false}
+  />
+
+  <ArchivePasswordDialog />
+</div>
 
   <!-- Status Bar -->
   <div class="status-bar">

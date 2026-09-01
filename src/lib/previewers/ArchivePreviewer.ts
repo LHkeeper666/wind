@@ -1,5 +1,5 @@
 import type { Previewer } from './types';
-import { invoke } from '@tauri-apps/api/core';
+import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
 
 interface ArchiveEntry {
   name: string;
@@ -31,10 +31,14 @@ export class ArchivePreviewer implements Previewer {
     if (!filePath) return;
 
     try {
-      const entries = await invoke<ArchiveEntry[]>('read_archive_directory', {
+      const entries = await invokeArchiveWithOptionalPassword<ArchiveEntry[]>('read_archive_directory', {
         archivePath: filePath,
         internalPath: '',
-      });
+      }, 'password', 'Archive password:', { promptOnRequired: false });
+      if (entries === null) {
+        container.innerHTML = '<p class="preview-unsupported">Password required to preview this archive. Press l to enter it.</p>';
+        return;
+      }
       container.innerHTML = this.renderEntries(filePath, entries);
     } catch (err) {
       container.innerHTML = `<p class="preview-unsupported">Failed to read archive: ${err}</p>`;
