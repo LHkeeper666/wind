@@ -4,6 +4,7 @@
 
 # pdfium binaries
 /bin/pdfium.dll
+/resources/pdfium.dll
 /lib/pdfium.dll.lib
 /include/
 /licenses/

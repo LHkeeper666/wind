@@ -2,6 +2,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use tauri::Manager;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PdfInfo {
@@ -32,7 +33,7 @@ pub struct PdfSearchResult {
     matches: Vec<TextMatch>,
 }
 
-fn load_pdfium() -> Result<Pdfium, String> {
+fn load_pdfium(app_handle: &tauri::AppHandle) -> Result<Pdfium, String> {
     let lib_name = if cfg!(target_os = "windows") {
         "pdfium.dll"
     } else if cfg!(target_os = "linux") {
@@ -42,18 +43,22 @@ fn load_pdfium() -> Result<Pdfium, String> {
     };
 
     // Search directories in priority order
-    // pdfium_platform_library_name_at_path(dir) joins dir + lib_name,
-    // so we pass DIRECTORY paths, not file paths.
     let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
 
-    // 1. Next to the executable (production + cargo build)
+    // 1. Tauri resources directory (packaged app)
+    if let Ok(res_dir) = app_handle.path().resource_dir() {
+        search_dirs.push(res_dir.join("resources"));
+        search_dirs.push(res_dir);
+    }
+
+    // 2. Next to the executable (cargo build)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(dir) = exe_path.parent() {
             search_dirs.push(dir.to_path_buf());
         }
     }
 
-    // 2. In the src-tauri/bin directory (development)
+    // 3. In the src-tauri/bin directory (development)
     if let Ok(cwd) = std::env::current_dir() {
         search_dirs.push(cwd.join("src-tauri").join("bin"));
         search_dirs.push(cwd.join("bin"));
@@ -90,7 +95,7 @@ fn load_pdfium() -> Result<Pdfium, String> {
 }
 
 #[tauri::command]
-pub fn get_pdf_info(path: String) -> Result<PdfInfo, String> {
+pub fn get_pdf_info(path: String, app_handle: tauri::AppHandle) -> Result<PdfInfo, String> {
     let file_path = std::path::Path::new(&path);
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", path));
@@ -100,7 +105,7 @@ pub fn get_pdf_info(path: String) -> Result<PdfInfo, String> {
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let pdfium = load_pdfium()?;
+    let pdfium = load_pdfium(&app_handle)?;
     let document = pdfium
         .load_pdf_from_file(&path, None)
         .map_err(|e| format!("Failed to load PDF: {:?}", e))?;
@@ -124,8 +129,8 @@ pub fn get_pdf_info(path: String) -> Result<PdfInfo, String> {
 }
 
 #[tauri::command]
-pub fn render_pdf_page(path: String, page: u32, scale: Option<f64>) -> Result<PdfPageResult, String> {
-    let pdfium = load_pdfium()?;
+pub fn render_pdf_page(path: String, page: u32, scale: Option<f64>, app_handle: tauri::AppHandle) -> Result<PdfPageResult, String> {
+    let pdfium = load_pdfium(&app_handle)?;
     let document = pdfium
         .load_pdf_from_file(&path, None)
         .map_err(|e| format!("Failed to load PDF: {:?}", e))?;
@@ -187,12 +192,12 @@ fn encode_png(rgba_data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Stri
 }
 
 #[tauri::command]
-pub fn search_pdf_text(path: String, query: String) -> Result<Vec<PdfSearchResult>, String> {
+pub fn search_pdf_text(path: String, query: String, app_handle: tauri::AppHandle) -> Result<Vec<PdfSearchResult>, String> {
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let pdfium = load_pdfium()?;
+    let pdfium = load_pdfium(&app_handle)?;
     let document = pdfium
         .load_pdf_from_file(&path, None)
         .map_err(|e| format!("Failed to load PDF: {:?}", e))?;
