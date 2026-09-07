@@ -4,7 +4,6 @@ import { MarkdownPreviewer } from './MarkdownPreviewer';
 import { ImagePreviewer } from './ImagePreviewer';
 import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
-import { PdfPreviewer } from './PdfPreviewer';
 import { VideoPreviewer } from './VideoPreviewer';
 import { IpynbPreviewer } from './IpynbPreviewer';
 
@@ -20,7 +19,6 @@ export class PreviewRouter {
       new IpynbPreviewer(),
       new JsonPreviewer(),
       new MarkdownPreviewer(),
-      new PdfPreviewer(),
       new VideoPreviewer(),
       new ImagePreviewer(),
       new TextPreviewer(), // Fallback

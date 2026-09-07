@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
-
-  interface TextMatch {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }
-
-  interface PdfSearchResult {
-    page: number;
-    matches: TextMatch[];
-  }
+  import {
+    type PdfPageData,
+    type PdfSearchState,
+    PdfPageCache,
+    fetchPdfPage,
+    preloadPdfPages,
+    drawPageWithHighlights,
+    drawSearchHighlights,
+    searchPdfText,
+    navigateSearchMatch,
+    getTotalMatchCount,
+    RENDER_SCALE,
+  } from '$lib/utils/pdf-shared';
 
   let {
     pdfPath,
@@ -38,7 +38,7 @@
   let overlayEl: HTMLDivElement | undefined = $state(undefined);
 
   // Current page image data (fetched from backend)
-  let pageData: { data: string; width: number; height: number } | null = $state(null);
+  let pageData: PdfPageData | null = $state(null);
   let pageWidth = $state(0);
   let pageHeight = $state(0);
   let isLoading = $state(true);
@@ -54,21 +54,16 @@
   let showSearch = $state(false);
   let searchQuery = $state('');
   let searchInput: HTMLInputElement | undefined = $state(undefined);
-  let searchResults: PdfSearchResult[] = $state([]);
-  let currentMatchIndex = $state(0);
-  let currentMatchPage = $state(0);
+  let searchState: PdfSearchState = $state({ results: [], currentMatchPage: 0, currentMatchIndex: 0 });
   let isSearching = $state(false);
   let searchStatus = $state('');
 
   // Preload cache
-  let pageCache: Map<number, { data: string; width: number; height: number }> = new Map();
-  let preloadingPages: Set<number> = new Set();
+  let pageCache = new PdfPageCache();
 
   const PAN_STEP = 100;
   const ZOOM_STEP = 0.25;
   const MIN_SCALE = 0.1;
-  const RENDER_SCALE = 1.5;
-  const PRELOAD_RANGE = 2;
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -76,49 +71,13 @@
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  // Fetch page data from backend
-  async function fetchPage(pageNum: number): Promise<{ data: string; width: number; height: number }> {
-    const cached = pageCache.get(pageNum);
-    if (cached) return cached;
-
-    const result = await invoke<{ data: string; width: number; height: number }>('render_pdf_page', {
-      path: pdfPath,
-      page: pageNum,
-      scale: RENDER_SCALE,
-    });
-    pageCache.set(pageNum, result);
-    return result;
-  }
-
-  // Draw page data onto canvas
-  function drawToCanvas(data: { data: string; width: number; height: number }) {
+  // Draw page data onto canvas with search highlights
+  async function drawToCanvas(data: PdfPageData) {
     if (!canvasEl) return;
-
-    const binary = atob(data.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const blob = new Blob([bytes.buffer], { type: 'image/png' });
-    const url = URL.createObjectURL(blob);
-
-    const img = new Image();
-    img.onload = () => {
-      if (!canvasEl) { URL.revokeObjectURL(url); return; }
-
-      canvasEl.width = data.width;
-      canvasEl.height = data.height;
+    try {
+      await drawPageWithHighlights(canvasEl, data, searchState, currentPage);
       pageWidth = data.width;
       pageHeight = data.height;
-
-      const ctx = canvasEl.getContext('2d');
-      if (!ctx) { URL.revokeObjectURL(url); return; }
-
-      ctx.clearRect(0, 0, data.width, data.height);
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-
-      drawSearchHighlights(ctx, data.height);
 
       // Fit to screen
       if (viewportEl) {
@@ -128,14 +87,11 @@
         translateX = 0;
         translateY = 0;
       }
-    };
-    img.onerror = () => {
+    } catch {
       hasError = true;
       errorMessage = 'Failed to load page image';
       isLoading = false;
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
+    }
   }
 
   // When canvasEl becomes available AND we have page data, draw
@@ -154,7 +110,7 @@
     hasError = false;
 
     try {
-      const data = await fetchPage(pageNum);
+      const data = await fetchPdfPage(pdfPath, pageNum, pageCache);
       pageData = data;
       isLoading = false;
     } catch (error) {
@@ -164,49 +120,13 @@
       isLoading = false;
     }
 
-    preloadPages(pageNum);
-  }
-
-  async function preloadPages(currentPageNum: number) {
-    for (let i = -PRELOAD_RANGE; i <= PRELOAD_RANGE; i++) {
-      const targetPage = currentPageNum + i;
-      if (targetPage < 0 || targetPage >= totalPages || targetPage === currentPageNum) continue;
-      if (pageCache.has(targetPage) || preloadingPages.has(targetPage)) continue;
-
-      preloadingPages.add(targetPage);
-      try {
-        await fetchPage(targetPage);
-      } catch (e) {
-        // ignore preload errors
-      } finally {
-        preloadingPages.delete(targetPage);
-      }
-    }
+    preloadPdfPages(pdfPath, pageNum, totalPages, pageCache);
   }
 
   // Search
-  function drawSearchHighlights(ctx: CanvasRenderingContext2D, pageHeight: number) {
-    const pageMatches = searchResults.find(r => r.page === currentPage);
-    if (!pageMatches || pageMatches.matches.length === 0) return;
-
-    for (let i = 0; i < pageMatches.matches.length; i++) {
-      const match = pageMatches.matches[i];
-      const isActive = currentPage === currentMatchPage && i === currentMatchIndex;
-
-      ctx.fillStyle = isActive ? 'rgba(255, 165, 0, 0.5)' : 'rgba(255, 255, 0, 0.35)';
-
-      const x = match.x * RENDER_SCALE;
-      const y = pageHeight - (match.y + match.height) * RENDER_SCALE;
-      const w = match.width * RENDER_SCALE;
-      const h = match.height * RENDER_SCALE;
-
-      ctx.fillRect(x, y, w, h);
-    }
-  }
-
   async function performSearch() {
     if (!searchQuery.trim()) {
-      searchResults = [];
+      searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 };
       searchStatus = '';
       return;
     }
@@ -215,27 +135,21 @@
     searchStatus = 'Searching...';
 
     try {
-      const results = await invoke<PdfSearchResult[]>('search_pdf_text', {
-        path: pdfPath,
-        query: searchQuery.trim(),
-      });
-
-      searchResults = results;
+      const results = await searchPdfText(pdfPath, searchQuery);
       const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
 
       if (totalMatches === 0) {
+        searchState = { results, currentMatchPage: 0, currentMatchIndex: 0 };
         searchStatus = 'No results';
-        currentMatchIndex = 0;
-        currentMatchPage = 0;
       } else {
+        searchState = {
+          results,
+          currentMatchPage: results[0].page,
+          currentMatchIndex: 0,
+        };
         searchStatus = `${totalMatches} matches`;
-        currentMatchPage = results[0].page;
-        currentMatchIndex = 0;
-        if (currentMatchPage !== currentPage) {
-          await goToPage(currentMatchPage);
-        } else {
-          // Redraw with highlights
-          if (pageData) drawToCanvas(pageData);
+        if (results[0].page !== currentPage) {
+          await goToPage(results[0].page);
         }
       }
     } catch (error) {
@@ -246,47 +160,26 @@
     }
   }
 
-  function navigateMatch(direction: 'next' | 'prev') {
-    if (searchResults.length === 0) return;
+  async function navigateMatch(direction: 'next' | 'prev') {
+    const target = navigateSearchMatch(direction, searchState);
+    if (!target) return;
 
-    const allMatches: { page: number; index: number }[] = [];
-    for (const result of searchResults) {
-      for (let i = 0; i < result.matches.length; i++) {
-        allMatches.push({ page: result.page, index: i });
-      }
-    }
-
-    let currentPos = allMatches.findIndex(
-      m => m.page === currentMatchPage && m.index === currentMatchIndex
-    );
-
-    if (currentPos === -1) {
-      currentPos = 0;
-    } else if (direction === 'next') {
-      currentPos = (currentPos + 1) % allMatches.length;
-    } else {
-      currentPos = (currentPos - 1 + allMatches.length) % allMatches.length;
-    }
-
-    const target = allMatches[currentPos];
-    currentMatchPage = target.page;
-    currentMatchIndex = target.index;
+    searchState = {
+      ...searchState,
+      currentMatchPage: target.page,
+      currentMatchIndex: target.index,
+    };
 
     if (target.page !== currentPage) {
-      goToPage(target.page);
-    } else if (pageData) {
-      drawToCanvas(pageData);
+      await goToPage(target.page);
     }
   }
 
   function closeSearch() {
     showSearch = false;
     searchQuery = '';
-    searchResults = [];
+    searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 };
     searchStatus = '';
-    currentMatchIndex = 0;
-    currentMatchPage = 0;
-    if (pageData) drawToCanvas(pageData);
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -299,7 +192,7 @@
       if (event.key === 'Enter') {
         event.preventDefault();
         if (event.shiftKey) navigateMatch('prev');
-        else if (searchResults.length > 0) navigateMatch('next');
+        else if (searchState.results.length > 0) navigateMatch('next');
         else performSearch();
         return;
       }
@@ -386,7 +279,7 @@
         onkeydown={(e) => {
           if (e.key === 'Escape') closeSearch();
           if (e.key === 'Enter') {
-            if (searchResults.length > 0) navigateMatch(e.shiftKey ? 'prev' : 'next');
+            if (searchState.results.length > 0) navigateMatch(e.shiftKey ? 'prev' : 'next');
             else performSearch();
           }
         }}

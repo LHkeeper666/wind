@@ -28,6 +28,10 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler, setupAllVimCommands, getRegistersOutput } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import PdfPreviewPanel from './PdfPreviewPanel.svelte';
+  import PdfTocSidebar from './PdfTocSidebar.svelte';
+  import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
+  import { fetchPdfOutline } from '$lib/utils/pdf-shared';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
   import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
@@ -338,6 +342,7 @@
   let tocHeadings: TocHeading[] = $state([]);
   let tocActiveLine: number = $state(-1);
   let tocSidebar: TocSidebar | undefined = $state(undefined);
+  let pdfPreviewPanel: PdfPreviewPanel | undefined = $state(undefined);
   let tocFocused: boolean = $state(false);
   let tocOpen: boolean = $state(true);
   let pendingTocExpanded: Set<number> | null = null;
@@ -386,6 +391,9 @@
     isModified: boolean;
     pdfCurrentPage: number;
     pdfPageCount: number;
+    pdfPageDimensions: PdfPageDimensions[];
+    pdfOutline: PdfOutlineItem[];
+    pdfTocOpen: boolean;
     fileMtime: number;
     tocOpen: boolean;
     tocHeadings: TocHeading[];
@@ -454,7 +462,7 @@
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: tabSlots.get(tabId)?.scrollTop ?? 0,
-      isModified, pdfCurrentPage, pdfPageCount, fileMtime: currentFileMtime,
+      isModified, pdfCurrentPage, pdfPageCount, pdfPageDimensions: [...pdfPageDimensions], pdfOutline: [...pdfOutline], pdfTocOpen, fileMtime: currentFileMtime,
       tocOpen, tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
       tocFocused, tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
@@ -660,7 +668,7 @@
           pendingPreviewLine = editorView.state.doc.lineAt(block.from).number - 1;
         }
       }
-      if (previewWithToc) previewWithToc.style.display = '';
+      if (previewWithToc) previewWithToc.style.display = (filePath && isPdfFile(filePath)) ? 'none' : '';
       if (editorContainer) editorContainer.style.display = 'none';
       hideEditorSessions();
       if (editorView) closeSearchPanel(editorView);
@@ -689,6 +697,7 @@
   $effect(() => {
     if (mode !== 'global-normal') return;
     if (!previewArea || !filePath) return;
+    if (isPdfFile(filePath)) return; // PDF uses PdfPreviewPanel component
     if (codeFileDirectEdit && content) {
       renderSimpleCodePreview();
     } else if (content || binaryContent) {
@@ -714,6 +723,10 @@
 
   function handlePanelFocus() {
     if (outputVisible) return;
+    if (mode === 'global-normal' && filePath && isPdfFile(filePath)) {
+      pdfPreviewPanel?.focusPanel();
+      return;
+    }
     if (mode === 'editor-normal' || mode === 'editor-insert') { focusActiveEditor(); }
     else if (mode === 'global-normal' && codeFileDirectEdit && filePath) {
       mode = 'editor-normal';
@@ -827,7 +840,11 @@
   let pdfCurrentPage: number = $state(0);
   let pdfFileSize: number = $state(0);
   let pdfTitle: string | null = $state(null);
-  let pdfRenderScale: number = 1.5;
+  let pdfPageDimensions: PdfPageDimensions[] = $state([]);
+  let pdfOutline: PdfOutlineItem[] = $state([]);
+  let pdfTocOpen: boolean = $state(false);
+  let pdfTocFocused: boolean = $state(false);
+  let pdfTocSidebar: PdfTocSidebar | undefined = $state(undefined);
 
   async function loadFile(path: string) {
     const t0 = performance.now();
@@ -864,6 +881,9 @@
       isModified = cached.isModified;
       pdfCurrentPage = cached.pdfCurrentPage;
       pdfPageCount = cached.pdfPageCount;
+      pdfPageDimensions = cached.pdfPageDimensions ?? [];
+      pdfOutline = cached.pdfOutline ?? [];
+      pdfTocOpen = cached.pdfTocOpen ?? false;
       currentFileMtime = cached.fileMtime;
       tocOpen = cached.tocOpen;
       tocFocused = cached.tocFocused;
@@ -1042,17 +1062,26 @@
 
     // PDF
     if (isPdfFile(path)) {
+      content = ''; binaryContent = null; mode = 'global-normal';
+      // Clear old preview slot content immediately
+      const slot = getActiveSlot();
+      if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
       try {
-        const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number }>('get_pdf_info', { path });
+        const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number; page_dimensions: PdfPageDimensions[] }>('get_pdf_info', { path });
         if (gen !== loadGeneration) return;
-        pdfPageCount = info.page_count; pdfCurrentPage = 0; pdfFileSize = info.file_size; pdfTitle = info.title;
-        await loadPdfPage(path, 0, gen);
-        if (gen !== loadGeneration) return;
-        content = '[PDF]'; mode = 'global-normal'; renderPreview();
+        pdfPageCount = info.page_count; pdfCurrentPage = 0; pdfFileSize = info.file_size; pdfTitle = info.title; pdfPageDimensions = info.page_dimensions;
+        // Fetch outline (non-blocking, don't fail on outline errors)
+        fetchPdfOutline(path).then(outline => {
+          console.log(`[pdf] outline loaded: ${outline.length} items`, outline.length > 0 ? outline[0] : '(empty)');
+          if (gen === loadGeneration) {
+            pdfOutline = outline;
+            if (outline.length > 0) pdfTocOpen = true;
+          }
+        }).catch((e) => { console.error('[pdf] outline fetch failed:', e); pdfOutline = []; });
       } catch (error) {
         if (gen !== loadGeneration) return;
         console.error('Failed to load PDF:', error);
-        pdfPageCount = 0; pdfCurrentPage = 0; content = ''; binaryContent = null;
+        pdfPageCount = 0; pdfCurrentPage = 0; pdfPageDimensions = []; pdfOutline = [];
       }
       return;
     }
@@ -1237,7 +1266,6 @@
         tocSidebar?.focus();
       });
     }
-    if (isPdfFile(path) && pdfPageCount > 0) { addPdfInfoBar(slot); }
     if (isMarkdown) { setupScrollObserver(); }
   }
 
@@ -1297,23 +1325,6 @@
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  function addPdfInfoBar(container: HTMLElement) {
-    container.querySelector('.pdf-info-bar')?.remove();
-    const bar = document.createElement('div');
-    bar.className = 'pdf-info-bar image-info-bar';
-    const info = document.createElement('span');
-    info.textContent = `${pdfCurrentPage + 1}/${pdfPageCount}`;
-    if (pdfFileSize > 0) info.textContent += ` · ${formatSize(pdfFileSize)}`;
-    if (pdfTitle) info.textContent += ` · ${pdfTitle}`;
-    bar.appendChild(info);
-    const hints = document.createElement('span');
-    hints.className = 'pdf-hints';
-    hints.textContent = 'J/K:翻页 E:全屏';
-    hints.style.color = '#666'; hints.style.fontSize = '11px';
-    bar.appendChild(hints);
-    container.appendChild(bar);
-  }
-
   async function renderDirectoryPreview() {
     const slot = getOrCreateSlot(renderTabId);
     showTabSlot(renderTabId);
@@ -1332,20 +1343,6 @@
     slot.dataset.filePath = path;
     await getPreviewRouter().preview(path, '', slot);
     if (requestId !== renderRequestId) return;
-  }
-
-  async function loadPdfPage(path: string, page: number, gen?: number) {
-    const g = gen ?? loadGeneration;
-    try {
-      const result = await invoke<{ data: string; width: number; height: number }>('render_pdf_page', { path, page, scale: pdfRenderScale });
-      if (g !== loadGeneration) return;
-      const binary = atob(result.data); const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      binaryContent = bytes.buffer; pdfCurrentPage = page;
-    } catch (error) {
-      if (g !== loadGeneration) return;
-      console.error(`Failed to render PDF page ${page}:`, error);
-    }
   }
 
   function initEditor(textSnapshot: TextContentSnapshot) {
@@ -1748,6 +1745,8 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (mode !== 'global-normal') return;
+    // PDF mode: let PdfPreviewPanel handle all non-modifier keys
+    if (filePath && isPdfFile(filePath) && !event.ctrlKey && !event.altKey && !event.metaKey) return;
     if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
@@ -1755,8 +1754,6 @@
     else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(-40); }
     else if (event.code === 'KeyH' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, -40); }
     else if (event.code === 'KeyL' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, 40); }
-    else if (event.code === 'KeyJ' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { if (filePath && isPdfFile(filePath) && pdfCurrentPage < pdfPageCount - 1) { event.preventDefault(); loadPdfPage(filePath, pdfCurrentPage + 1); } }
-    else if (event.code === 'KeyK' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { if (filePath && isPdfFile(filePath) && pdfCurrentPage > 0) { event.preventDefault(); loadPdfPage(filePath, pdfCurrentPage - 1); } }
     else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const ggSlot = getActiveSlot(); if (ggSlot) ggSlot.scrollTop = 0; }
     else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const gSlot = getActiveSlot(); if (gSlot) gSlot.scrollTop = gSlot.scrollHeight; }
     else if (event.ctrlKey && event.code === 'KeyS') { event.preventDefault(); saveFile(); }
@@ -1799,7 +1796,14 @@
   export function getContent(): string { return content; }
   export function getFile(): string | null { return filePath; }
   export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } { return { currentPage: pdfCurrentPage, pageCount: pdfPageCount, filePath }; }
-  export function setPdfPage(page: number) { if (filePath && isPdfFile(filePath) && page >= 0 && page < pdfPageCount) { loadPdfPage(filePath, page); } }
+  export function togglePdfToc() {
+    if (pdfOutline.length === 0) return;
+    pdfTocOpen = !pdfTocOpen;
+    if (pdfTocOpen) { setTimeout(() => pdfTocSidebar?.focus(), 0); }
+  }
+  export function jumpToPdfPage(page: number) {
+    pdfPreviewPanel?.scrollToPage(page);
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1856,10 +1860,49 @@
         ☰
       </button>
     {/if}
+    {#if filePath && isPdfFile(filePath) && pdfOutline.length > 0 && mode === 'global-normal'}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <button
+        class="toc-toggle"
+        class:closed={!pdfTocOpen}
+        onclick={() => togglePdfToc()}
+        title={pdfTocOpen ? 'Hide outline' : 'Show outline'}
+      >
+        ☰
+      </button>
+    {/if}
   </div>
 
   <div class="panel-content">
-    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={!filePath && !batchRenameTempPath} class:modeHidden={mode !== 'global-normal'}>
+    {#if filePath && isPdfFile(filePath) && mode === 'global-normal'}
+      <div class="pdf-with-toc">
+        <PdfPreviewPanel
+          bind:this={pdfPreviewPanel}
+          pdfPath={filePath}
+          pageDimensions={pdfPageDimensions}
+          pageCount={pdfPageCount}
+          fileSize={pdfFileSize}
+          title={pdfTitle}
+          onPageChange={(page: number) => { pdfCurrentPage = page; }}
+          onFullscreen={() => onFullscreen()}
+        />
+        {#if pdfOutline.length > 0 && pdfTocOpen}
+          <PdfTocSidebar
+            bind:this={pdfTocSidebar}
+            outline={pdfOutline}
+            currentPage={pdfCurrentPage}
+            pageDimensions={pdfPageDimensions}
+            onJump={(page, y) => {
+              if (page >= 0 && page < pdfPageCount) {
+                pdfPreviewPanel?.scrollToPage(page);
+              }
+            }}
+            onFocusChange={(focused) => { pdfTocFocused = focused; }}
+          />
+        {/if}
+      </div>
+    {/if}
+    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={(!filePath && !batchRenameTempPath) || (filePath && isPdfFile(filePath) && mode === 'global-normal')} class:modeHidden={mode !== 'global-normal'}>
       <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
       {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
         <TocSidebar
@@ -2013,6 +2056,8 @@
   .preview-with-toc { display: flex; width: 100%; height: 100%; }
   .preview-with-toc.modeHidden { display: none; }
   .preview-with-toc.hidden { display: none; }
+
+  .pdf-with-toc { display: flex; width: 100%; height: 100%; }
 
   .preview-area { flex: 1; min-width: 0; height: 100%; overflow: hidden; position: relative; }
 

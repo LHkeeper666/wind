@@ -1595,6 +1595,14 @@
       if (event.key !== 'Escape' && !event.ctrlKey) return;
     }
 
+    // Skip keys when focus is inside PdfPreviewPanel (let the component handle them)
+    if (target instanceof Element && target.closest('.pdf-preview-panel')) {
+      // Non-modifier keys: always let PDF panel handle
+      if (!event.ctrlKey && !event.altKey && !event.metaKey) return;
+      // Ctrl+=/-: let PDF panel handle zoom
+      if (event.ctrlKey && (event.key === '=' || event.key === '+' || event.key === '-')) return;
+    }
+
     // Tab / Shift+Tab: prevent native focus switching
     // Skip when command palette is open (Tab = path completion)
     if (event.key === 'Tab' && !showCommandPalette) {
@@ -1935,6 +1943,9 @@
 
   function handleGlobalWheel(event: WheelEvent) {
     if (!event.ctrlKey) return;
+    // Skip Ctrl+wheel zoom when inside PdfPreviewPanel (let the component handle it)
+    const target = event.target as HTMLElement | null;
+    if (target instanceof Element && target.closest('.pdf-preview-panel')) return;
     event.preventDefault();
     applyZoom(zoomLevel + (event.deltaY < 0 ? 0.1 : -0.1));
   }
@@ -2208,6 +2219,25 @@
         showHelp = true;
         return;
       }
+      // PDF toc command
+      if (q === 'toc') {
+        previewEditor?.togglePdfToc();
+        showCommandPalette = false;
+        focusPanel('preview');
+        return;
+      }
+
+      // PDF page jump: :number
+      if (/^\d+$/.test(q)) {
+        const pageNum = parseInt(q);
+        if (pageNum >= 1) {
+          previewEditor?.jumpToPdfPage(pageNum - 1);
+          showCommandPalette = false;
+          focusPanel('preview');
+          return;
+        }
+      }
+
       // Ratio command
       if (q === 'ratio') {
         layout.setRatios([1, 1, 3]);
