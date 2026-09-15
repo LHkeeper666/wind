@@ -19,6 +19,7 @@ use tauri::Manager;
 
 struct CachedDoc {
     doc: PdfDocument<'static>,
+    last_used: u64,
     /// Keep the bytes alive (PdfDocument may own them via load_pdf_from_byte_vec,
     /// but for load_pdf_from_file the OS keeps the file mapped).
     _bytes: Option<Vec<u8>>,
@@ -27,7 +28,10 @@ struct CachedDoc {
 struct PdfDocCache {
     pdfium: *mut Pdfium,
     docs: HashMap<String, CachedDoc>,
+    clock: u64,
 }
+
+const MAX_CACHED_DOCUMENTS: usize = 4;
 
 // SAFETY: Pdfium is Send+Sync (the `sync` + `thread_safe` features ensure this).
 // The raw pointer is only dereferenced while we hold the mutex.
@@ -52,13 +56,24 @@ fn with_cached_doc<T>(
         *guard = Some(PdfDocCache {
             pdfium: Box::into_raw(Box::new(pdfium)),
             docs: HashMap::new(),
+            clock: 0,
         });
     }
 
     let cache = guard.as_mut().unwrap();
+    cache.clock = cache.clock.wrapping_add(1);
 
     // Load document if not cached
     if !cache.docs.contains_key(path) {
+        if cache.docs.len() >= MAX_CACHED_DOCUMENTS {
+            if let Some(oldest_path) = cache.docs
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(path, _)| path.clone())
+            {
+                cache.docs.remove(&oldest_path);
+            }
+        }
         // SAFETY: pdfium pointer is valid — we created it from Box::into_raw
         // and never free it. The cache is behind a Mutex so no concurrent access.
         let pdfium_ref = unsafe { &*cache.pdfium };
@@ -77,8 +92,11 @@ fn with_cached_doc<T>(
 
         cache.docs.insert(path.to_string(), CachedDoc {
             doc: doc_static,
+            last_used: cache.clock,
             _bytes: None,
         });
+    } else if let Some(cached) = cache.docs.get_mut(path) {
+        cached.last_used = cache.clock;
     }
 
     let cached = cache.docs.get(path).unwrap();

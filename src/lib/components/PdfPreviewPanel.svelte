@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import {
     type PdfPageData,
     type PdfPageDimensions,
@@ -13,10 +14,9 @@
     RENDER_SCALE,
     cumulativePageOffsets,
     pageAtScrollPosition,
-    scrollToPosition,
     fetchPdfPageLinks,
     clearLinkCache,
-    preloadPdfPages,
+    PdfRenderScheduler,
   } from '$lib/utils/pdf-shared';
 
   let {
@@ -41,6 +41,7 @@
   let currentPage = $state(0);
   let totalPages = $derived(pageCount);
   let scale = $state(1);
+  let scaleInitialized = false;
   let isLoading = $state(true);
   let hasError = $state(false);
   let errorMessage = $state('');
@@ -60,8 +61,9 @@
   let searchStatus = $state('');
 
   // Cache
-  let pageCache = new PdfPageCache();
-  let lowResCache = new PdfPageCache(); // low-res progressive cache
+  let pageCache = new PdfPageCache(80 * 1024 * 1024);
+  let lowResCache = new PdfPageCache(16 * 1024 * 1024); // low-res progressive cache
+  let renderScheduler = new PdfRenderScheduler();
   let linkCache = new Map<number, PdfLinkAnnotation[]>();
   let resizeObserver: ResizeObserver | undefined;
 
@@ -70,12 +72,19 @@
 
   // Track which pages have canvas elements rendered
   let renderedPages = new Set<number>();
-  // Track which pages have in-flight render operations (prevents duplicate fetches)
-  let renderingPages = new Set<number>();
+  // Track in-flight work separately so a low-res task cannot hide a missing high-res upgrade.
+  let lowRenderingPages = new Set<number>();
+  let highRenderingPages = new Set<number>();
   // Track which pages have link overlays loaded
   let loadedLinks = new Set<number>();
   // Request cancellation: incremented on viewport changes to skip stale renders
   let renderGeneration = 0;
+  let lastRenderRangeStart = -1;
+  let lastRenderRangeEnd = -1;
+  let renderRetryScheduled = false;
+  let jumpToken = 0;
+  let programmaticScroll = false;
+  let jumpOverflowAnchor = '';
 
   const BUFFER_PAGES = 3;
   const SCROLL_STEP = 40;
@@ -85,6 +94,21 @@
   const LOW_RES_PRELOAD = 15; // wider preload range for low-res
   const MIN_SCALE = 0.3;
   const MAX_SCALE = 5.0;
+
+  function scheduleRenderRetry() {
+    if (renderRetryScheduled) return;
+    renderRetryScheduled = true;
+    requestAnimationFrame(() => {
+      renderRetryScheduled = false;
+      updatePageRendering();
+    });
+  }
+
+  let viewportWidth = $state(0);
+  let pageTrackWidth = $derived.by(() => {
+    const widestPage = pageDimensions.length > 0 ? Math.max(...pageDimensions.map(d => d.width * scale)) : 0;
+    return Math.max(viewportWidth, widestPage);
+  });
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -98,12 +122,13 @@
 
   // Initialize scale to fit first page width
   function initScale() {
-    if (!scrollEl || pageDimensions.length === 0) return;
+    if (scaleInitialized || !scrollEl || pageDimensions.length === 0) return;
     const vw = scrollEl.clientWidth;
     if (vw === 0) return;
     // Fit the widest page to viewport width
     const maxPageW = Math.max(...pageDimensions.map(d => d.width));
     scale = Math.min(vw / maxPageW, 1);
+    scaleInitialized = true;
   }
 
   // Update current page from scroll position
@@ -117,8 +142,9 @@
   }
 
   // Draw a canvas from page data and insert into slot
-  function drawCanvasIntoSlot(slot: HTMLElement, pageNum: number, data: PdfPageData, tag?: string) {
+  function drawCanvasIntoSlot(slot: HTMLElement, pageNum: number, data: PdfPageData, tag?: string, generation?: number) {
     const t0 = performance.now();
+    if (generation !== undefined) slot.dataset.renderGeneration = String(generation);
     const canvas = document.createElement('canvas');
     canvas.className = 'pdf-canvas';
 
@@ -133,6 +159,20 @@
 
     const img = new Image();
     img.onload = () => {
+      if (generation !== undefined && generation !== renderGeneration) {
+        URL.revokeObjectURL(url);
+        if (slot.dataset.renderGeneration === String(generation)) {
+          renderedPages.delete(pageNum);
+          canvasRefs.delete(pageNum);
+        }
+        return;
+      }
+      const incomingQuality = tag?.includes('high') ? 2 : 1;
+      const existingQuality = Number(slot.dataset.renderQuality || '0');
+      if (incomingQuality < existingQuality) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       const tLoad = performance.now();
       console.log(`[pdf-perf] img.onload p${pageNum} ${tag || ''}`);
       canvas.width = data.width;
@@ -158,6 +198,7 @@
       wrapper.appendChild(canvas);
       slot.innerHTML = '';
       slot.appendChild(wrapper);
+      slot.dataset.renderQuality = String(incomingQuality);
 
       // Track canvas ref for reactive size updates
       canvasRefs.set(pageNum, canvas);
@@ -167,6 +208,9 @@
     };
     img.onerror = (e) => {
       URL.revokeObjectURL(url);
+      if (generation !== undefined && generation !== renderGeneration) return;
+      const incomingQuality = tag?.includes('high') ? 2 : 1;
+      if (incomingQuality < Number(slot.dataset.renderQuality || '0')) return;
       console.error(`[pdf-perf] img.onerror p${pageNum} ${tag || ''} blobUrl=${url.substring(0, 30)} dataSize=${data.data.length}`);
       slot.innerHTML = `<div class="pdf-page-error">Page ${pageNum + 1}</div>`;
     };
@@ -174,54 +218,92 @@
   }
 
   // Render a single page using cached data (no Tauri invoke, synchronous draw)
-  function renderPageFromCache(pageNum: number, slot: HTMLElement, data: PdfPageData) {
+  function renderPageFromCache(pageNum: number, slot: HTMLElement, data: PdfPageData, generation = renderGeneration, tag = 'cache') {
     renderedPages.add(pageNum);
-    drawCanvasIntoSlot(slot, pageNum, data, 'cache');
+    drawCanvasIntoSlot(slot, pageNum, data, tag, generation);
   }
 
-  // Render a page with progressive loading: low-res first, then high-res upgrade.
-  // Uses renderingPages to prevent duplicate concurrent fetches.
-  async function renderPage(pageNum: number, slot: HTMLElement) {
-    // High-res already cached — instant draw
+  function queueHighRender(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2, generation: number) {
     const highCached = pageCache.get(pageNum);
     if (highCached) {
+      if (slot.dataset.renderQuality !== '2') renderPageFromCache(pageNum, slot, highCached, generation, 'high-res-cached');
+      return;
+    }
+    if (highRenderingPages.has(pageNum)) return;
+
+    highRenderingPages.add(pageNum);
+    console.log(`[pdf-scheduler] enqueue page=${pageNum} variant=high priority=${priority} gen=${generation}`);
+    let stale = false;
+    renderScheduler.enqueue(
+      () => {
+        console.log(`[pdf-scheduler] start page=${pageNum} variant=high gen=${generation}`);
+        return fetchPdfPage(pdfPath, pageNum, pageCache, undefined, () => generation === renderGeneration);
+      },
+      priority,
+      generation,
+    ).then((data) => {
+      if (generation !== renderGeneration) {
+        stale = true;
+        console.log(`[pdf-scheduler] discard page=${pageNum} variant=high gen=${generation}`);
+        return;
+      }
+      lowResCache.delete(pageNum);
       renderedPages.add(pageNum);
-      drawCanvasIntoSlot(slot, pageNum, highCached, 'high-res-cached');
-      return;
-    }
+      console.log(`[pdf-scheduler] commit page=${pageNum} variant=high gen=${generation}`);
+      drawCanvasIntoSlot(slot, pageNum, data, 'high-res', generation);
+    }).catch((error) => {
+      stale = generation !== renderGeneration;
+      if (!stale) console.error(`Failed to render high-res page ${pageNum}:`, error);
+    }).finally(() => {
+      highRenderingPages.delete(pageNum);
+      if (stale) scheduleRenderRetry();
+    });
+  }
 
-    // Already showing content — schedule high-res upgrade only (if not already in flight)
-    if (renderedPages.has(pageNum)) {
-      if (renderingPages.has(pageNum)) return;
-      renderingPages.add(pageNum);
-      fetchPdfPage(pdfPath, pageNum, pageCache).then((data) => {
-        drawCanvasIntoSlot(slot, pageNum, data, 'high-res-upgrade');
-      }).catch(() => {}).finally(() => renderingPages.delete(pageNum));
-      return;
-    }
+  function queueLowRender(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2, generation: number) {
+    if (pageCache.has(pageNum) || lowResCache.has(pageNum) || lowRenderingPages.has(pageNum)) return;
 
-    // Nothing rendered yet — prevent duplicate fetches
-    if (renderingPages.has(pageNum)) return;
-    renderingPages.add(pageNum);
-
-    try {
-      // Low-res first (fast, ~40ms)
-      const lowData = await fetchPdfPage(pdfPath, pageNum, lowResCache, LOW_RES_SCALE);
+    lowRenderingPages.add(pageNum);
+    console.log(`[pdf-scheduler] enqueue page=${pageNum} variant=low priority=${priority} gen=${generation}`);
+    let stale = false;
+    renderScheduler.enqueue(
+      () => {
+        console.log(`[pdf-scheduler] start page=${pageNum} variant=low gen=${generation}`);
+        return fetchPdfPage(pdfPath, pageNum, lowResCache, LOW_RES_SCALE, () => generation === renderGeneration);
+      },
+      priority,
+      generation,
+    ).then((data) => {
+      if (generation !== renderGeneration || pageCache.has(pageNum)) {
+        stale = generation !== renderGeneration;
+        return;
+      }
       renderedPages.add(pageNum);
-      drawCanvasIntoSlot(slot, pageNum, lowData, 'low-res');
-    } catch (e) {
-      console.error(`Failed to render page ${pageNum}:`, e);
-      slot.innerHTML = `<div class="pdf-page-error">Page ${pageNum + 1}</div>`;
-      renderingPages.delete(pageNum);
+      console.log(`[pdf-scheduler] commit page=${pageNum} variant=low gen=${generation}`);
+      drawCanvasIntoSlot(slot, pageNum, data, 'low-res', generation);
+      queueHighRender(pageNum, slot, priority, generation);
+    }).catch((error) => {
+      stale = generation !== renderGeneration;
+      if (!stale) console.error(`Failed to render low-res page ${pageNum}:`, error);
+    }).finally(() => {
+      lowRenderingPages.delete(pageNum);
+      if (stale) scheduleRenderRetry();
+    });
+  }
+
+  function renderPage(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2 = 1, generation = renderGeneration) {
+    const highCached = pageCache.get(pageNum);
+    if (highCached) {
+      if (slot.dataset.renderQuality !== '2') renderPageFromCache(pageNum, slot, highCached, generation, 'high-res-cached');
       return;
     }
 
-    // Upgrade to high-res
-    try {
-      const highData = await fetchPdfPage(pdfPath, pageNum, pageCache);
-      drawCanvasIntoSlot(slot, pageNum, highData, 'high-res');
-    } catch { /* keep low-res */ }
-    renderingPages.delete(pageNum);
+    const lowCached = lowResCache.get(pageNum);
+    if (lowCached && !renderedPages.has(pageNum)) {
+      renderPageFromCache(pageNum, slot, lowCached, generation, 'low-res-cached');
+    }
+    if (lowCached) queueHighRender(pageNum, slot, priority, generation);
+    else queueLowRender(pageNum, slot, priority, generation);
   }
 
   // Load and render link annotation overlay
@@ -278,18 +360,61 @@
   // Jump to a link target
   function jumpToLink(link: PdfLinkAnnotation) {
     if (!scrollEl) return;
+    schedulePageJump(link.target_page, link.target_y);
+  }
+
+  function getPageScrollTop(pageNum: number, pdfY = 0): number {
+    if (!scrollEl || pageNum < 0 || pageNum >= pageDimensions.length) return 0;
+    const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
+    const pageTop = slot
+      ? slot.offsetTop
+      : pageOffsets[pageNum] || 0;
+    const pageHeight = pageDimensions[pageNum]?.height || 0;
+    const hasExplicitY = Number.isFinite(pdfY) && pdfY > 0 && pdfY < pageHeight;
+    const yOffset = hasExplicitY ? (pageHeight - pdfY) * scale : 0;
+    const target = Math.max(0, pageTop + yOffset);
+    console.log(`[pdf-nav] measure page=${pageNum} slotTop=${pageTop} yOffset=${yOffset.toFixed(1)} scale=${scale.toFixed(2)} target=${target.toFixed(1)}`);
+    return target;
+  }
+
+  function schedulePageJump(pageNum: number, pdfY = 0) {
+    if (!scrollEl || pageNum < 0 || pageNum >= pageDimensions.length) return;
+    const token = ++jumpToken;
     renderGeneration++;
-    const scrollTop = scrollToPosition(link.target_page, link.target_y, pageDimensions, scale);
-    scrollEl.scrollTop = scrollTop;
+    renderScheduler.invalidate(renderGeneration);
+    if (!programmaticScroll) jumpOverflowAnchor = scrollEl.style.overflowAnchor;
+    scrollEl.style.overflowAnchor = 'none';
+    programmaticScroll = true;
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!scrollEl || token !== jumpToken) return;
+      scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY);
+      requestAnimationFrame(() => {
+        if (!scrollEl || token !== jumpToken) return;
+        scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY);
+        programmaticScroll = false;
+        scrollEl.style.overflowAnchor = jumpOverflowAnchor;
+      });
+    }));
+  }
+
+  function cancelPendingJump() {
+    if (!programmaticScroll) return;
+    jumpToken++;
+    programmaticScroll = false;
+    if (scrollEl) scrollEl.style.overflowAnchor = jumpOverflowAnchor;
   }
 
   // Destroy a page canvas (keep the slot)
   function destroyPage(pageNum: number, slot: HTMLElement) {
     renderedPages.delete(pageNum);
-    renderingPages.delete(pageNum);
+    lowRenderingPages.delete(pageNum);
+    highRenderingPages.delete(pageNum);
     loadedLinks.delete(pageNum);
     canvasRefs.delete(pageNum);
     slot.innerHTML = '';
+    delete slot.dataset.renderQuality;
+    delete slot.dataset.renderGeneration;
   }
 
   // Find the first page whose bottom offset > position (binary search)
@@ -309,9 +434,6 @@
 
     const t0 = performance.now();
 
-    // Increment generation to cancel stale async renders
-    renderGeneration++;
-
     const ch = scrollEl.clientHeight;
     const st = scrollEl.scrollTop;
 
@@ -319,6 +441,18 @@
     const bufPx = BUFFER_PAGES * ch;
     const rangeStart = Math.max(0, findPageAtOffset(st - bufPx));
     const rangeEnd = Math.min(totalPages - 1, findPageAtOffset(st + ch + bufPx));
+    const visibleStart = Math.max(0, findPageAtOffset(st));
+    const visibleEnd = Math.min(totalPages - 1, findPageAtOffset(st + ch));
+    if (rangeStart !== lastRenderRangeStart || rangeEnd !== lastRenderRangeEnd) {
+      renderGeneration++;
+      lastRenderRangeStart = rangeStart;
+      lastRenderRangeEnd = rangeEnd;
+    }
+    const generation = renderGeneration;
+    const pinnedPages = Array.from({ length: rangeEnd - rangeStart + 1 }, (_, index) => rangeStart + index);
+    pageCache.setPinnedPages(pinnedPages);
+    lowResCache.setPinnedPages(pinnedPages);
+    renderScheduler.invalidate(generation);
 
     // Destroy pages outside buffer
     let destroyed = 0;
@@ -344,21 +478,23 @@
     }
 
     for (const i of renderOrder) {
-      if (renderedPages.has(i)) continue;
       const slot = scrollEl.querySelector(`.page-slot[data-page="${i}"]`) as HTMLElement | null;
       if (!slot) continue;
 
       const cached = pageCache.get(i);
-      if (cached) { renderPageFromCache(i, slot, cached); cacheHits++; continue; }
+      if (cached) {
+        if (slot.dataset.renderQuality !== '2') renderPageFromCache(i, slot, cached, generation, 'high-res-cached');
+        cacheHits++;
+        continue;
+      }
       const lowCached = lowResCache.get(i);
       if (lowCached) {
-        // Low-res cached: draw it immediately, but still call renderPage to schedule high-res upgrade
-        renderPageFromCache(i, slot, lowCached);
+        if (!renderedPages.has(i)) renderPageFromCache(i, slot, lowCached, generation, 'low-res-cached');
         cacheHits++;
       }
 
-      // Fire off async render (progressive: low-res → high-res), don't await
-      renderPage(i, slot);
+      const priority = i >= visibleStart && i <= visibleEnd ? 0 : (i >= rangeStart && i <= rangeEnd ? 1 : 2);
+      renderPage(i, slot, priority, generation);
       uncachedCount++;
     }
 
@@ -370,19 +506,39 @@
     // ~30 preload requests would queue ahead of visible pages' high-res fetches.
     const mid = Math.floor((rangeStart + rangeEnd) / 2);
     setTimeout(() => {
+      if (generation !== renderGeneration) return;
       // Preload low-res for wide range
       const lowStart = Math.max(0, rangeStart - LOW_RES_PRELOAD);
       const lowEnd = Math.min(totalPages - 1, rangeEnd + LOW_RES_PRELOAD);
-      preloadPdfPages(pdfPath, mid, totalPages, lowResCache, lowStart, lowEnd, LOW_RES_SCALE);
+      for (let page = lowStart; page <= lowEnd; page++) {
+        if (!pageCache.has(page) && !lowResCache.has(page)
+          && !lowRenderingPages.has(page) && !lowResCache.isPreloading(page)) {
+          lowResCache.markPreloading(page);
+          renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, lowResCache, LOW_RES_SCALE, () => generation === renderGeneration), 2, generation)
+            .catch(() => {}).finally(() => lowResCache.unmarkPreloading(page));
+        }
+      }
 
       // Preload high-res ONLY outside buffer
       const hiPreStart = Math.max(0, rangeStart - PRELOAD_PAGES);
       const hiPreEnd = Math.min(totalPages - 1, rangeEnd + PRELOAD_PAGES);
       if (hiPreStart < rangeStart) {
-        preloadPdfPages(pdfPath, rangeStart, totalPages, pageCache, hiPreStart, rangeStart - 1);
+        for (let page = hiPreStart; page < rangeStart; page++) {
+          if (!pageCache.has(page) && !highRenderingPages.has(page) && !pageCache.isPreloading(page)) {
+            pageCache.markPreloading(page);
+            renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, pageCache, undefined, () => generation === renderGeneration), 2, generation)
+              .catch(() => {}).finally(() => pageCache.unmarkPreloading(page));
+          }
+        }
       }
       if (hiPreEnd > rangeEnd) {
-        preloadPdfPages(pdfPath, rangeEnd, totalPages, pageCache, rangeEnd + 1, hiPreEnd);
+        for (let page = rangeEnd + 1; page <= hiPreEnd; page++) {
+          if (!pageCache.has(page) && !highRenderingPages.has(page) && !pageCache.isPreloading(page)) {
+            pageCache.markPreloading(page);
+            renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, pageCache, undefined, () => generation === renderGeneration), 2, generation)
+              .catch(() => {}).finally(() => pageCache.unmarkPreloading(page));
+          }
+        }
       }
     }, 100);
   }
@@ -390,7 +546,8 @@
   // Re-render all visible pages (e.g., after search state change)
   function rerenderVisiblePages() {
     renderedPages.clear();
-    renderingPages.clear();
+    lowRenderingPages.clear();
+    highRenderingPages.clear();
     loadedLinks.clear();
     const slots = scrollEl?.querySelectorAll('.page-slot') as NodeListOf<HTMLElement> | undefined;
     if (!slots) return;
@@ -398,15 +555,17 @@
       const pageNum = parseInt(slot.dataset.page || '-1');
       if (pageNum < 0) return;
       slot.innerHTML = '';
+      delete slot.dataset.renderQuality;
+      delete slot.dataset.renderGeneration;
       const inView = pageOffsets[pageNum + 1] > (scrollEl?.scrollTop || 0) - BUFFER_PAGES * (scrollEl?.clientHeight || 0)
         && pageOffsets[pageNum] < (scrollEl?.scrollTop || 0) + (scrollEl?.clientHeight || 0) + BUFFER_PAGES * (scrollEl?.clientHeight || 0);
       if (inView) {
         const highCached = pageCache.get(pageNum);
         if (highCached) {
-          renderPageFromCache(pageNum, slot, highCached);
+          renderPageFromCache(pageNum, slot, highCached, renderGeneration, 'high-res-cached');
         } else {
           const lowCached = lowResCache.get(pageNum);
-          if (lowCached) renderPageFromCache(pageNum, slot, lowCached);
+          if (lowCached) renderPageFromCache(pageNum, slot, lowCached, renderGeneration, 'low-res-cached');
           renderPage(pageNum, slot);
         }
       }
@@ -468,6 +627,7 @@
     }
 
     if (event.ctrlKey && event.code === 'KeyS') return;
+    if (event.ctrlKey && event.code === 'KeyL') return;
 
     // Ctrl+=/- for zoom
     if (event.ctrlKey && (event.code === 'Equal' || event.code === 'NumpadAdd')) {
@@ -487,12 +647,16 @@
     }
 
     switch (event.code) {
-      case 'KeyJ': event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(0, SCROLL_STEP); break;
-      case 'KeyK': event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(0, -SCROLL_STEP); break;
-      case 'KeyH': event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(-SCROLL_STEP, 0); break;
-      case 'KeyL': event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(SCROLL_STEP, 0); break;
+      case 'KeyJ': cancelPendingJump(); event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(0, SCROLL_STEP); break;
+      case 'KeyK': cancelPendingJump(); event.preventDefault(); event.stopPropagation(); scrollEl?.scrollBy(0, -SCROLL_STEP); break;
+      case 'KeyH':
+        if (scrollEl && scrollEl.scrollWidth > scrollEl.clientWidth) { cancelPendingJump(); event.preventDefault(); event.stopPropagation(); scrollEl.scrollBy(-SCROLL_STEP, 0); }
+        break;
+      case 'KeyL':
+        if (scrollEl && scrollEl.scrollWidth > scrollEl.clientWidth) { cancelPendingJump(); event.preventDefault(); event.stopPropagation(); scrollEl.scrollBy(SCROLL_STEP, 0); }
+        break;
       case 'KeyG':
-        event.preventDefault(); event.stopPropagation();
+        cancelPendingJump(); event.preventDefault(); event.stopPropagation();
         if (scrollEl) scrollEl.scrollTop = event.shiftKey ? scrollEl.scrollHeight : 0;
         break;
       case 'KeyN':
@@ -518,6 +682,7 @@
       applyZoom(scale + delta);
     }
     // Non-Ctrl wheel: let native scroll handle it
+    else cancelPendingJump();
   }
 
   // Search
@@ -554,10 +719,11 @@
   }
 
   // Scroll to a specific page top
-  export function scrollToPage(pageNum: number) {
+  export function scrollToPage(pageNum: number, pdfY = 0) {
     if (!scrollEl || pageNum < 0 || pageNum >= totalPages) return;
-    renderGeneration++;
-    scrollEl.scrollTop = pageOffsets[pageNum] || 0;
+    lastRenderRangeStart = -1;
+    lastRenderRangeEnd = -1;
+    schedulePageJump(pageNum, pdfY);
   }
 
   // Focus management
@@ -569,14 +735,20 @@
     const path = pdfPath;
     if (path && path !== lastPath) {
       lastPath = path;
+      scaleInitialized = false;
       pageCache.clear();
       lowResCache.clear();
       clearLinkCache();
       renderedPages.clear();
-      renderingPages.clear();
+      lowRenderingPages.clear();
+      highRenderingPages.clear();
       loadedLinks.clear();
       canvasRefs.clear();
       renderGeneration++;
+      lastRenderRangeStart = -1;
+      lastRenderRangeEnd = -1;
+      renderScheduler.clear();
+      invoke('clear_pdf_cache').catch(() => {});
       isLoading = true;
       hasError = false;
       isLoading = false;
@@ -588,6 +760,7 @@
     const dims = pageDimensions;
     const el = scrollEl;
     if (dims.length > 0 && el) {
+      viewportWidth = el.clientWidth;
       // Double rAF ensures browser has completed layout
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -600,6 +773,7 @@
 
   onMount(() => {
     resizeObserver = new ResizeObserver(() => {
+      if (scrollEl) viewportWidth = scrollEl.clientWidth;
       initScale();
       requestAnimationFrame(() => {
         updatePageRendering();
@@ -635,7 +809,10 @@
     resizeObserver?.disconnect();
     pageCache.clear();
     lowResCache.clear();
-    renderingPages.clear();
+    lowRenderingPages.clear();
+    highRenderingPages.clear();
+    renderScheduler.clear();
+    invoke('clear_pdf_cache').catch(() => {});
     clearLinkCache();
   });
 
@@ -688,13 +865,15 @@
   {:else}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="pdf-scroll-area" bind:this={scrollEl} onclick={() => containerEl?.focus()}>
-      {#each { length: totalPages } as _, i}
-        <div
-          class="page-slot"
-          data-page={i}
-          style="height: {(pageDimensions[i]?.height || 0) * scale}px;"
-        ></div>
-      {/each}
+      <div class="pdf-page-track" style="width: {pageTrackWidth}px;">
+        {#each { length: totalPages } as _, i}
+          <div
+            class="page-slot"
+            data-page={i}
+            style="height: {(pageDimensions[i]?.height || 0) * scale}px;"
+          ></div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -759,11 +938,15 @@
     position: relative;
   }
 
+  .pdf-page-track {
+    min-height: 100%;
+  }
+
   :global(.page-slot) {
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    overflow: hidden;
+    overflow: visible;
     position: relative;
     border-bottom: 1px solid var(--border);
     background-color: var(--bg-secondary);

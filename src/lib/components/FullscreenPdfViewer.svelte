@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+import { onMount, onDestroy } from 'svelte';
   import {
     type PdfPageData,
     type PdfSearchState,
@@ -59,7 +59,7 @@
   let searchStatus = $state('');
 
   // Preload cache
-  let pageCache = new PdfPageCache();
+  let pageCache = new PdfPageCache(16 * 1024 * 1024);
 
   const PAN_STEP = 100;
   const ZOOM_STEP = 0.25;
@@ -251,6 +251,8 @@
   const fileName = $derived(pdfPath.split(/[/\\]/).pop() || pdfPath);
   const position = $derived(`${currentPage + 1}/${totalPages}`);
   const zoomPercent = $derived(`${Math.round(scale * 100)}%`);
+
+  onDestroy(() => pageCache.clear());
 
   onMount(() => {
     requestAnimationFrame(() => overlayEl?.focus());

@@ -7,12 +7,14 @@
     pageDimensions = [],
     onJump = (_page: number, _y: number) => {},
     onFocusChange = (_focused: boolean) => void 0,
+    onExit = () => void 0,
   }: {
     outline: PdfOutlineItem[];
     currentPage?: number;
     pageDimensions?: { width: number; height: number }[];
     onJump?: (page: number, y: number) => void;
     onFocusChange?: (focused: boolean) => void;
+    onExit?: () => void;
   } = $props();
 
   let selectedIndex: number = $state(-1);
@@ -20,6 +22,7 @@
   let panelElement: HTMLDivElement | undefined = $state(undefined);
   let lastKeyTime: number = 0;
   let lastKey: string = '';
+  let ctrlWPending = false;
 
   // Search state
   let searchActive: boolean = $state(false);
@@ -129,11 +132,25 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (!isFocused) return;
+    if (event.ctrlKey && event.key === 'w') {
+      ctrlWPending = true;
+      return;
+    }
+    if (ctrlWPending) {
+      ctrlWPending = false;
+      if (event.code === 'KeyH' || event.code === 'KeyL') return;
+    }
     event.stopPropagation();
 
     if (searchActive) {
       if (event.key === 'Escape') { event.preventDefault(); searchActive = false; searchQuery = ''; panelElement?.focus(); return; }
       if (event.key === 'Enter') { event.preventDefault(); searchActive = false; if (flatItems.length > 0) { jumpToItem(selectedIndex >= 0 ? selectedIndex : 0); } searchQuery = ''; return; }
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onExit();
       return;
     }
 

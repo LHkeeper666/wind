@@ -27,6 +27,7 @@ export interface PdfSearchState {
 
 export const RENDER_SCALE = 2.0;
 export const PRELOAD_RANGE = 3;
+const PDF_PAGE_SEPARATOR = 1;
 
 // --- Page Dimensions (from get_pdf_info) ---
 
@@ -59,11 +60,22 @@ export interface PdfLinkAnnotation {
 // --- Page Cache ---
 
 export class PdfPageCache {
-  private cache = new Map<number, PdfPageData>();
+  private cache = new Map<number, { data: PdfPageData; bytes: number; lastUsed: number }>();
   private preloading = new Set<number>();
+  private pinned = new Set<number>();
+  private bytes = 0;
+
+  constructor(private readonly maxBytes = 80 * 1024 * 1024) {}
+
+  private estimateBytes(data: PdfPageData): number {
+    return Math.max(1, Math.ceil(data.data.length * 0.75));
+  }
 
   get(page: number): PdfPageData | undefined {
-    return this.cache.get(page);
+    const entry = this.cache.get(page);
+    if (!entry) return undefined;
+    entry.lastUsed = performance.now();
+    return entry.data;
   }
 
   has(page: number): boolean {
@@ -71,7 +83,50 @@ export class PdfPageCache {
   }
 
   set(page: number, data: PdfPageData): void {
-    this.cache.set(page, data);
+    const bytes = this.estimateBytes(data);
+    const previous = this.cache.get(page);
+    if (!previous && bytes > this.maxBytes) return;
+    if (previous) this.bytes -= previous.bytes;
+    this.cache.set(page, { data, bytes, lastUsed: performance.now() });
+    this.bytes += bytes;
+    this.evict();
+  }
+
+  delete(page: number): void {
+    const entry = this.cache.get(page);
+    if (entry) this.bytes -= entry.bytes;
+    this.cache.delete(page);
+  }
+
+  setPinnedPages(pages: Iterable<number>): void {
+    this.pinned = new Set(pages);
+    this.evict();
+  }
+
+  getBytes(): number { return this.bytes; }
+  getSize(): number { return this.cache.size; }
+
+  private evict(): void {
+    while (this.bytes > this.maxBytes) {
+      let candidate: number | undefined;
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const [page, entry] of this.cache) {
+        if (!this.pinned.has(page) && entry.lastUsed < oldest) {
+          candidate = page;
+          oldest = entry.lastUsed;
+        }
+      }
+      if (candidate === undefined) {
+        for (const [page, entry] of this.cache) {
+          if (entry.lastUsed < oldest) {
+            candidate = page;
+            oldest = entry.lastUsed;
+          }
+        }
+      }
+      if (candidate === undefined) break;
+      this.delete(candidate);
+    }
   }
 
   isPreloading(page: number): boolean {
@@ -89,6 +144,55 @@ export class PdfPageCache {
   clear(): void {
     this.cache.clear();
     this.preloading.clear();
+    this.pinned.clear();
+    this.bytes = 0;
+  }
+}
+
+export type PdfRenderPriority = 0 | 1 | 2 | 3;
+
+interface PdfRenderJob<T> {
+  priority: PdfRenderPriority;
+  sequence: number;
+  generation: number;
+  task: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+export class PdfRenderScheduler {
+  private queue: PdfRenderJob<unknown>[] = [];
+  private running = false;
+  private sequence = 0;
+
+  enqueue<T>(task: () => Promise<T>, priority: PdfRenderPriority, generation: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queue.push({ priority, sequence: this.sequence++, generation, task, resolve: value => resolve(value as T), reject });
+      this.pump();
+    });
+  }
+
+  invalidate(generation: number): void {
+    const stale = this.queue.filter(job => job.generation < generation);
+    this.queue = this.queue.filter(job => job.generation >= generation);
+    for (const job of stale) job.reject(new Error('stale PDF render request'));
+  }
+
+  clear(): void {
+    const pending = this.queue;
+    this.queue = [];
+    for (const job of pending) job.reject(new Error('PDF render queue cleared'));
+  }
+
+  private pump(): void {
+    if (this.running || this.queue.length === 0) return;
+    this.queue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence);
+    const job = this.queue.shift()!;
+    this.running = true;
+    job.task().then(job.resolve, job.reject).finally(() => {
+      this.running = false;
+      this.pump();
+    });
   }
 }
 
@@ -99,6 +203,7 @@ export async function fetchPdfPage(
   pageNum: number,
   cache: PdfPageCache,
   scale?: number,
+  shouldCommit: () => boolean = () => true,
 ): Promise<PdfPageData> {
   const cached = cache.get(pageNum);
   if (cached) return cached;
@@ -112,7 +217,7 @@ export async function fetchPdfPage(
   });
   const t1 = performance.now();
   console.log(`[pdf-perf] fetchPdfPage p${pageNum} scale=${actualScale} invoke=${(t1 - t0).toFixed(1)}ms data=${result.width}x${result.height} base64=${(result.data.length / 1024).toFixed(0)}KB`);
-  cache.set(pageNum, result);
+  if (shouldCommit()) cache.set(pageNum, result);
   return result;
 }
 
@@ -318,7 +423,7 @@ export function clearLinkCache(): void {
 export function cumulativePageOffsets(pageDimensions: PdfPageDimensions[], scale: number): number[] {
   const offsets: number[] = [0];
   for (let i = 0; i < pageDimensions.length; i++) {
-    offsets.push(offsets[i] + pageDimensions[i].height * scale);
+    offsets.push(offsets[i] + pageDimensions[i].height * scale + PDF_PAGE_SEPARATOR);
   }
   return offsets;
 }
@@ -347,6 +452,8 @@ export function scrollToPosition(
   const offsets = cumulativePageOffsets(pageDimensions, scale);
   const pageTop = offsets[page] || 0;
   // Convert PDF y (from bottom) to CSS offset (from top)
-  const yOffset = (pageDimensions[page].height - pdfY) * scale;
+  const pageHeight = pageDimensions[page]?.height || 0;
+  const hasExplicitY = Number.isFinite(pdfY) && pdfY > 0 && pdfY < pageHeight;
+  const yOffset = hasExplicitY ? (pageHeight - pdfY) * scale : 0;
   return pageTop + yOffset;
 }

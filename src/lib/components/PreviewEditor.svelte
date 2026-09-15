@@ -796,12 +796,31 @@
   }
 
   export function isTocVisible(): boolean {
-    return isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen;
+    return mode === 'global-normal' && (
+      (isMarkdown && tocHeadings.length > 0 && tocOpen)
+      || (isPdfFile(filePath || '') && pdfOutline.length > 0 && pdfTocOpen)
+    );
   }
 
-  export function focusToc() { tocFocused = true; tocSidebar?.focus(); }
-  export function focusContent() { tocFocused = false; if (panelElement) panelElement.focus({ preventScroll: true }); }
-  export function isTocFocused(): boolean { return tocFocused; }
+  export function focusToc() {
+    if (isPdfFile(filePath || '')) {
+      pdfTocFocused = true;
+      onToast('Focus: TOC');
+      setTimeout(() => pdfTocSidebar?.focus(), 0);
+      return;
+    }
+    tocFocused = true;
+    onToast('Focus: TOC');
+    tocSidebar?.focus();
+  }
+  export function focusContent() {
+    tocFocused = false;
+    pdfTocFocused = false;
+    onToast('Focus: PREVIEW');
+    if (isPdfFile(filePath || '')) pdfPreviewPanel?.focusPanel();
+    else if (panelElement) panelElement.focus({ preventScroll: true });
+  }
+  export function isTocFocused(): boolean { return tocFocused || pdfTocFocused; }
 
   function handleTocFocusChange(focused: boolean) {
     tocFocused = focused;
@@ -1826,8 +1845,8 @@
         <span class="modified-indicator">●</span>
       {/if}
     {/if}
-    <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'} class:toc={mode === 'global-normal' && tocFocused}>
-      {#if mode === 'global-normal' && tocFocused}TOC{:else if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
+      <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'} class:toc={mode === 'global-normal' && (tocFocused || pdfTocFocused)}>
+      {#if mode === 'global-normal' && (tocFocused || pdfTocFocused)}TOC{:else if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
     </span>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <button
@@ -1894,10 +1913,11 @@
             pageDimensions={pdfPageDimensions}
             onJump={(page, y) => {
               if (page >= 0 && page < pdfPageCount) {
-                pdfPreviewPanel?.scrollToPage(page);
+                pdfPreviewPanel?.scrollToPage(page, y);
               }
             }}
             onFocusChange={(focused) => { pdfTocFocused = focused; }}
+            onExit={() => focusContent()}
           />
         {/if}
       </div>

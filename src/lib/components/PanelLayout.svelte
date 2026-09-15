@@ -1588,6 +1588,12 @@
       && !$layout.fullscreenEditorOpen
       && target instanceof Element
       && target.closest('.preview-panel .cm-editor') !== null;
+    const isPdfPreview = $layout.activeColumn === 'preview'
+      && (previewEditor?.getFile?.() || '').toLowerCase().endsWith('.pdf');
+    if (isPdfPreview && event.ctrlKey
+      && (event.key === '=' || event.key === '+' || event.key === '-')) {
+      return;
+    }
     if ((target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable)
       && !isTerminalAltTabChord
       && !isPreviewCodeMirrorTab) {
