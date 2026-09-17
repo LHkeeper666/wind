@@ -126,6 +126,69 @@ pub struct PdfPageResult {
     format: String, // "jpeg" or "png"
 }
 
+const MAX_PDF_TILE_SIZE: u32 = 512;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfTileRequest {
+    path: String,
+    page: u32,
+    scale: f64,
+    tile_x: u32,
+    tile_y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PdfTileResult {
+    data: String,
+    width: u32,
+    height: u32,
+    format: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PdfTileBounds {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+fn tile_bounds(
+    page_width: f32,
+    page_height: f32,
+    scale: f64,
+    tile_x: u32,
+    tile_y: u32,
+    requested_width: u32,
+    requested_height: u32,
+) -> Result<PdfTileBounds, String> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("Tile scale must be a positive finite value".to_string());
+    }
+    if requested_width == 0 || requested_height == 0 {
+        return Err("Tile dimensions must be positive".to_string());
+    }
+    if requested_width > MAX_PDF_TILE_SIZE || requested_height > MAX_PDF_TILE_SIZE {
+        return Err(format!("Tile dimensions cannot exceed {} pixels", MAX_PDF_TILE_SIZE));
+    }
+
+    let rendered_width = (page_width as f64 * scale).ceil() as u32;
+    let rendered_height = (page_height as f64 * scale).ceil() as u32;
+    if tile_x >= rendered_width || tile_y >= rendered_height {
+        return Err("Tile origin is outside the rendered page".to_string());
+    }
+
+    Ok(PdfTileBounds {
+        x: tile_x,
+        y: tile_y,
+        width: requested_width.min(rendered_width - tile_x),
+        height: requested_height.min(rendered_height - tile_y),
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TextMatch {
     x: f64,
@@ -288,6 +351,82 @@ pub fn render_pdf_page(
         data: b64,
         width,
         height,
+        format: "jpeg".to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn render_pdf_tile(
+    request: PdfTileRequest,
+    app_handle: tauri::AppHandle,
+) -> Result<PdfTileResult, String> {
+    let t_total = std::time::Instant::now();
+    let (rgba_bytes, bounds) = with_cached_doc(&request.path, &app_handle, |document| {
+        let page_count = document.pages().len() as u32;
+        if request.page >= page_count {
+            return Err(format!("Page {} out of range (total: {})", request.page, page_count));
+        }
+
+        let pdf_page = document
+            .pages()
+            .get(request.page as u16)
+            .map_err(|e| format!("Failed to get page {}: {:?}", request.page, e))?;
+        let bounds = tile_bounds(
+            pdf_page.width().value,
+            pdf_page.height().value,
+            request.scale,
+            request.tile_x,
+            request.tile_y,
+            request.width,
+            request.height,
+        )?;
+
+        let rendered_width = (pdf_page.width().value as f64 * request.scale).ceil() as i32;
+        let rendered_height = (pdf_page.height().value as f64 * request.scale).ceil() as i32;
+        let mut bitmap = PdfBitmap::empty(
+            bounds.width as i32,
+            bounds.height as i32,
+            PdfBitmapFormat::default(),
+            pdf_page.bindings(),
+        )
+        .map_err(|e| format!("Failed to allocate PDF tile bitmap: {:?}", e))?;
+
+        let config = PdfRenderConfig::new()
+            .set_target_size(rendered_width, rendered_height)
+            .translate(
+                PdfPoints::new(-(bounds.x as f32 / request.scale as f32)),
+                PdfPoints::new(-(bounds.y as f32 / request.scale as f32)),
+            )
+            .map_err(|e| format!("Failed to configure PDF tile transform: {:?}", e))?
+            .clear_before_rendering(true)
+            .render_annotations(true);
+
+        pdf_page
+            .render_into_bitmap_with_config(&mut bitmap, &config)
+            .map_err(|e| format!("Failed to render page {} tile: {:?}", request.page, e))?;
+
+        Ok((bitmap.as_rgba_bytes(), bounds))
+    })?;
+
+    let jpeg_data = encode_jpeg(&rgba_bytes, bounds.width, bounds.height)?;
+    let data = STANDARD.encode(&jpeg_data);
+    eprintln!(
+        "[pdf-tile] page={} scale={:.3} tile={}x{}+{},{} output={}x{} total={}ms",
+        request.page,
+        request.scale,
+        request.width,
+        request.height,
+        request.tile_x,
+        request.tile_y,
+        bounds.width,
+        bounds.height,
+        t_total.elapsed().as_millis(),
+    );
+
+    Ok(PdfTileResult {
+        data,
+        width: bounds.width,
+        height: bounds.height,
         format: "jpeg".to_string(),
     })
 }
@@ -615,4 +754,30 @@ pub fn clear_pdf_cache() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tile_bounds_scale_page_coordinates() {
+        let bounds = tile_bounds(1024.0, 1024.0, 2.0, 512, 512, 512, 512).unwrap();
+        assert_eq!(bounds, PdfTileBounds { x: 512, y: 512, width: 512, height: 512 });
+    }
+
+    #[test]
+    fn tile_bounds_clip_right_and_bottom_edges() {
+        let bounds = tile_bounds(100.0, 200.0, 2.0, 150, 350, 512, 512).unwrap();
+        assert_eq!(bounds, PdfTileBounds { x: 150, y: 350, width: 50, height: 50 });
+    }
+
+    #[test]
+    fn adjacent_tile_bounds_share_an_edge_without_overlap() {
+        let left = tile_bounds(1024.0, 512.0, 1.0, 0, 0, 512, 512).unwrap();
+        let right = tile_bounds(1024.0, 512.0, 1.0, 512, 0, 512, 512).unwrap();
+        assert_eq!(left.x + left.width, right.x);
+        assert_eq!(left.y, right.y);
+        assert_eq!(left.height, right.height);
+    }
 }

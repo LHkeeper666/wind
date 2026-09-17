@@ -3064,6 +3064,7 @@ pub fn run() {
             write_config,
             pdf::get_pdf_info,
             pdf::render_pdf_page,
+            pdf::render_pdf_tile,
             pdf::search_pdf_text,
             pdf::get_pdf_outline,
             pdf::get_pdf_page_links,

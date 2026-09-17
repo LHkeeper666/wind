@@ -1,22 +1,26 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import {
-    type PdfPageData,
     type PdfPageDimensions,
     type PdfSearchState,
     type PdfLinkAnnotation,
-    PdfPageCache,
-    fetchPdfPage,
-    drawSearchHighlights,
     searchPdfText,
     navigateSearchMatch,
-    RENDER_SCALE,
     cumulativePageOffsets,
     pageAtScrollPosition,
     fetchPdfPageLinks,
     clearLinkCache,
     PdfRenderScheduler,
+    PdfTileCache,
+    type PdfTileData,
+    type PdfTileSpec,
+    cappedPdfDevicePixelRatio,
+    fetchPdfTile,
+    getPdfTileSpecs,
+    pdfTileViewportDistance,
+    PDF_MIN_RENDER_DENSITY,
+    quantizePdfZoom,
   } from '$lib/utils/pdf-shared';
 
   let {
@@ -61,37 +65,53 @@
   let searchStatus = $state('');
 
   // Cache
-  let pageCache = new PdfPageCache(80 * 1024 * 1024);
-  let lowResCache = new PdfPageCache(16 * 1024 * 1024); // low-res progressive cache
+  let tileCache = new PdfTileCache();
   let renderScheduler = new PdfRenderScheduler();
   let linkCache = new Map<number, PdfLinkAnnotation[]>();
   let resizeObserver: ResizeObserver | undefined;
 
-  // Track canvas elements for reactive size updates
-  let canvasRefs = new Map<number, HTMLCanvasElement>();
-
-  // Track which pages have canvas elements rendered
   let renderedPages = new Set<number>();
-  // Track in-flight work separately so a low-res task cannot hide a missing high-res upgrade.
-  let lowRenderingPages = new Set<number>();
-  let highRenderingPages = new Set<number>();
   // Track which pages have link overlays loaded
   let loadedLinks = new Set<number>();
   // Request cancellation: incremented on viewport changes to skip stale renders
   let renderGeneration = 0;
-  let lastRenderRangeStart = -1;
-  let lastRenderRangeEnd = -1;
   let renderRetryScheduled = false;
   let jumpToken = 0;
   let programmaticScroll = false;
   let jumpOverflowAnchor = '';
+  let zoomSettled = false;
+  let pathRevision = '';
+  let tileViewSignature = '';
+  let lastScrollTop = 0;
+  let renderingTiles = new Set<string>();
+  let renderedTileData = new Map<string, PdfTileData>();
+  let requiredVisibleHighTileKeys = new Set<string>();
+  let completedVisibleHighTileKeys = new Set<string>();
+  let failedVisibleHighTileKeys = new Set<string>();
+  let visibleHighRetryCounts = new Map<string, number>();
+  let visibleHighGeneration = -1;
+
+  type ZoomAnchor = {
+    page: number;
+    pdfX: number;
+    pdfY: number;
+    viewportX: number;
+    viewportY: number;
+  };
+
+  type ZoomSession = {
+    anchor: ZoomAnchor;
+    targetScale: number;
+    rafId: number | undefined;
+    settleTimer: ReturnType<typeof setTimeout> | undefined;
+    overflowAnchor: string;
+  };
+
+  let zoomSession: ZoomSession | undefined;
 
   const BUFFER_PAGES = 3;
   const SCROLL_STEP = 40;
   const ZOOM_STEP = 0.15;
-  const PRELOAD_PAGES = 5; // pages beyond buffer to pre-fetch into cache
-  const LOW_RES_SCALE = 0.5; // fast low-res for progressive rendering
-  const LOW_RES_PRELOAD = 15; // wider preload range for low-res
   const MIN_SCALE = 0.3;
   const MAX_SCALE = 5.0;
 
@@ -141,173 +161,156 @@
     }
   }
 
-  // Draw a canvas from page data and insert into slot
-  function drawCanvasIntoSlot(slot: HTMLElement, pageNum: number, data: PdfPageData, tag?: string, generation?: number) {
-    const t0 = performance.now();
-    if (generation !== undefined) slot.dataset.renderGeneration = String(generation);
-    const canvas = document.createElement('canvas');
-    canvas.className = 'pdf-canvas';
+  function tileStyle(canvas: HTMLCanvasElement, data: PdfTileData) {
+    canvas.style.left = `${(data.tileX / data.scale) * scale}px`;
+    canvas.style.top = `${(data.tileY / data.scale) * scale}px`;
+    canvas.style.width = `${(data.width / data.scale) * scale}px`;
+    canvas.style.height = `${(data.height / data.scale) * scale}px`;
+  }
 
-    // Draw page content
-    const binary = atob(data.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const mimeType = data.format === 'jpeg' ? 'image/jpeg' : 'image/png';
-    const blob = new Blob([bytes.buffer], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const tDecode = performance.now();
+  function drawTileHighlights(context: CanvasRenderingContext2D, data: PdfTileData) {
+    const pageMatches = searchState.results.find(result => result.page === data.page);
+    const pageHeight = pageDimensions[data.page]?.height;
+    if (!pageMatches || !pageHeight) return;
+    for (let index = 0; index < pageMatches.matches.length; index++) {
+      const match = pageMatches.matches[index];
+      context.fillStyle = data.page === searchState.currentMatchPage && index === searchState.currentMatchIndex
+        ? 'rgba(255, 165, 0, 0.5)'
+        : 'rgba(255, 255, 0, 0.35)';
+      context.fillRect(
+        match.x * data.scale - data.tileX,
+        (pageHeight - match.y - match.height) * data.scale - data.tileY,
+        match.width * data.scale,
+        match.height * data.scale,
+      );
+    }
+  }
 
-    const img = new Image();
-    img.onload = () => {
-      if (generation !== undefined && generation !== renderGeneration) {
-        URL.revokeObjectURL(url);
-        if (slot.dataset.renderGeneration === String(generation)) {
-          renderedPages.delete(pageNum);
-          canvasRefs.delete(pageNum);
-        }
-        return;
-      }
-      const incomingQuality = tag?.includes('high') ? 2 : 1;
-      const existingQuality = Number(slot.dataset.renderQuality || '0');
-      if (incomingQuality < existingQuality) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      const tLoad = performance.now();
-      console.log(`[pdf-perf] img.onload p${pageNum} ${tag || ''}`);
-      canvas.width = data.width;
-      canvas.height = data.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(0, 0, data.width, data.height);
-        ctx.drawImage(img, 0, 0);
-        drawSearchHighlights(ctx, pageNum, data.height, searchState);
-      }
-      URL.revokeObjectURL(url);
-
-      const dim = pageDimensions[pageNum];
-
-      // Wrap canvas + overlay in a container so overlay aligns with canvas
-      const wrapper = document.createElement('div');
+  function getTileLayer(pageNum: number, slot: HTMLElement): HTMLElement {
+    let wrapper = slot.querySelector<HTMLElement>(':scope > .pdf-page-wrapper');
+    if (!wrapper) {
+      slot.innerHTML = '';
+      wrapper = document.createElement('div');
       wrapper.className = 'pdf-page-wrapper';
       wrapper.style.position = 'relative';
-      if (dim) {
-        wrapper.style.width = `${dim.width * scale}px`;
-        wrapper.style.height = `${dim.height * scale}px`;
-      }
-      wrapper.appendChild(canvas);
-      slot.innerHTML = '';
+      const layer = document.createElement('div');
+      layer.className = 'pdf-tile-layer';
+      wrapper.appendChild(layer);
       slot.appendChild(wrapper);
-      slot.dataset.renderQuality = String(incomingQuality);
+      loadLinkOverlay(pageNum, wrapper);
+    }
+    const dim = pageDimensions[pageNum];
+    if (dim) {
+      wrapper.style.width = `${dim.width * scale}px`;
+      wrapper.style.height = `${dim.height * scale}px`;
+    }
+    return wrapper.querySelector<HTMLElement>('.pdf-tile-layer')!;
+  }
 
-      // Track canvas ref for reactive size updates
-      canvasRefs.set(pageNum, canvas);
-      const tDraw = performance.now();
-      console.log(`[pdf-perf] draw p${pageNum} ${tag || ''} decode=${(tDecode - t0).toFixed(1)}ms imgLoad=${(tLoad - tDecode).toFixed(1)}ms canvasDraw=${(tDraw - tLoad).toFixed(1)}ms total=${(tDraw - t0).toFixed(1)}ms size=${data.width}x${data.height}`);
-      loadLinkOverlay(pageNum, wrapper, data); // overlay attached to wrapper for correct alignment
-    };
-    img.onerror = (e) => {
+  function appendTile(
+    layer: HTMLElement,
+    data: PdfTileData,
+    generation: number,
+    onInserted?: () => void,
+    onFailed?: () => void,
+  ) {
+    const existing = Array.from(layer.querySelectorAll<HTMLCanvasElement>('.pdf-tile-canvas'))
+      .find(canvas => canvas.dataset.tileKey === `${data.page}:${data.scale}:${data.tileX}:${data.tileY}`);
+    if (existing) {
+      tileStyle(existing, data);
+      onInserted?.();
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const tileKey = `${data.page}:${data.scale}:${data.tileX}:${data.tileY}`;
+    canvas.className = 'pdf-tile-canvas';
+    canvas.dataset.tileKey = tileKey;
+    canvas.dataset.tileQuality = data.lowRes ? 'low' : 'high';
+    canvas.style.zIndex = data.lowRes ? '1' : '2';
+    canvas.width = data.width;
+    canvas.height = data.height;
+    tileStyle(canvas, data);
+    const binary = atob(data.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    const blob = new Blob([bytes.buffer], { type: data.format === 'jpeg' ? 'image/jpeg' : 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
       URL.revokeObjectURL(url);
-      if (generation !== undefined && generation !== renderGeneration) return;
-      const incomingQuality = tag?.includes('high') ? 2 : 1;
-      if (incomingQuality < Number(slot.dataset.renderQuality || '0')) return;
-      console.error(`[pdf-perf] img.onerror p${pageNum} ${tag || ''} blobUrl=${url.substring(0, 30)} dataSize=${data.data.length}`);
-      slot.innerHTML = `<div class="pdf-page-error">Page ${pageNum + 1}</div>`;
+      if (generation !== renderGeneration || !layer.isConnected) return;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      context.drawImage(image, 0, 0);
+      drawTileHighlights(context, data);
+      layer.appendChild(canvas);
+      renderedTileData.set(tileKey, data);
+      onInserted?.();
     };
-    img.src = url;
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      onFailed?.();
+    };
+    image.src = url;
   }
 
-  // Render a single page using cached data (no Tauri invoke, synchronous draw)
-  function renderPageFromCache(pageNum: number, slot: HTMLElement, data: PdfPageData, generation = renderGeneration, tag = 'cache') {
-    renderedPages.add(pageNum);
-    drawCanvasIntoSlot(slot, pageNum, data, tag, generation);
-  }
-
-  function queueHighRender(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2, generation: number) {
-    const highCached = pageCache.get(pageNum);
-    if (highCached) {
-      if (slot.dataset.renderQuality !== '2') renderPageFromCache(pageNum, slot, highCached, generation, 'high-res-cached');
-      return;
-    }
-    if (highRenderingPages.has(pageNum)) return;
-
-    highRenderingPages.add(pageNum);
-    console.log(`[pdf-scheduler] enqueue page=${pageNum} variant=high priority=${priority} gen=${generation}`);
-    let stale = false;
-    renderScheduler.enqueue(
-      () => {
-        console.log(`[pdf-scheduler] start page=${pageNum} variant=high gen=${generation}`);
-        return fetchPdfPage(pdfPath, pageNum, pageCache, undefined, () => generation === renderGeneration);
-      },
-      priority,
-      generation,
-    ).then((data) => {
-      if (generation !== renderGeneration) {
-        stale = true;
-        console.log(`[pdf-scheduler] discard page=${pageNum} variant=high gen=${generation}`);
+  function queueTile(
+    spec: PdfTileSpec,
+    layer: HTMLElement,
+    priority: number,
+    generation: number,
+    onInserted?: () => void,
+  ) {
+    const retryVisibleHighTile = () => {
+      if (!onInserted || generation !== renderGeneration || visibleHighGeneration !== generation) return;
+      const attempts = visibleHighRetryCounts.get(spec.key) || 0;
+      if (attempts >= 1) {
+        failedVisibleHighTileKeys.add(spec.key);
         return;
       }
-      lowResCache.delete(pageNum);
-      renderedPages.add(pageNum);
-      console.log(`[pdf-scheduler] commit page=${pageNum} variant=high gen=${generation}`);
-      drawCanvasIntoSlot(slot, pageNum, data, 'high-res', generation);
-    }).catch((error) => {
-      stale = generation !== renderGeneration;
-      if (!stale) console.error(`Failed to render high-res page ${pageNum}:`, error);
+      visibleHighRetryCounts.set(spec.key, attempts + 1);
+      setTimeout(() => queueTile(spec, layer, priority, generation, onInserted), 50);
+    };
+    const cached = tileCache.get(spec.key);
+    if (cached) {
+      appendTile(layer, cached, generation, onInserted, retryVisibleHighTile);
+      return;
+    }
+    if (renderingTiles.has(spec.key)) return;
+    renderingTiles.add(spec.key);
+    renderScheduler.enqueue(
+      () => fetchPdfTile(pdfPath, spec, tileCache, () => generation === renderGeneration),
+      priority,
+      generation,
+    ).then(data => {
+      if (generation === renderGeneration) appendTile(layer, data, generation, onInserted, retryVisibleHighTile);
+    }).catch(error => {
+      if (generation === renderGeneration) {
+        console.error(`Failed to render PDF tile ${spec.key}:`, error);
+        retryVisibleHighTile();
+      }
     }).finally(() => {
-      highRenderingPages.delete(pageNum);
-      if (stale) scheduleRenderRetry();
+      renderingTiles.delete(spec.key);
+      if (generation !== renderGeneration) scheduleRenderRetry();
     });
   }
 
-  function queueLowRender(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2, generation: number) {
-    if (pageCache.has(pageNum) || lowResCache.has(pageNum) || lowRenderingPages.has(pageNum)) return;
-
-    lowRenderingPages.add(pageNum);
-    console.log(`[pdf-scheduler] enqueue page=${pageNum} variant=low priority=${priority} gen=${generation}`);
-    let stale = false;
-    renderScheduler.enqueue(
-      () => {
-        console.log(`[pdf-scheduler] start page=${pageNum} variant=low gen=${generation}`);
-        return fetchPdfPage(pdfPath, pageNum, lowResCache, LOW_RES_SCALE, () => generation === renderGeneration);
-      },
-      priority,
-      generation,
-    ).then((data) => {
-      if (generation !== renderGeneration || pageCache.has(pageNum)) {
-        stale = generation !== renderGeneration;
-        return;
-      }
-      renderedPages.add(pageNum);
-      console.log(`[pdf-scheduler] commit page=${pageNum} variant=low gen=${generation}`);
-      drawCanvasIntoSlot(slot, pageNum, data, 'low-res', generation);
-      queueHighRender(pageNum, slot, priority, generation);
-    }).catch((error) => {
-      stale = generation !== renderGeneration;
-      if (!stale) console.error(`Failed to render low-res page ${pageNum}:`, error);
-    }).finally(() => {
-      lowRenderingPages.delete(pageNum);
-      if (stale) scheduleRenderRetry();
-    });
-  }
-
-  function renderPage(pageNum: number, slot: HTMLElement, priority: 0 | 1 | 2 = 1, generation = renderGeneration) {
-    const highCached = pageCache.get(pageNum);
-    if (highCached) {
-      if (slot.dataset.renderQuality !== '2') renderPageFromCache(pageNum, slot, highCached, generation, 'high-res-cached');
-      return;
+  function updateTileLayouts() {
+    for (const wrapper of scrollEl?.querySelectorAll<HTMLElement>('.pdf-page-wrapper') || []) {
+      const pageNum = Number(wrapper.parentElement?.dataset.page);
+      const dim = pageDimensions[pageNum];
+      if (!dim) continue;
+      wrapper.style.width = `${dim.width * scale}px`;
+      wrapper.style.height = `${dim.height * scale}px`;
     }
-
-    const lowCached = lowResCache.get(pageNum);
-    if (lowCached && !renderedPages.has(pageNum)) {
-      renderPageFromCache(pageNum, slot, lowCached, generation, 'low-res-cached');
+    for (const [tileKey, data] of renderedTileData) {
+      const canvas = scrollEl?.querySelector<HTMLCanvasElement>(`.pdf-tile-canvas[data-tile-key="${tileKey}"]`);
+      if (canvas) tileStyle(canvas, data);
     }
-    if (lowCached) queueHighRender(pageNum, slot, priority, generation);
-    else queueLowRender(pageNum, slot, priority, generation);
   }
 
   // Load and render link annotation overlay
-  async function loadLinkOverlay(pageNum: number, slot: HTMLElement, data: PdfPageData) {
+  async function loadLinkOverlay(pageNum: number, slot: HTMLElement) {
     if (loadedLinks.has(pageNum)) return;
     loadedLinks.add(pageNum);
 
@@ -408,10 +411,10 @@
   // Destroy a page canvas (keep the slot)
   function destroyPage(pageNum: number, slot: HTMLElement) {
     renderedPages.delete(pageNum);
-    lowRenderingPages.delete(pageNum);
-    highRenderingPages.delete(pageNum);
     loadedLinks.delete(pageNum);
-    canvasRefs.delete(pageNum);
+    for (const [tileKey, tile] of renderedTileData) {
+      if (tile.page === pageNum) renderedTileData.delete(tileKey);
+    }
     slot.innerHTML = '';
     delete slot.dataset.renderQuality;
     delete slot.dataset.renderGeneration;
@@ -428,161 +431,129 @@
     return Math.max(0, lo);
   }
 
-  // Render/destroy pages based on viewport + buffer, and preload beyond buffer
-  function updatePageRendering() {
+  function updateTiledPageRendering() {
     if (!scrollEl || pageOffsets.length < 2) return;
+    if (zoomSession && renderedTileData.size > 0) return;
+    const viewport = {
+      left: scrollEl.scrollLeft,
+      top: scrollEl.scrollTop,
+      width: scrollEl.clientWidth,
+      height: scrollEl.clientHeight,
+    };
+    const buffer = BUFFER_PAGES * viewport.height;
+    const rangeStart = Math.max(0, findPageAtOffset(viewport.top - buffer));
+    const rangeEnd = Math.min(totalPages - 1, findPageAtOffset(viewport.top + viewport.height + buffer));
+    const center = findPageAtOffset(viewport.top + viewport.height / 2);
+    const zoomBucket = quantizePdfZoom(scale);
+    const highScale = zoomBucket * Math.max(PDF_MIN_RENDER_DENSITY, cappedPdfDevicePixelRatio());
+    const lowScale = Math.min(0.5, highScale);
+    const visibleHighRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
+    const visibleLowRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
+    const prefetchHighRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
+    const prefetchLowRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
+    const layers = new Map<number, HTMLElement>();
 
-    const t0 = performance.now();
+    const pageOrder = Array.from({ length: rangeEnd - rangeStart + 1 }, (_, index) => rangeStart + index)
+      .sort((left, right) => Math.abs(left - center) - Math.abs(right - center));
+    for (const pageNum of pageOrder) {
+      const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
+      const dim = pageDimensions[pageNum];
+      if (!slot || !dim) continue;
+      renderedPages.add(pageNum);
+      const layer = getTileLayer(pageNum, slot);
+      layers.set(pageNum, layer);
+      const pageLeft = (pageTrackWidth - dim.width * scale) / 2;
+      const lowVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport);
+      const lowPrefetch = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport, true);
+      visibleLowRequests.push(...lowVisible.map(spec => ({
+        spec,
+        page: pageNum,
+        priority: 100_000 + pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
+      })));
+      prefetchLowRequests.push(...lowPrefetch
+        .filter(spec => !lowVisible.some(visible => visible.key === spec.key))
+        .map(spec => ({
+          spec,
+          page: pageNum,
+          priority: 300_000 + pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
+        })));
+      if (zoomSettled) {
+        const highVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport);
+        const highPrefetch = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport, true);
+        visibleHighRequests.push(...highVisible.map(spec => ({
+          spec,
+          page: pageNum,
+          priority: pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
+        })));
+        prefetchHighRequests.push(...highPrefetch
+          .filter(spec => !highVisible.some(visible => visible.key === spec.key))
+          .map(spec => ({
+            spec,
+            page: pageNum,
+            priority: 200_000 + pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
+          })));
+      }
+    }
 
-    const ch = scrollEl.clientHeight;
-    const st = scrollEl.scrollTop;
-
-    // Calculate visible range (viewport ± BUFFER_PAGES)
-    const bufPx = BUFFER_PAGES * ch;
-    const rangeStart = Math.max(0, findPageAtOffset(st - bufPx));
-    const rangeEnd = Math.min(totalPages - 1, findPageAtOffset(st + ch + bufPx));
-    const visibleStart = Math.max(0, findPageAtOffset(st));
-    const visibleEnd = Math.min(totalPages - 1, findPageAtOffset(st + ch));
-    if (rangeStart !== lastRenderRangeStart || rangeEnd !== lastRenderRangeEnd) {
+    const visibleRequests = [...visibleHighRequests, ...visibleLowRequests];
+    const signature = `${pathRevision}:${zoomSettled}:${visibleRequests.map(request => request.spec.key).sort().join('|')}`;
+    if (signature !== tileViewSignature || visibleHighGeneration !== renderGeneration) {
+      tileViewSignature = signature;
       renderGeneration++;
-      lastRenderRangeStart = rangeStart;
-      lastRenderRangeEnd = rangeEnd;
+      renderScheduler.invalidate(renderGeneration);
+      visibleHighGeneration = renderGeneration;
+      requiredVisibleHighTileKeys = new Set(visibleHighRequests.map(request => request.spec.key));
+      completedVisibleHighTileKeys = new Set();
+      failedVisibleHighTileKeys = new Set();
+      visibleHighRetryCounts = new Map();
     }
     const generation = renderGeneration;
-    const pinnedPages = Array.from({ length: rangeEnd - rangeStart + 1 }, (_, index) => rangeStart + index);
-    pageCache.setPinnedPages(pinnedPages);
-    lowResCache.setPinnedPages(pinnedPages);
-    renderScheduler.invalidate(generation);
+    tileCache.setCurrentScale(highScale);
+    tileCache.setPinned(visibleRequests.map(request => request.spec.key));
 
-    // Destroy pages outside buffer
-    let destroyed = 0;
-    for (const pageNum of renderedPages) {
+    for (const pageNum of Array.from(renderedPages)) {
       if (pageNum < rangeStart || pageNum > rangeEnd) {
         const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
-        if (slot) { destroyPage(pageNum, slot); destroyed++; }
+        if (slot) destroyPage(pageNum, slot);
       }
     }
 
-    // Draw cached pages instantly, then render uncached from center outward (most visible first)
-    const center = findPageAtOffset(st + ch / 2);
-    let cacheHits = 0;
-    let uncachedCount = 0;
-    // Build page order: center, center-1, center+1, center-2, center+2, ...
-    const renderOrder: number[] = [];
-    for (let d = 0; ; d++) {
-      const lo = center - d;
-      const hi = center + d;
-      if (lo < rangeStart && hi > rangeEnd) break;
-      if (lo >= rangeStart) renderOrder.push(lo);
-      if (hi > lo && hi <= rangeEnd) renderOrder.push(hi);
+    const markVisibleHighComplete = (key: string) => {
+      if (generation !== visibleHighGeneration || !requiredVisibleHighTileKeys.has(key)) return;
+      completedVisibleHighTileKeys.add(key);
+    };
+    const orderedRequests = [
+      ...visibleHighRequests,
+      ...visibleLowRequests,
+      ...prefetchHighRequests,
+      ...prefetchLowRequests,
+    ].sort((left, right) => left.priority - right.priority);
+    for (const { spec, priority, page } of orderedRequests) {
+      const layer = layers.get(page);
+      if (!layer) continue;
+      const onInserted = requiredVisibleHighTileKeys.has(spec.key)
+        ? () => markVisibleHighComplete(spec.key)
+        : undefined;
+      queueTile(spec, layer, priority, generation, onInserted);
     }
+    lastScrollTop = viewport.top;
+  }
 
-    for (const i of renderOrder) {
-      const slot = scrollEl.querySelector(`.page-slot[data-page="${i}"]`) as HTMLElement | null;
-      if (!slot) continue;
-
-      const cached = pageCache.get(i);
-      if (cached) {
-        if (slot.dataset.renderQuality !== '2') renderPageFromCache(i, slot, cached, generation, 'high-res-cached');
-        cacheHits++;
-        continue;
-      }
-      const lowCached = lowResCache.get(i);
-      if (lowCached) {
-        if (!renderedPages.has(i)) renderPageFromCache(i, slot, lowCached, generation, 'low-res-cached');
-        cacheHits++;
-      }
-
-      const priority = i >= visibleStart && i <= visibleEnd ? 0 : (i >= rangeStart && i <= rangeEnd ? 1 : 2);
-      renderPage(i, slot, priority, generation);
-      uncachedCount++;
-    }
-
-    const t1 = performance.now();
-    console.log(`[pdf-perf] updatePageRendering: range=[${rangeStart}-${rangeEnd}] cacheHits=${cacheHits} uncached=${uncachedCount} destroyed=${destroyed} gen=${renderGeneration} time=${(t1 - t0).toFixed(1)}ms scrollTop=${st.toFixed(0)}`);
-
-    // Defer preloads so visible pages' high-res fetches get Mutex priority.
-    // renderPage() awaits low-res then starts high-res; without the delay,
-    // ~30 preload requests would queue ahead of visible pages' high-res fetches.
-    const mid = Math.floor((rangeStart + rangeEnd) / 2);
-    setTimeout(() => {
-      if (generation !== renderGeneration) return;
-      // Preload low-res for wide range
-      const lowStart = Math.max(0, rangeStart - LOW_RES_PRELOAD);
-      const lowEnd = Math.min(totalPages - 1, rangeEnd + LOW_RES_PRELOAD);
-      for (let page = lowStart; page <= lowEnd; page++) {
-        if (!pageCache.has(page) && !lowResCache.has(page)
-          && !lowRenderingPages.has(page) && !lowResCache.isPreloading(page)) {
-          lowResCache.markPreloading(page);
-          renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, lowResCache, LOW_RES_SCALE, () => generation === renderGeneration), 2, generation)
-            .catch(() => {}).finally(() => lowResCache.unmarkPreloading(page));
-        }
-      }
-
-      // Preload high-res ONLY outside buffer
-      const hiPreStart = Math.max(0, rangeStart - PRELOAD_PAGES);
-      const hiPreEnd = Math.min(totalPages - 1, rangeEnd + PRELOAD_PAGES);
-      if (hiPreStart < rangeStart) {
-        for (let page = hiPreStart; page < rangeStart; page++) {
-          if (!pageCache.has(page) && !highRenderingPages.has(page) && !pageCache.isPreloading(page)) {
-            pageCache.markPreloading(page);
-            renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, pageCache, undefined, () => generation === renderGeneration), 2, generation)
-              .catch(() => {}).finally(() => pageCache.unmarkPreloading(page));
-          }
-        }
-      }
-      if (hiPreEnd > rangeEnd) {
-        for (let page = rangeEnd + 1; page <= hiPreEnd; page++) {
-          if (!pageCache.has(page) && !highRenderingPages.has(page) && !pageCache.isPreloading(page)) {
-            pageCache.markPreloading(page);
-            renderScheduler.enqueue(() => fetchPdfPage(pdfPath, page, pageCache, undefined, () => generation === renderGeneration), 2, generation)
-              .catch(() => {}).finally(() => pageCache.unmarkPreloading(page));
-          }
-        }
-      }
-    }, 100);
+  // Render/destroy pages based on viewport + buffer, and preload beyond buffer
+  function updatePageRendering() {
+    updateTiledPageRendering();
   }
 
   // Re-render all visible pages (e.g., after search state change)
   function rerenderVisiblePages() {
-    renderedPages.clear();
-    lowRenderingPages.clear();
-    highRenderingPages.clear();
-    loadedLinks.clear();
-    const slots = scrollEl?.querySelectorAll('.page-slot') as NodeListOf<HTMLElement> | undefined;
-    if (!slots) return;
-    slots.forEach((slot) => {
-      const pageNum = parseInt(slot.dataset.page || '-1');
-      if (pageNum < 0) return;
-      slot.innerHTML = '';
-      delete slot.dataset.renderQuality;
-      delete slot.dataset.renderGeneration;
-      const inView = pageOffsets[pageNum + 1] > (scrollEl?.scrollTop || 0) - BUFFER_PAGES * (scrollEl?.clientHeight || 0)
-        && pageOffsets[pageNum] < (scrollEl?.scrollTop || 0) + (scrollEl?.clientHeight || 0) + BUFFER_PAGES * (scrollEl?.clientHeight || 0);
-      if (inView) {
-        const highCached = pageCache.get(pageNum);
-        if (highCached) {
-          renderPageFromCache(pageNum, slot, highCached, renderGeneration, 'high-res-cached');
-        } else {
-          const lowCached = lowResCache.get(pageNum);
-          if (lowCached) renderPageFromCache(pageNum, slot, lowCached, renderGeneration, 'low-res-cached');
-          renderPage(pageNum, slot);
-        }
-      }
-    });
+    for (const layer of scrollEl?.querySelectorAll<HTMLElement>('.pdf-tile-layer') || []) layer.innerHTML = '';
+    renderedTileData.clear();
+    updateTiledPageRendering();
   }
 
   // Update CSS dimensions of all rendered canvases/wrappers to match current scale
   function updateCanvasSizes() {
-    for (const [pageNum, canvas] of canvasRefs) {
-      const dim = pageDimensions[pageNum];
-      if (!dim) continue;
-      const wrapper = canvas.parentElement as HTMLElement | null;
-      if (wrapper && wrapper.classList.contains('pdf-page-wrapper')) {
-        wrapper.style.width = `${dim.width * scale}px`;
-        wrapper.style.height = `${dim.height * scale}px`;
-      }
-    }
+    updateTileLayouts();
   }
 
   // Reactive: sync canvas/wrapper sizes whenever scale changes
@@ -593,28 +564,89 @@
     updateCanvasSizes();
   });
 
-  // Zoom — only update CSS, no canvas destroy/re-render
-  function applyZoom(newScale: number) {
-    if (!scrollEl || pageDimensions.length === 0) return;
-    const oldScale = scale;
-    newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
-    if (newScale === oldScale) return;
+  function createZoomAnchor(pointer?: { clientX: number; clientY: number }): ZoomAnchor | undefined {
+    if (!scrollEl || pageDimensions.length === 0) return undefined;
+    const bounds = scrollEl.getBoundingClientRect();
+    const viewportX = Math.max(0, Math.min(scrollEl.clientWidth, (pointer?.clientX ?? bounds.left + scrollEl.clientWidth / 2) - bounds.left));
+    const viewportY = Math.max(0, Math.min(scrollEl.clientHeight, (pointer?.clientY ?? bounds.top + scrollEl.clientHeight / 2) - bounds.top));
+    const page = findPageAtOffset(scrollEl.scrollTop + viewportY);
+    const dimensions = pageDimensions[page];
+    if (!dimensions) return undefined;
+    const trackWidth = Math.max(scrollEl.clientWidth, ...pageDimensions.map(dim => dim.width * scale));
+    const pageLeft = (trackWidth - dimensions.width * scale) / 2;
 
-    // Preserve scroll center position
-    const center = scrollEl.scrollTop + scrollEl.clientHeight / 2;
-    const ratio = center / totalHeight;
+    return {
+      page,
+      pdfX: (scrollEl.scrollLeft + viewportX - pageLeft) / scale,
+      pdfY: Math.max(0, Math.min(dimensions.height, (scrollEl.scrollTop + viewportY - pageOffsets[page]) / scale)),
+      viewportX,
+      viewportY,
+    };
+  }
 
-    scale = newScale;
-    // Canvas/wrapper sizes are updated reactively via $effect on scale
+  function scheduleZoomCommit(session: ZoomSession) {
+    if (session.rafId !== undefined) return;
+    session.rafId = requestAnimationFrame(async () => {
+      session.rafId = undefined;
+      if (zoomSession !== session || !scrollEl) return;
 
-    // Restore scroll position after DOM update
-    requestAnimationFrame(() => {
-      if (!scrollEl) return;
-      const newCenter = ratio * totalHeight;
-      scrollEl.scrollTop = newCenter - scrollEl.clientHeight / 2;
-      // Render any newly visible pages (due to size change)
-      updatePageRendering();
+      const commitScale = session.targetScale;
+      if (scale !== commitScale) {
+        scale = commitScale;
+        await tick();
+      }
+      if (zoomSession !== session || !scrollEl) return;
+
+      const dimensions = pageDimensions[session.anchor.page];
+      if (!dimensions) return;
+      const offsets = cumulativePageOffsets(pageDimensions, scale);
+      const trackWidth = Math.max(scrollEl.clientWidth, ...pageDimensions.map(dim => dim.width * scale));
+      const pageLeft = (trackWidth - dimensions.width * scale) / 2;
+      scrollEl.scrollTop = Math.max(0, offsets[session.anchor.page] + session.anchor.pdfY * scale - session.anchor.viewportY);
+      scrollEl.scrollLeft = Math.max(0, pageLeft + session.anchor.pdfX * scale - session.anchor.viewportX);
+
+      if (session.targetScale !== commitScale) scheduleZoomCommit(session);
     });
+  }
+
+  function finishZoomSession(session: ZoomSession) {
+    if (zoomSession !== session) return;
+    if (session.rafId !== undefined || scale !== session.targetScale) {
+      scheduleZoomCommit(session);
+      session.settleTimer = setTimeout(() => finishZoomSession(session), 16);
+      return;
+    }
+    zoomSession = undefined;
+    zoomSettled = true;
+    if (scrollEl) scrollEl.style.overflowAnchor = session.overflowAnchor;
+    tileViewSignature = '';
+    updatePageRendering();
+  }
+
+  function changeZoom(delta: number, pointer?: { clientX: number; clientY: number }) {
+    if (!scrollEl || pageDimensions.length === 0) return;
+    let session = zoomSession;
+    if (!session) {
+      const anchor = createZoomAnchor(pointer);
+      if (!anchor) return;
+      session = {
+        anchor,
+        targetScale: scale,
+        rafId: undefined,
+        settleTimer: undefined,
+        overflowAnchor: scrollEl.style.overflowAnchor,
+      };
+      zoomSession = session;
+      zoomSettled = false;
+      scrollEl.style.overflowAnchor = 'none';
+      renderGeneration++;
+      renderScheduler.invalidate(renderGeneration);
+    }
+
+    session.targetScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, session.targetScale + delta));
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    scheduleZoomCommit(session);
+    session.settleTimer = setTimeout(() => finishZoomSession(session!), 150);
   }
 
   // Keyboard handler
@@ -632,12 +664,12 @@
     // Ctrl+=/- for zoom
     if (event.ctrlKey && (event.code === 'Equal' || event.code === 'NumpadAdd')) {
       event.preventDefault(); event.stopPropagation();
-      applyZoom(scale + ZOOM_STEP);
+      changeZoom(ZOOM_STEP);
       return;
     }
     if (event.ctrlKey && (event.code === 'Minus' || event.code === 'NumpadSubtract')) {
       event.preventDefault(); event.stopPropagation();
-      applyZoom(scale - ZOOM_STEP);
+      changeZoom(-ZOOM_STEP);
       return;
     }
 
@@ -679,7 +711,7 @@
       e.preventDefault();
       e.stopPropagation();
       const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-      applyZoom(scale + delta);
+      changeZoom(delta, e);
     }
     // Non-Ctrl wheel: let native scroll handle it
     else cancelPendingJump();
@@ -721,8 +753,6 @@
   // Scroll to a specific page top
   export function scrollToPage(pageNum: number, pdfY = 0) {
     if (!scrollEl || pageNum < 0 || pageNum >= totalPages) return;
-    lastRenderRangeStart = -1;
-    lastRenderRangeEnd = -1;
     schedulePageJump(pageNum, pdfY);
   }
 
@@ -736,17 +766,20 @@
     if (path && path !== lastPath) {
       lastPath = path;
       scaleInitialized = false;
-      pageCache.clear();
-      lowResCache.clear();
+      tileCache.clear();
+      renderingTiles.clear();
+      renderedTileData.clear();
+      pathRevision = `${path}:${Date.now()}`;
+      tileViewSignature = '';
+      zoomSettled = false;
+      if (zoomSession?.settleTimer) clearTimeout(zoomSession.settleTimer);
+      if (zoomSession?.rafId !== undefined) cancelAnimationFrame(zoomSession.rafId);
+      if (zoomSession && scrollEl) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
+      zoomSession = undefined;
       clearLinkCache();
       renderedPages.clear();
-      lowRenderingPages.clear();
-      highRenderingPages.clear();
       loadedLinks.clear();
-      canvasRefs.clear();
       renderGeneration++;
-      lastRenderRangeStart = -1;
-      lastRenderRangeEnd = -1;
       renderScheduler.clear();
       invoke('clear_pdf_cache').catch(() => {});
       isLoading = true;
@@ -765,6 +798,7 @@
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           initScale();
+          zoomSettled = true;
           updatePageRendering();
         });
       });
@@ -807,10 +841,13 @@
 
   onDestroy(() => {
     resizeObserver?.disconnect();
-    pageCache.clear();
-    lowResCache.clear();
-    lowRenderingPages.clear();
-    highRenderingPages.clear();
+    tileCache.clear();
+    renderingTiles.clear();
+    renderedTileData.clear();
+    if (zoomSession?.settleTimer) clearTimeout(zoomSession.settleTimer);
+    if (zoomSession?.rafId !== undefined) cancelAnimationFrame(zoomSession.rafId);
+    if (scrollEl && zoomSession) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
+    zoomSession = undefined;
     renderScheduler.clear();
     invoke('clear_pdf_cache').catch(() => {});
     clearLinkCache();
@@ -962,6 +999,19 @@
 
   :global(.pdf-page-wrapper) {
     flex-shrink: 0;
+  }
+
+  :global(.pdf-tile-layer) {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  :global(.pdf-tile-canvas) {
+    position: absolute;
+    display: block;
+    user-select: none;
+    -webkit-user-drag: none;
   }
 
   :global(.pdf-page-loading) {

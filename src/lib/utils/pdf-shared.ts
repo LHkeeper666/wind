@@ -149,7 +149,240 @@ export class PdfPageCache {
   }
 }
 
-export type PdfRenderPriority = 0 | 1 | 2 | 3;
+export const PDF_TILE_SIZE = 512;
+export const PDF_TILE_CACHE_BUDGET = 96 * 1024 * 1024;
+export const PDF_LOW_RES_TILE_CACHE_BUDGET = 16 * 1024 * 1024;
+export const PDF_MAX_DPR = 2;
+export const PDF_MIN_RENDER_DENSITY = 2;
+
+export interface PdfTileData extends PdfPageData {
+  page: number;
+  scale: number;
+  tileX: number;
+  tileY: number;
+  lowRes: boolean;
+}
+
+export interface PdfTileSpec {
+  key: string;
+  page: number;
+  scale: number;
+  tileX: number;
+  tileY: number;
+  width: number;
+  height: number;
+  lowRes: boolean;
+}
+
+interface CachedPdfTile {
+  data: PdfTileData;
+  bytes: number;
+  lowRes: boolean;
+  lastUsed: number;
+}
+
+export function quantizePdfZoom(scale: number): number {
+  return Math.round(scale * 8) / 8;
+}
+
+export function cappedPdfDevicePixelRatio(devicePixelRatio = window.devicePixelRatio): number {
+  return Math.min(PDF_MAX_DPR, Math.max(1, devicePixelRatio || 1));
+}
+
+export function makePdfTileKey(
+  pathRevision: string,
+  page: number,
+  scale: number,
+  tileX: number,
+  tileY: number,
+): string {
+  return `${pathRevision}:${page}:${scale.toFixed(3)}:${tileX}:${tileY}`;
+}
+
+export function getPdfTileSpecs(
+  pathRevision: string,
+  page: number,
+  pageDimensions: PdfPageDimensions,
+  pageLeft: number,
+  pageTop: number,
+  logicalScale: number,
+  renderScale: number,
+  viewport: { left: number; top: number; width: number; height: number },
+  prefetch = false,
+): PdfTileSpec[] {
+  const pageWidth = pageDimensions.width * logicalScale;
+  const pageHeight = pageDimensions.height * logicalScale;
+  const expansion = prefetch ? PDF_TILE_SIZE / renderScale : 0;
+  const left = Math.max(pageLeft, viewport.left - expansion);
+  const top = Math.max(pageTop, viewport.top - expansion);
+  const right = Math.min(pageLeft + pageWidth, viewport.left + viewport.width + expansion);
+  const bottom = Math.min(pageTop + pageHeight, viewport.top + viewport.height + expansion);
+  if (left >= right || top >= bottom) return [];
+
+  const maxPhysicalX = Math.ceil(pageDimensions.width * renderScale);
+  const maxPhysicalY = Math.ceil(pageDimensions.height * renderScale);
+  const startX = Math.floor(((left - pageLeft) * renderScale / logicalScale) / PDF_TILE_SIZE) * PDF_TILE_SIZE;
+  const startY = Math.floor(((top - pageTop) * renderScale / logicalScale) / PDF_TILE_SIZE) * PDF_TILE_SIZE;
+  const endX = Math.ceil(((right - pageLeft) * renderScale / logicalScale) / PDF_TILE_SIZE) * PDF_TILE_SIZE;
+  const endY = Math.ceil(((bottom - pageTop) * renderScale / logicalScale) / PDF_TILE_SIZE) * PDF_TILE_SIZE;
+  const specs: PdfTileSpec[] = [];
+
+  for (let tileY = startY; tileY < endY && tileY < maxPhysicalY; tileY += PDF_TILE_SIZE) {
+    for (let tileX = startX; tileX < endX && tileX < maxPhysicalX; tileX += PDF_TILE_SIZE) {
+      const width = Math.min(PDF_TILE_SIZE, maxPhysicalX - tileX);
+      const height = Math.min(PDF_TILE_SIZE, maxPhysicalY - tileY);
+      specs.push({
+        key: makePdfTileKey(pathRevision, page, renderScale, tileX, tileY),
+        page,
+        scale: renderScale,
+        tileX,
+        tileY,
+        width,
+        height,
+        lowRes: renderScale < logicalScale,
+      });
+    }
+  }
+  return specs;
+}
+
+export function pdfTileViewportDistance(
+  spec: PdfTileSpec,
+  pageLeft: number,
+  pageTop: number,
+  logicalScale: number,
+  viewport: { left: number; top: number; width: number; height: number },
+): number {
+  const tileCenterX = pageLeft + (spec.tileX + spec.width / 2) * logicalScale / spec.scale;
+  const tileCenterY = pageTop + (spec.tileY + spec.height / 2) * logicalScale / spec.scale;
+  const viewportCenterX = viewport.left + viewport.width / 2;
+  const viewportCenterY = viewport.top + viewport.height / 2;
+  return Math.hypot(tileCenterX - viewportCenterX, tileCenterY - viewportCenterY);
+}
+
+export class PdfTileCache {
+  private cache = new Map<string, CachedPdfTile>();
+  private pinned = new Set<string>();
+  private totalBytes = 0;
+  private lowResBytes = 0;
+  private currentScale = 1;
+
+  get(key: string): PdfTileData | undefined {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+    entry.lastUsed = performance.now();
+    return entry.data;
+  }
+
+  has(key: string): boolean {
+    return this.cache.has(key);
+  }
+
+  set(spec: PdfTileSpec, data: PdfTileData): void {
+    const previous = this.cache.get(spec.key);
+    if (previous) this.remove(spec.key);
+    const bytes = data.width * data.height * 4;
+    if (bytes > PDF_TILE_CACHE_BUDGET) return;
+    this.cache.set(spec.key, { data, bytes, lowRes: spec.lowRes, lastUsed: performance.now() });
+    this.totalBytes += bytes;
+    if (spec.lowRes) this.lowResBytes += bytes;
+    if (!spec.lowRes) this.removeMatchingLowRes(spec);
+    this.evict();
+  }
+
+  setPinned(keys: Iterable<string>): void {
+    this.pinned = new Set(keys);
+    this.evict();
+  }
+
+  setCurrentScale(scale: number): void {
+    this.currentScale = scale;
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.pinned.clear();
+    this.totalBytes = 0;
+    this.lowResBytes = 0;
+  }
+
+  private removeMatchingLowRes(spec: PdfTileSpec): void {
+    for (const [key, entry] of this.cache) {
+      const tile = entry.data;
+      if (entry.lowRes && tile.page === spec.page && tile.tileX === spec.tileX && tile.tileY === spec.tileY) {
+        this.remove(key);
+      }
+    }
+  }
+
+  private remove(key: string): void {
+    const entry = this.cache.get(key);
+    if (!entry) return;
+    this.totalBytes -= entry.bytes;
+    if (entry.lowRes) this.lowResBytes -= entry.bytes;
+    this.cache.delete(key);
+  }
+
+  private evict(): void {
+    while (this.lowResBytes > PDF_LOW_RES_TILE_CACHE_BUDGET) {
+      if (!this.evictOne(entry => entry.lowRes, false) && !this.evictOne(entry => entry.lowRes, true)) break;
+    }
+    while (this.totalBytes > PDF_TILE_CACHE_BUDGET) {
+      const removed = this.evictOne(entry => entry.lowRes, false)
+        || this.evictOne(entry => !entry.lowRes && entry.data.scale !== this.currentScale, false)
+        || this.evictOne(() => true, false)
+        || this.evictOne(entry => entry.lowRes, true)
+        || this.evictOne(() => true, true);
+      if (!removed) break;
+    }
+  }
+
+  private evictOne(predicate: (entry: CachedPdfTile) => boolean, includePinned: boolean): boolean {
+    let candidate: string | undefined;
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of this.cache) {
+      if ((!includePinned && this.pinned.has(key)) || !predicate(entry) || entry.lastUsed >= oldest) continue;
+      candidate = key;
+      oldest = entry.lastUsed;
+    }
+    if (!candidate) return false;
+    this.remove(candidate);
+    return true;
+  }
+}
+
+export async function fetchPdfTile(
+  path: string,
+  spec: PdfTileSpec,
+  cache: PdfTileCache,
+  shouldCommit: () => boolean = () => true,
+): Promise<PdfTileData> {
+  const cached = cache.get(spec.key);
+  if (cached) return cached;
+  const result = await invoke<PdfPageData>('render_pdf_tile', {
+    request: {
+      path,
+      page: spec.page,
+      scale: spec.scale,
+      tileX: spec.tileX,
+      tileY: spec.tileY,
+      width: spec.width,
+      height: spec.height,
+    },
+  });
+  const data = {
+    ...result,
+    page: spec.page,
+    scale: spec.scale,
+    tileX: spec.tileX,
+    tileY: spec.tileY,
+    lowRes: spec.lowRes,
+  };
+  if (shouldCommit()) cache.set(spec, data);
+  return data;
+}
+
+export type PdfRenderPriority = number;
 
 interface PdfRenderJob<T> {
   priority: PdfRenderPriority;
