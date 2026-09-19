@@ -151,7 +151,7 @@ eval "$(starship init bash)"
 | 前端 | SvelteKit + Svelte 5 (runes) + TypeScript |
 | 终端 | ConPTY + xterm.js |
 | 代码编辑器 | CodeMirror 6 + @replit/codemirror-vim |
-| PDF | pdfjs-dist + pdfium-render |
+| PDF | PDFium + pdfium-render（切片预览与整页渲染） |
 | 图片处理 | turbojpeg + fast_image_resize |
 | Markdown | markdown-it + KaTeX + Mermaid |
 | 语法高亮 | Shiki |
@@ -165,9 +165,10 @@ src/                         # Svelte 前端
   lib/stores/                # 状态管理
   routes/                    # SvelteKit 路由
 src-tauri/                   # Rust 后端
-  src/lib.rs                 # Tauri 命令（文件操作、终端、Neovim）
+  src/lib.rs                 # Tauri 命令（文件操作、终端、预览）
   src/terminal/mod.rs        # ConPTY 终端实现
-  src/neovim/mod.rs          # 嵌入式 Neovim（msgpack-rpc）
+  src/transfer.rs            # 本地/FTP 传输调度器
+  src/pdf/mod.rs             # PDFium 渲染、文本搜索和页面元数据
 ```
 
 ## License

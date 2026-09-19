@@ -741,26 +741,6 @@ fn collect_dir_size(dir: &Path, total: &mut u64) {
     }
 }
 
-/// Recursively collect conflicts between a source directory tree and its
-/// destination. Returns relative paths (relative to `root`) of entries that
-/// already exist at `dst`.
-fn collect_dir_conflicts(src: &Path, dst: &Path, root: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(src) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let dst_path = dst.join(&name);
-        let rel = path.strip_prefix(root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| name.to_string_lossy().to_string());
-        if path.is_dir() {
-            collect_dir_conflicts(&path, &dst_path, root, out);
-        } else if dst_path.exists() {
-            out.push(rel);
-        }
-    }
-}
-
 /// Recursively scan a source directory tree and emit a
 /// `transfer-conflict-found` event for each conflicting file.
 pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle, skip_rel_paths: &[String]) {
@@ -787,22 +767,6 @@ pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle, 
             }));
         }
     }
-}
-
-/// Check conflicts for a batch of transfer tasks (local copy/move directories).
-pub fn check_transfer_conflicts(tasks: &[EnqueueTask]) -> Vec<String> {
-    let mut conflicts = Vec::new();
-    for task in tasks {
-        if task.op_type != TransferType::Copy && task.op_type != TransferType::Move {
-            continue;
-        }
-        let src = Path::new(&task.source);
-        let dst = Path::new(&task.destination);
-        if src.is_dir() {
-            collect_dir_conflicts(src, dst, src, &mut conflicts);
-        }
-    }
-    conflicts
 }
 
 fn extract_ftp_conn(path: &str) -> Option<String> {

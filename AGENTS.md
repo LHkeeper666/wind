@@ -30,9 +30,10 @@ npm run tauri build        # Build release binary
 - `src/routes/+layout.svelte` - Root layout imports global CSS variables
 
 **Backend (Rust + Tauri 2)**
-- `src-tauri/src/lib.rs` - Main Tauri commands (file ops, terminal, neovim)
+- `src-tauri/src/lib.rs` - Main Tauri commands (file ops, terminal, previews)
 - `src-tauri/src/terminal/mod.rs` - ConPTY terminal with stdout event emission
-- `src-tauri/src/neovim/mod.rs` - Embedded Neovim via msgpack-rpc
+- `src-tauri/src/transfer.rs` - Local/FTP transfer scheduler
+- `src-tauri/src/pdf/mod.rs` - PDFium rendering, text search, and page metadata
 
 **Communication Pattern**
 - Frontend → Backend: `invoke('command_name', { params })` from `@tauri-apps/api/core`
@@ -46,7 +47,8 @@ npm run tauri build        # Build release binary
 - **Panel Navigation**: `h/l` to switch between panels when in directory panels. `j/k` to navigate within panel.
 - **Theme System**: CSS variables in `src/lib/styles/themes.css` with dark/light theme support.
 - **Preview Router**: Pluggable previewer architecture - each previewer implements `match(filePath)` and `render(content, container)`.
-- **CodeMirror 6**: Full code editor with syntax highlighting, line numbers, and language support.
+- **CodeMirror 6**: Full code editor with Vim mode, syntax highlighting, line numbers, and language support.
+- **PDF Preview**: PDFium renders tiles for continuous preview and full pages for the fullscreen viewer.
 - **Floating Terminal**: Default hidden, toggle with `Ctrl+``. Supports PowerShell, CMD, Git Bash.
 
 ## Keyboard Shortcuts
@@ -125,7 +127,7 @@ eval "$(starship init bash)"
 
 - `tauri 2` - Desktop framework
 - `windows` - ConPTY terminal support
-- `rmpv` / `rmp-serde` - Neovim msgpack communication
+- `pdfium-render` - PDFium bindings for PDF preview and fullscreen viewing
 - `dirs` - Home directory detection
 
 ## Environment Notes

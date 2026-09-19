@@ -38,7 +38,9 @@ The system SHALL allow users to paste clipboard contents into the current direct
 
 #### Scenario: Paste copy operation
 - **WHEN** user presses `p` with clipboard operation `copy`
-- **THEN** system copies each file from clipboard to the current directory, routing to local copy, ftp_upload, or ftp_download as appropriate
+- **THEN** system copies each file from clipboard to the current directory, routing to the appropriate backend
+- **AND** local copies and individual local/FTP uploads or downloads use `transfer_enqueue`, while FTP directory transfers use the existing folder-transfer entry points
+- **AND** the system does not invoke the retired `copy_file`, `copy_file_async`, `ftp_upload`, or `ftp_download` commands
 
 #### Scenario: Paste cut operation
 - **WHEN** user presses `p` with clipboard operation `cut`
@@ -163,4 +165,3 @@ The system SHALL allow users to extract selected files from within an archive to
 #### Scenario: x key in normal mode unchanged
 - **WHEN** user presses `x` in normal directory mode (not in archive)
 - **THEN** the system performs the existing cut operation (behavior unchanged)
-

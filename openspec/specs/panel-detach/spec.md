@@ -87,11 +87,13 @@ The system SHALL route paste operations to the correct backend based on the sour
 
 #### Scenario: Local to FTP paste (upload)
 - **WHEN** clipboard contains local files and the active paste target is an FTP directory
-- **THEN** system invokes ftp_upload for each file
+- **THEN** system enqueues individual file uploads through `transfer_enqueue` and directory uploads through `ftp_upload_folder`
+- **AND** the system does not invoke the retired `ftp_upload` command
 
 #### Scenario: FTP to local paste (download)
 - **WHEN** clipboard contains FTP files and the active paste target is a local directory
-- **THEN** system invokes ftp_download for each file
+- **THEN** system enqueues individual file downloads through `transfer_enqueue` and directory downloads through `ftp_download_folder`
+- **AND** the system does not invoke the retired `ftp_download` command
 
 #### Scenario: FTP to FTP paste (same server)
 - **WHEN** clipboard contains FTP files from server "A" and the active paste target is another directory on server "A"
@@ -126,4 +128,3 @@ The system SHALL persist left panel detach state (auto/manual mode, leftPath, cu
 #### Scenario: Restore auto mode tab
 - **WHEN** user switches back to a tab that was in auto mode
 - **THEN** left panel starts in auto mode, deriving its path from the restored center panel path
-

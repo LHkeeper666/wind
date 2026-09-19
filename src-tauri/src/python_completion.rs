@@ -7,12 +7,6 @@ use std::path::PathBuf;
 use crate::{app_paths, tool_cache};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PackageInfo {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMember {
     pub name: String,
     pub signature: Option<String>,
@@ -47,37 +41,6 @@ fn find_python(python_exe: Option<&str>) -> Result<String, String> {
     tool_cache::python_path()
         .map(|path| path.to_string_lossy().to_string())
         .ok_or_else(|| "Python not found in PATH".into())
-}
-
-#[tauri::command]
-pub async fn scan_python_packages(python_exe: Option<String>) -> Result<Vec<PackageInfo>, String> {
-    let python = find_python(python_exe.as_deref())?;
-
-    let output = tool_cache::background_command(&python)
-        .arg("-m")
-        .arg("pip")
-        .arg("list")
-        .arg("--format=json")
-        .output()
-        .map_err(|e| {
-            tool_cache::invalidate("python");
-            format!("Failed to run pip: {}", e)
-        })?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "pip list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let mut packages: Vec<PackageInfo> =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse pip output: {}", e))?;
-
-    // Filter out pip itself and distro packages
-    packages.retain(|p| p.name != "pip" && p.name != "setuptools" && p.name != "wheel");
-    Ok(packages)
 }
 
 #[tauri::command]

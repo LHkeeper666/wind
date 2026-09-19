@@ -1,10 +1,8 @@
 mod app_paths;
 mod archive;
-mod file_ops;
 mod directory_watcher;
 mod file_watcher;
 mod ftp;
-mod neovim;
 mod pdf;
 mod python_completion;
 mod terminal;
@@ -218,16 +216,10 @@ pub struct FileEntry {
 
 struct AppState {
     terminal: terminal::TerminalManager,
-    neovim: Mutex<neovim::Neovim>,
     file_watcher: Mutex<file_watcher::FileWatcher>,
     directory_watcher: Mutex<directory_watcher::DirectoryWatcher>,
     ftp_manager: Arc<TokioMutex<ftp::FtpManager>>,
     transfer_scheduler: Arc<TokioMutex<transfer::TransferScheduler>>,
-}
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
 #[tauri::command]
@@ -621,22 +613,6 @@ fn delete_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn permanent_delete(path: String) -> Result<(), String> {
-    let file_path = Path::new(&path);
-
-    if !file_path.exists() {
-        return Err(format!("Path does not exist: {}", path));
-    }
-
-    if file_path.is_dir() {
-        fs::remove_dir_all(file_path)
-            .map_err(|e| format!("Failed to permanently delete directory: {}", e))
-    } else {
-        fs::remove_file(file_path).map_err(|e| format!("Failed to permanently delete file: {}", e))
-    }
-}
-
-#[tauri::command]
 fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
     let old = Path::new(&old_path);
 
@@ -744,344 +720,6 @@ fn create_file(path: String, is_dir: bool) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-fn copy_file(source: String, destination: String) -> Result<(), String> {
-    let src = Path::new(&source);
-    let dst = Path::new(&destination);
-
-    if !src.exists() {
-        return Err(format!("Source path does not exist: {}", source));
-    }
-
-    if dst.exists() {
-        return Err(format!("Destination already exists: {}", destination));
-    }
-
-    // Ensure destination parent directory exists
-    if let Some(parent) = dst.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create destination directory {}: {}",
-                    parent.display(),
-                    e
-                )
-            })?;
-        }
-    }
-
-    if src.is_dir() {
-        // Copy directory recursively
-        copy_dir_recursive(src, dst).map_err(|e| format!("Failed to copy directory: {}", e))
-    } else {
-        fs::copy(src, dst)
-            .map_err(|e| format!("Failed to copy {} -> {}: {}", source, destination, e))?;
-        Ok(())
-    }
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
-    if !dst.exists() {
-        fs::create_dir_all(dst)?;
-    }
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if path.is_dir() {
-            copy_dir_recursive(&path, &dst_path)?;
-        } else {
-            fs::copy(&path, &dst_path)?;
-        }
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-fn move_file(source: String, destination: String) -> Result<(), String> {
-    let src = Path::new(&source);
-    let dst = Path::new(&destination);
-
-    if !src.exists() {
-        return Err(format!("Source path does not exist: {}", source));
-    }
-
-    if dst.exists() {
-        return Err(format!("Destination already exists: {}", destination));
-    }
-
-    // Ensure destination parent directory exists
-    if let Some(parent) = dst.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create destination directory {}: {}",
-                    parent.display(),
-                    e
-                )
-            })?;
-        }
-    }
-
-    // Same drive: atomic rename. Cross drive: copy + delete.
-    let src_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
-    let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
-
-    if src_drive == dst_drive {
-        fs::rename(src, dst)
-            .map_err(|e| format!("Failed to move {} -> {}: {}", source, destination, e))
-    } else {
-        // Cross-drive: copy then delete
-        if src.is_dir() {
-            copy_dir_recursive(src, dst).map_err(|e| format!("Failed to copy directory: {}", e))?;
-            fs::remove_dir_all(src).map_err(|e| format!("Failed to remove source directory: {}", e))
-        } else {
-            fs::copy(src, dst).map_err(|e| format!("Failed to copy file: {}", e))?;
-            fs::remove_file(src).map_err(|e| format!("Failed to remove source file: {}", e))
-        }
-    }
-}
-
-// ── Async file operations ──
-
-#[tauri::command]
-async fn check_copy_conflicts(
-    sources: Vec<String>,
-    dest_dir: String,
-) -> Result<Vec<String>, String> {
-    let pairs: Vec<(std::path::PathBuf, String)> = sources
-        .iter()
-        .map(|s| (std::path::PathBuf::from(s), String::new()))
-        .collect();
-    let dest = std::path::Path::new(&dest_dir);
-    Ok(file_ops::check_conflicts(&pairs, dest))
-}
-
-#[tauri::command]
-async fn copy_file_async(
-    app: tauri::AppHandle,
-    sources: Vec<String>,
-    dest_dir: String,
-) -> Result<u64, String> {
-    let app_clone = app.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut progress = file_ops::Progress::new(
-            file_ops::OpType::Copy,
-            format!("Copying {} items", sources.len()),
-        );
-        let op_id = progress.op_id;
-        let dest_path = std::path::Path::new(&dest_dir);
-
-        // Ensure destination directory exists
-        if !dest_path.exists() {
-            std::fs::create_dir_all(dest_path)
-                .map_err(|e| format!("Failed to create dest dir: {}", e))?;
-        }
-
-        // Phase 1: scan
-        let mut total_bytes: u64 = 0;
-        let mut total_files: u32 = 0;
-        for src in &sources {
-            let src_path = std::path::Path::new(src);
-            if src_path.is_dir() {
-                if let Ok((b, f)) = file_ops::scan_directory(src_path, 20) {
-                    total_bytes += b;
-                    total_files += f;
-                }
-            } else if let Ok(meta) = src_path.metadata() {
-                total_bytes += meta.len();
-                total_files += 1;
-            }
-        }
-        progress.set_scan_result(total_bytes, total_files);
-        file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
-
-        // Phase 2: execute
-        let mut total_copied: u64 = 0;
-        for src in &sources {
-            if progress.cancelled() {
-                file_ops::emit_cancelled(op_id, &app_clone);
-                return Err("Cancelled".into());
-            }
-            let src_path = std::path::Path::new(src);
-            let file_name = src_path.file_name().unwrap_or_default();
-            let dst_path = dest_path.join(file_name);
-
-            if src_path.is_dir() {
-                match file_ops::copy_dir_chunked(src_path, &dst_path, &mut progress, &app_clone) {
-                    Ok(n) => total_copied += n,
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::Interrupted {
-                            file_ops::emit_cancelled(op_id, &app_clone);
-                            return Err("Cancelled".into());
-                        }
-                        let _ = std::fs::remove_dir_all(&dst_path);
-                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
-                        return Err(e.to_string());
-                    }
-                }
-            } else {
-                match file_ops::copy_file_chunked(src_path, &dst_path, &mut progress, &app_clone) {
-                    Ok(n) => {
-                        total_copied += n;
-                        progress.file_done(&app_clone);
-                    }
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::Interrupted {
-                            file_ops::emit_cancelled(op_id, &app_clone);
-                            return Err("Cancelled".into());
-                        }
-                        let _ = std::fs::remove_file(&dst_path);
-                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
-                        return Err(e.to_string());
-                    }
-                }
-            }
-        }
-
-        file_ops::emit_complete(op_id, &app_clone);
-        Ok(total_copied)
-    })
-    .await
-    .map_err(|e| format!("Join error: {}", e))?
-}
-
-#[tauri::command]
-async fn move_file_async(
-    app: tauri::AppHandle,
-    source: String,
-    destination: String,
-) -> Result<(), String> {
-    let src_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
-    let dst_drive = destination.chars().next().map(|c| c.to_ascii_uppercase());
-
-    if src_drive == dst_drive {
-        std::fs::rename(&source, &destination).map_err(|e| format!("Failed to move: {}", e))
-    } else {
-        let app_clone = app.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut progress =
-                file_ops::Progress::new(file_ops::OpType::Move, format!("Moving {}", source));
-            let op_id = progress.op_id;
-            let src_path = std::path::Path::new(&source);
-            let dst_path = std::path::Path::new(&destination);
-
-            let (total_bytes, total_files) = if src_path.is_dir() {
-                file_ops::scan_directory(src_path, 20).unwrap_or((0, 0))
-            } else {
-                (src_path.metadata().map(|m| m.len()).unwrap_or(0), 1)
-            };
-            progress.set_scan_result(total_bytes, total_files);
-            file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
-
-            let result = if src_path.is_dir() {
-                file_ops::copy_dir_chunked(src_path, dst_path, &mut progress, &app_clone)
-                    .map(|_| ())
-            } else {
-                file_ops::copy_file_chunked(src_path, dst_path, &mut progress, &app_clone)
-                    .map(|_| ())
-            };
-
-            match result {
-                Ok(()) => {
-                    let _ = if src_path.is_dir() {
-                        std::fs::remove_dir_all(src_path)
-                    } else {
-                        std::fs::remove_file(src_path)
-                    };
-                    file_ops::emit_complete(op_id, &app_clone);
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = if dst_path.is_dir() {
-                        std::fs::remove_dir_all(dst_path)
-                    } else {
-                        std::fs::remove_file(dst_path)
-                    };
-                    if e.kind() == std::io::ErrorKind::Interrupted {
-                        file_ops::emit_cancelled(op_id, &app_clone);
-                    } else {
-                        file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
-                    }
-                    Err(e.to_string())
-                }
-            }
-        })
-        .await
-        .map_err(|e| format!("Join error: {}", e))?
-    }
-}
-
-#[tauri::command]
-async fn delete_file_async(
-    app: tauri::AppHandle,
-    path: String,
-    permanent: Option<bool>,
-) -> Result<(), String> {
-    let is_permanent = permanent.unwrap_or(false);
-    let app_clone = app.clone();
-    let path_clone = path.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let mut progress =
-            file_ops::Progress::new(file_ops::OpType::Delete, format!("Deleting {}", path_clone));
-        let op_id = progress.op_id;
-        let p = std::path::Path::new(&path_clone);
-
-        let (total_bytes, total_files) = if p.is_dir() {
-            file_ops::scan_directory(p, 20).unwrap_or((0, 0))
-        } else {
-            (p.metadata().map(|m| m.len()).unwrap_or(0), 1)
-        };
-        progress.set_scan_result(total_bytes, total_files);
-        file_ops::emit_scan_complete(op_id, total_bytes, total_files, &app_clone);
-
-        let result = if is_permanent {
-            file_ops::delete_recursive(p, &mut progress, &app_clone)
-        } else {
-            match trash::delete(p) {
-                Ok(()) => {
-                    progress.file_done(&app_clone);
-                    Ok(())
-                }
-                Err(e) => Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )),
-            }
-        };
-
-        match result {
-            Ok(()) => {
-                file_ops::emit_complete(op_id, &app_clone);
-                Ok(())
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    file_ops::emit_cancelled(op_id, &app_clone);
-                } else {
-                    file_ops::emit_failed(op_id, &e.to_string(), &app_clone);
-                }
-                Err(e.to_string())
-            }
-        }
-    })
-    .await
-    .map_err(|e| format!("Join error: {}", e))?
-}
-
-#[tauri::command]
-async fn cancel_file_op(id: u64) -> Result<(), String> {
-    if file_ops::cancel_op(id) {
-        Ok(())
-    } else {
-        Err(format!("Operation {} not found", id))
-    }
-}
-
 // ── Transfer Manager commands ──
 
 #[tauri::command]
@@ -1108,13 +746,6 @@ async fn transfer_cancel_all(state: State<'_, AppState>) -> Result<usize, String
 }
 
 #[tauri::command]
-async fn check_transfer_conflicts(
-    tasks: Vec<transfer::EnqueueTask>,
-) -> Result<Vec<String>, String> {
-    Ok(transfer::check_transfer_conflicts(&tasks))
-}
-
-#[tauri::command]
 async fn scan_transfer_conflicts(
     tasks: Vec<transfer::EnqueueTask>,
     app: tauri::AppHandle,
@@ -1135,80 +766,6 @@ async fn scan_transfer_conflicts(
         let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
     });
     Ok(())
-}
-
-#[tauri::command]
-async fn check_ftp_upload_conflicts(
-    conn_name: String,
-    sources: Vec<String>,
-    remote_dir: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr
-        .create_independent(&conn_name)
-        .await
-        .map_err(|e| format!("Failed to create FTP session for conflict check: {e}"))?;
-    drop(mgr);
-
-    let mut ftp = session.lock().await;
-    let remote_entries = ftp::list_dir_recursive(&mut ftp.client, &remote_dir)
-        .await
-        .map_err(|e| format!("Failed to list remote directory: {e}"))?;
-    let _ = ftp.client.quit().await;
-    drop(ftp);
-
-    use std::collections::HashSet;
-    let remote_base = remote_dir.trim_end_matches('/');
-    let mut remote_names: HashSet<String> = HashSet::new();
-    for (remote_full, _size, _is_dir) in &remote_entries {
-        let rel = remote_full
-            .strip_prefix(remote_base)
-            .unwrap_or(remote_full)
-            .trim_start_matches('/');
-        remote_names.insert(rel.to_string());
-    }
-
-    let mut conflicts = Vec::new();
-    for src in &sources {
-        let path = std::path::Path::new(src);
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if !path.is_dir() {
-            // Only files conflict at the top level; directories always merge into
-            // an existing directory (or get created if absent).
-            if remote_names.contains(&name) {
-                conflicts.push(name.clone());
-            }
-        }
-        if path.is_dir() {
-            let mut local: Vec<(String, u64, bool)> = Vec::new();
-            let _ = transfer::walk_local_dir(&path.to_path_buf(), path, &mut local);
-            for (full, _size, is_dir) in &local {
-                if *is_dir {
-                    continue;
-                } // only files conflict inside a directory
-                let rel = full
-                    .strip_prefix(&path.to_string_lossy().to_string())
-                    .map(|p| {
-                        p.trim_start_matches('\\')
-                            .trim_start_matches('/')
-                            .to_string()
-                    })
-                    .unwrap_or_default();
-                if rel.is_empty() {
-                    continue;
-                }
-                let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
-                if remote_names.contains(&remote_rel) {
-                    conflicts.push(remote_rel);
-                }
-            }
-        }
-    }
-    Ok(conflicts)
 }
 
 #[tauri::command]
@@ -1456,36 +1013,6 @@ fn terminal_resize(
 #[tauri::command]
 fn terminal_kill(tab_id: u32, state: State<'_, AppState>) {
     state.terminal.kill(tab_id);
-}
-
-#[tauri::command]
-fn neovim_spawn(state: State<'_, AppState>) -> Result<(), String> {
-    let mut neovim = state.neovim.lock().unwrap();
-    neovim.spawn()
-}
-
-#[tauri::command]
-fn neovim_input(keys: String, state: State<'_, AppState>) -> Result<(), String> {
-    let neovim = state.neovim.lock().unwrap();
-    neovim.send_input(&keys)
-}
-
-#[tauri::command]
-fn neovim_command(cmd: String, state: State<'_, AppState>) -> Result<(), String> {
-    let neovim = state.neovim.lock().unwrap();
-    neovim.send_input(&format!(":{}", cmd))
-}
-
-#[tauri::command]
-fn get_file_size(path: String) -> Result<u64, String> {
-    let file_path = Path::new(&path);
-    if !file_path.exists() {
-        return Err(format!("File does not exist: {}", path));
-    }
-    file_path
-        .metadata()
-        .map(|m| m.len())
-        .map_err(|e| format!("Failed to get file size: {}", e))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2462,113 +1989,6 @@ async fn try_list_dir(
 }
 
 #[tauri::command]
-async fn ftp_download(
-    app: tauri::AppHandle,
-    conn_name: String,
-    remote_path: String,
-    local_path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr.get(&conn_name)?;
-    drop(mgr);
-
-    let file_name = remote_path.rsplit('/').next().unwrap_or(&remote_path);
-    eprintln!(
-        "[FTP] command ftp_download: conn={} remote={} → local={}",
-        conn_name, remote_path, local_path
-    );
-
-    let mut ftp = session.lock().await;
-
-    // Stream download directly to file
-    let local = Path::new(&local_path);
-    if let Some(parent) = local.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-
-    use tokio::io::AsyncWriteExt;
-    let mut stream = ftp
-        .client
-        .retr_as_stream(&remote_path)
-        .await
-        .map_err(|e| format!("Failed to download: {}", e))?;
-
-    let mut file = tokio::fs::File::create(local)
-        .await
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-    let bytes = tokio::io::copy(&mut stream, &mut file)
-        .await
-        .map_err(|e| format!("Failed to write file: {}", e))?;
-    file.flush()
-        .await
-        .map_err(|e| format!("Flush error: {}", e))?;
-
-    eprintln!("[FTP] download: wrote {} bytes for {}", bytes, file_name);
-
-    let _ = app.emit(
-        "ftp-progress",
-        serde_json::json!({
-            "file": file_name,
-            "done": bytes,
-            "total": bytes,
-            "op": "download"
-        }),
-    );
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn ftp_upload(
-    app: tauri::AppHandle,
-    conn_name: String,
-    local_path: String,
-    remote_path: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr.get(&conn_name)?;
-    drop(mgr);
-
-    let file_name = local_path.rsplit('\\').next().unwrap_or(&local_path);
-    eprintln!(
-        "[FTP] command ftp_upload: conn={} local={} → remote={}",
-        conn_name, local_path, remote_path
-    );
-
-    let mut ftp = session.lock().await;
-
-    // Stream upload directly from file
-    let mut file = tokio::fs::File::open(&local_path)
-        .await
-        .map_err(|e| format!("Failed to open local file: {}", e))?;
-    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "[FTP] upload: streaming {} bytes for {}",
-        file_size, file_name
-    );
-
-    ftp.client
-        .put_file(&remote_path, &mut file)
-        .await
-        .map_err(|e| format!("Failed to upload: {}", e))?;
-
-    let _ = app.emit(
-        "ftp-progress",
-        serde_json::json!({
-            "file": file_name,
-            "done": file_size,
-            "total": file_size,
-            "op": "upload"
-        }),
-    );
-
-    Ok(())
-}
-
-#[tauri::command]
 async fn ftp_delete(
     path: String,
     _permanent: Option<bool>,
@@ -2975,7 +2395,6 @@ pub fn run() {
             )));
             app.manage(AppState {
                 terminal,
-                neovim: Mutex::new(neovim::Neovim::new()),
                 file_watcher: Mutex::new(file_watcher::FileWatcher::new()),
                 directory_watcher: Mutex::new(directory_watcher::DirectoryWatcher::new()),
                 ftp_manager: ftp_manager.clone(),
@@ -2984,7 +2403,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             get_home_dir,
             file_exists,
             get_file_metadata,
@@ -3009,24 +2427,14 @@ pub fn run() {
             purge_recycle_items,
             empty_recycle_bin,
             delete_file,
-            permanent_delete,
             rename_file,
             batch_rename,
             create_batch_rename_temp_file,
             delete_temp_file,
             create_file,
-            copy_file,
-            copy_file_async,
-            move_file,
-            move_file_async,
-            delete_file_async,
-            cancel_file_op,
-            check_copy_conflicts,
             transfer_enqueue,
             transfer_cancel,
             transfer_cancel_all,
-            check_transfer_conflicts,
-            check_ftp_upload_conflicts,
             scan_transfer_conflicts,
             scan_ftp_upload_conflicts,
             scan_ftp_download_conflicts,
@@ -3036,7 +2444,6 @@ pub fn run() {
             transfer_set_ftp_slots,
             transfer_set_local_slots,
             transfer_get_slots,
-            get_file_size,
             get_file_info,
             calculate_folder_size,
             cancel_folder_size,
@@ -3052,9 +2459,6 @@ pub fn run() {
             terminal_input,
             terminal_resize,
             terminal_kill,
-            neovim_spawn,
-            neovim_input,
-            neovim_command,
             exec_shell_command,
             search_files,
             cancel_search,
@@ -3075,8 +2479,6 @@ pub fn run() {
             ftp_connect,
             ftp_disconnect,
             ftp_read_directory,
-            ftp_download,
-            ftp_upload,
             ftp_download_folder,
             ftp_upload_folder,
             ftp_delete,
@@ -3086,7 +2488,6 @@ pub fn run() {
             ftp_mkdir,
             list_ftp_connections,
             check_ftp_connection,
-            python_completion::scan_python_packages,
             python_completion::get_package_api,
         ])
         .run(tauri::generate_context!())

@@ -151,7 +151,7 @@ eval "$(starship init bash)"
 | Frontend | SvelteKit + Svelte 5 (runes) + TypeScript |
 | Terminal | ConPTY + xterm.js |
 | Code editor | CodeMirror 6 + @replit/codemirror-vim |
-| PDF | pdfjs-dist + pdfium-render |
+| PDF | PDFium via pdfium-render (tiled preview and full-page rendering) |
 | Image processing | turbojpeg + fast_image_resize |
 | Markdown | markdown-it + KaTeX + Mermaid |
 | Syntax highlight | Shiki |
@@ -165,9 +165,10 @@ src/                         # Svelte frontend
   lib/stores/                # State management
   routes/                    # SvelteKit routes
 src-tauri/                   # Rust backend
-  src/lib.rs                 # Tauri commands (file ops, terminal, neovim)
+  src/lib.rs                 # Tauri commands (file ops, terminal, previews)
   src/terminal/mod.rs        # ConPTY terminal implementation
-  src/neovim/mod.rs          # Embedded Neovim (msgpack-rpc)
+  src/transfer.rs            # Local/FTP transfer scheduler
+  src/pdf/mod.rs             # PDFium rendering, text search, and page metadata
 ```
 
 ## License

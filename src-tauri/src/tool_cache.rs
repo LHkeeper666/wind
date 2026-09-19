@@ -198,10 +198,6 @@ pub fn python_path() -> Option<PathBuf> {
     resolve_tool("python", "WIND_PYTHON_PATH", &["python", "python3", "py"])
 }
 
-pub fn nvim_path() -> Option<PathBuf> {
-    resolve_tool("nvim", "WIND_NVIM_PATH", &["nvim"])
-}
-
 /// Creates a console program without a visible Windows console window.
 pub fn background_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
