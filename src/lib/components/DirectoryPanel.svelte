@@ -16,7 +16,8 @@
     getCollapseSelectionTarget,
     isProjectTreePathWithin as isTreePathWithin,
     projectTreePathKey as treePathKey,
-  } from '$lib/utils/project-tree-focus.js';
+  } from '$lib/utils/project-tree-focus';
+  import { isArchiveFile } from '$lib/utils/file-types';
 
   interface FileEntry {
     name: string;
@@ -1334,12 +1335,6 @@
     }
     if (node.entry.is_dir) selectTreeSubtree(node);
     else selectTreeNode(node);
-  }
-
-  function isArchiveFile(name: string): boolean {
-    const lower = name.toLowerCase();
-    return lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.tar.gz')
-      || lower.endsWith('.tgz') || lower.endsWith('.7z');
   }
 
   function getArchiveFormat(name: string): ArchiveFormat {

@@ -4,8 +4,9 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
-  import { PreviewRouter, isVideoFileExt } from '$lib/previewers';
+  import { PreviewRouter } from '$lib/previewers';
   import type { VideoMeta, TocHeading } from '$lib/previewers';
+  import { isTextFile, isImageFile, isPdfFile, isVideoFile, isArchiveFile } from '$lib/utils/file-types';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { EditorView } from 'codemirror';
@@ -827,32 +828,10 @@
     if (!focused && panelElement) { panelElement.focus(); }
   }
 
-  function isTextFile(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    const binaryExtensions = new Set([
-      'exe','dll','so','dylib','bin','obj','o','a','lib','sys','drv',
-      'rar','7z','tar','gz','bz2','xz','zst','lz4','cab',
-      'mp3','wav','flac','aac','ogg','wma','m4a','opus','mid','midi',
-      'mp4','mkv','avi','mov','wmv','flv','webm','m4v','mpg','mpeg','ts',
-      'png','jpg','jpeg','gif','webp','bmp','ico','tiff','tif','psd','raw','cr2','nef',
-      'pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp',
-      'ttf','otf','woff','woff2','eot',
-      'db','sqlite','sqlite3','mdb','accdb','class','pyc','pyo',
-      'iso','img','vhd','vhdx','qcow2',
-    ]);
-    return !binaryExtensions.has(ext);
-  }
-
-  const IMAGE_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','svg']);
-  function isImageFile(path: string): boolean { return IMAGE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
-  function isPdfFile(path: string): boolean { return (path.split('.').pop()?.toLowerCase() || '') === 'pdf'; }
-  function isVideoFile(path: string): boolean { return isVideoFileExt(path); }
   function isDirectEditorFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
     return !['md', 'markdown', 'json', 'ipynb'].includes(ext);
   }
-  const ARCHIVE_EXTENSIONS = new Set(['zip']);
-  function isArchiveFile(path: string): boolean { return ARCHIVE_EXTENSIONS.has(path.split('.').pop()?.toLowerCase() || ''); }
 
   // PDF state
   let pdfPageCount: number = $state(0);

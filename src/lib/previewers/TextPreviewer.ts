@@ -2,6 +2,7 @@ import type { Previewer } from './types';
 import { codeToTokens } from 'shiki';
 import type { BundledLanguage } from 'shiki';
 import { diffLines } from '$lib/utils/diff';
+import { BINARY_EXTENSIONS } from '$lib/utils/file-types';
 
 const KNOWN_LANG_EXTENSIONS = new Set([
 	'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
@@ -10,18 +11,6 @@ const KNOWN_LANG_EXTENSIONS = new Set([
 	'rb', 'php', 'swift', 'kt', 'kts', 'scala', 'r', 'lua', 'pl', 'pm',
 	'hs', 'ml', 'ex', 'exs', 'erl', 'clj', 'lisp', 'el', 'vim',
 	'dockerfile', 'makefile', 'cmake', 'gradle', 'sbt', 'vue', 'svelte',
-]);
-
-const BINARY_EXTENSIONS = new Set([
-	'exe', 'dll', 'so', 'dylib', 'bin', 'obj', 'o', 'a', 'lib', 'sys', 'drv',
-	'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst', 'lz4', 'cab',
-	'mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'mid', 'midi',
-	'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg',
-	'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif', 'psd', 'raw', 'cr2', 'nef',
-	'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
-	'ttf', 'otf', 'woff', 'woff2', 'eot',
-	'db', 'sqlite', 'sqlite3', 'mdb', 'accdb', 'class', 'pyc', 'pyo',
-	'iso', 'img', 'vhd', 'vhdx', 'qcow2', 'wasm', 'jar',
 ]);
 
 const FILENAME_LANG_MAP: Record<string, string> = {

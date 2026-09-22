@@ -15,7 +15,7 @@
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
   import FullscreenVideoPlayer from './FullscreenVideoPlayer.svelte';
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
-  import { isVideoFileExt } from '$lib/previewers';
+  import { isImageFile, isPdfFile, isVideoFile } from '$lib/utils/file-types';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import { terminalManager } from '$lib/terminal/terminal-manager';
   import SearchModal from './SearchModal.svelte';
@@ -286,20 +286,6 @@
   // Fullscreen video player state
   let fullscreenVideoPlayerPath: string = $state('');
   let fullscreenVideoPlayerFileSize: number = $state(0);
-
-  function isImageFile(filePath: string): boolean {
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
-    return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext);
-  }
-
-  function isPdfFile(filePath: string): boolean {
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
-    return ext === 'pdf';
-  }
-
-  function isVideoFile(path: string): boolean {
-    return isVideoFileExt(path);
-  }
 
   // Drag state for column resizing
   let isDragging: 'first' | 'second' | null = $state(null);
