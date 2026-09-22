@@ -44,72 +44,27 @@
     handleInsertModeShiftTab,
     handleInsertModeTab,
   } from '$lib/utils/editor-text-keys';
-
-  // Independent StateField for :s live preview (nvim inccommand style)
-  const triggerSMatchUpdate = StateEffect.define<void>();
-  const clearSMatch = StateEffect.define<void>();
-  const sMatchField = StateField.define({
-    create() { return Decoration.none as any; },
-    update(value, tr) {
-      for (const e of tr.effects) {
-        if (e.is(clearSMatch)) return Decoration.none as any;
-        if (e.is(triggerSMatchUpdate)) {
-          const cmd = overlayCmdBuf;
-          const m = cmd.match(/^(['<,'>]*)([%]?)s(.)/);
-          if (!m) return Decoration.none as any;
-          const delim = m[3];
-          const esc = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const re = new RegExp(`s${esc}([^${esc}]*)(?:${esc}([^${esc}]*))?(?:${esc}([ggiI]*))?`);
-          const pm = cmd.match(re);
-          if (!pm) return Decoration.none as any;
-          const pattern = pm[1];
-          const replacement = pm[2] ?? '';
-          const flags = pm[3] ?? '';
-          const global = flags.includes('g');
-          if (!pattern) return Decoration.none as any;
-          let regex: RegExp;
-          try {
-            regex = new RegExp(pattern, flags.replace('g', '') + 'i');
-          } catch { return Decoration.none as any; }
-          const isVisualRange = m[1] === "'<,'>";
-          const hasRange = !isVisualRange && (m[1] !== '' || m[2] !== '');
-          const mark = Decoration.mark({ class: replacement ? 'cm-sMatch-replace' : 'cm-sMatch' });
-          const decos: any[] = [];
-          const doc = tr.state.doc;
-          let startLine: number;
-          let endLine: number;
-          if (isVisualRange) {
-            const sel = tr.state.selection.main;
-            startLine = doc.lineAt(sel.from).number;
-            endLine = doc.lineAt(sel.to).number;
-          } else if (hasRange) {
-            startLine = 1;
-            endLine = doc.lines;
-          } else {
-            startLine = doc.lineAt(tr.state.selection.main.head).number;
-            endLine = startLine;
-          }
-          for (let i = startLine; i <= endLine; i++) {
-            const line = doc.line(i);
-            if (global) {
-              const lineRegex = new RegExp(pattern, 'gi');
-              let m: RegExpExecArray | null;
-              while ((m = lineRegex.exec(line.text)) !== null) {
-                decos.push(mark.range(line.from + m.index, line.from + m.index + m[0].length));
-                if (!m[0].length) break;
-              }
-            } else {
-              const m = line.text.match(regex);
-              if (m) decos.push(mark.range(line.from + m.index!, line.from + m.index! + m[0].length));
-            }
-          }
-          return Decoration.set(decos.sort((a, b) => a.from - b.from));
-        }
-      }
-      return value.map(tr.changes);
-    },
-    provide: f => EditorView.decorations.from(f),
-  });
+  import {
+    type TextContentSnapshot,
+    type TabEditorCache,
+    TabCacheManager,
+    collectExpandedLines,
+    restoreExpandedLines,
+  } from '$lib/utils/tab-cache';
+  import {
+    isDirectEditorFile,
+    formatSize,
+    loadArchiveDirectory,
+    loadArchiveFile,
+    loadImage,
+    loadPdf,
+    loadVideo,
+    loadTextFile,
+  } from '$lib/utils/file-loader';
+  import PreviewPane from './PreviewPane.svelte';
+  import TextEditorHost from './TextEditorHost.svelte';
+  import VimOverlay from './VimOverlay.svelte';
+  import { sMatchField, triggerSMatchUpdate, clearSMatch } from '$lib/utils/vim-smatch';
 
   interface FileEntry {
     name: string;
@@ -169,12 +124,6 @@
   let archiveEditPath: string | null = $state(null);
   let archiveEditInternalPath: string | null = $state(null);
   let themeObserver: MutationObserver | null = null;
-  interface TextContentSnapshot {
-    tabId: number;
-    path: string;
-    generation: number;
-    content: string;
-  }
   let loadGeneration: number = 0;
   let readyTextContent = $state<TextContentSnapshot | null>(null);
   let codeFileDirectEdit = $derived(
@@ -188,7 +137,6 @@
   );
   let overlayElement: HTMLElement | undefined = $state(undefined);
   let renderRequestId: number = 0;
-  const tabRenderVersions = new Map<number, number>();
 
   interface EditorSession {
     tabId: number;
@@ -347,32 +295,6 @@
   let tocFocused: boolean = $state(false);
   let tocOpen: boolean = $state(true);
   let pendingTocExpanded: Set<number> | null = null;
-
-  function collectExpandedLines(headings: TocHeading[]): number[] {
-    const lines: number[] = [];
-    function walk(items: TocHeading[]) {
-      for (const h of items) {
-        if (h.expanded && h.children.length > 0) {
-          lines.push(h.line);
-          walk(h.children);
-        }
-      }
-    }
-    walk(headings);
-    return lines;
-  }
-
-  function restoreExpandedLines(headings: TocHeading[], lines: Set<number>) {
-    function walk(items: TocHeading[]) {
-      for (const h of items) {
-        if (lines.has(h.line) && h.children.length > 0) {
-          h.expanded = true;
-          walk(h.children);
-        }
-      }
-    }
-    walk(headings);
-  }
   let scrollObserver: IntersectionObserver | undefined;
   let isMarkdown: boolean = $state(false);
   let editorTargetLine: number = -1;
@@ -380,29 +302,7 @@
   let pendingEditorScrollTop: number = -1;
 
   // Per-tab editor state cache
-  interface TabEditorCache {
-    filePath: string;
-    content: string;
-    savedContent: string;
-    binaryContent: ArrayBuffer | null;
-    mode: 'global-normal' | 'editor-normal' | 'editor-insert';
-    editorCursorPos: number;
-    editorScrollTop: number;
-    previewScrollTop: number;
-    isModified: boolean;
-    pdfCurrentPage: number;
-    pdfPageCount: number;
-    pdfPageDimensions: PdfPageDimensions[];
-    pdfOutline: PdfOutlineItem[];
-    pdfTocOpen: boolean;
-    fileMtime: number;
-    tocOpen: boolean;
-    tocHeadings: TocHeading[];
-    tocExpandedLines: number[];
-    tocFocused: boolean;
-    tocSelectedIndex: number;
-  }
-  const tabEditorCache = new Map<number, TabEditorCache>();
+  const tabCache = new TabCacheManager();
   let pendingRestoreScrollTop: number = -1;
   let pendingTocSelectedIndex: number = -1;
   let currentFileMtime: number = 0;
@@ -445,8 +345,7 @@
   let renderQueued: boolean = false;
 
   export function clearTabCache(tabId: number) {
-    tabEditorCache.delete(tabId);
-    tabRenderVersions.delete(tabId);
+    tabCache.delete(tabId);
     const slot = tabSlots.get(tabId);
     if (slot) {
       slot.remove();
@@ -457,7 +356,7 @@
 
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
-    tabEditorCache.set(tabId, {
+    tabCache.set(tabId, {
       filePath, content, savedContent, binaryContent,
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
@@ -520,7 +419,7 @@
     const b = filePath.replace(/\//g, '\\').toLowerCase();
     if (a !== b) return;
     if (mode !== 'global-normal') return;
-    tabEditorCache.delete(renderTabId);
+    tabCache.delete(renderTabId);
     const slot = tabSlots.get(renderTabId);
     if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
     await loadFile(filePath);
@@ -828,11 +727,6 @@
     if (!focused && panelElement) { panelElement.focus(); }
   }
 
-  function isDirectEditorFile(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    return !['md', 'markdown', 'json', 'ipynb'].includes(ext);
-  }
-
   // PDF state
   let pdfPageCount: number = $state(0);
   let pdfCurrentPage: number = $state(0);
@@ -864,7 +758,7 @@
     }
 
     const loadTabId = renderTabId;
-    const cached = tabEditorCache.get(loadTabId);
+    const cached = tabCache.get(loadTabId);
     if (cached && cached.filePath === path && !browsingArchive) {
       if (gen !== loadGeneration) return;
       content = cached.content;
@@ -910,7 +804,7 @@
       console.log(`[tab-perf] loadFile CACHE_HIT tab=${loadTabId} file=${fileName} cacheRestore=${(tCache-t0).toFixed(1)}ms render=${(tRender-tCache).toFixed(1)}ms total=${(tRender-t0).toFixed(1)}ms`);
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabEditorCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
+        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
         .catch(() => {});
       return;
     }
@@ -1169,15 +1063,11 @@
   }
 
   function requestTabRender(tabId: number): number {
-    const version = (tabRenderVersions.get(tabId) ?? 0) + 1;
-    tabRenderVersions.set(tabId, version);
-    return version;
+    return tabCache.requestRender(tabId);
   }
 
   function isCurrentTabRender(tabId: number, path: string, version: number): boolean {
-    return renderTabId === tabId
-      && filePath === path
-      && tabRenderVersions.get(tabId) === version;
+    return tabCache.isCurrentRender(tabId, path, version, renderTabId, filePath || '');
   }
 
   async function renderPreview() {
@@ -1213,7 +1103,7 @@
 
     const tabId = renderTabId;
     const path = filePath;
-    const tabVersion = tabRenderVersions.get(tabId) ?? requestTabRender(tabId);
+    const tabVersion = tabCache.getRenderVersion(tabId) || requestTabRender(tabId);
     const slot = getOrCreateSlot(tabId);
     showTabSlot(tabId);
 
@@ -1315,12 +1205,6 @@
     requestAnimationFrame(() => {
       requestAnimationFrame(() => clampEditorScroll(view));
     });
-  }
-
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   async function renderDirectoryPreview() {
@@ -1775,7 +1659,7 @@
         // falsely invalidate cached content on tab switch
         const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
         currentFileMtime = meta.modified;
-        const cached = tabEditorCache.get(renderTabId);
+        const cached = tabCache.get(renderTabId);
         if (cached && cached.filePath === filePath) {
           cached.content = content;
           cached.savedContent = savedContent;

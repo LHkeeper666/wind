@@ -18,6 +18,40 @@
     projectTreePathKey as treePathKey,
   } from '$lib/utils/project-tree-focus';
   import { isArchiveFile } from '$lib/utils/file-types';
+  import {
+    type SelectionState,
+    createSelectionState,
+    hasSelection,
+    clearSelection as clearSelectionState,
+    togglePathSelection,
+    selectTreeSubtree,
+    deselectTreeSubtree,
+    deselectTreeNode,
+    selectTreeNode,
+    toggleTreeSelection,
+    getSelectedTreeRoot,
+    isTreePathExcluded,
+    isTreePathPartiallyDeselected,
+    isTreeNodeSelected,
+    getTreeEntry,
+    getTreeSkipPaths,
+    getSelectedProjectEntries,
+    getEntriesToOperate,
+  } from '$lib/utils/selection-manager';
+  import {
+    type ArchiveState,
+    getArchiveFormat,
+    createArchiveState,
+    getArchiveParentPath,
+    readArchiveDirectory,
+    readArchiveFile,
+    extractArchiveFiles,
+    extractArchive,
+    deleteArchiveEntries,
+    markArchiveForExtraction,
+    enterArchive,
+  } from '$lib/utils/archive-browser';
+  import ProjectTreePanel from './ProjectTreePanel.svelte';
 
   interface FileEntry {
     name: string;
@@ -108,9 +142,7 @@
   let searchMode: 'current' | 'recursive' = $state('current');
 
   // Multi-select state
-  let selectedPaths: Set<string> = $state(new Set());
-  let selectedTreeRoots: Set<string> = $state(new Set());
-  let deselectedTreePaths: Set<string> = $state(new Set());
+  let selectionState: SelectionState = $state(createSelectionState());
 
   // Hidden files toggle
   let showHidden: boolean = $state(false);
@@ -827,11 +859,15 @@
     }
     await expandTreeNode(node, projectRestoreGeneration, includeHidden);
     await tick();
-    const targetName = segments[segments.length - 1];
-    const target = node.children.find(item => item.entry.name.toLowerCase() === targetName);
-    const index = target ? treeVisibleNodes.indexOf(target) : -1;
-    if (index >= 0) selectByIndex(index);
-    else selectTreePathOrAncestor(targetPath);
+    // Use path-based lookup instead of object reference identity
+    const normalizedKey = directoryKeyId(targetPath);
+    const index = treeVisibleNodes.findIndex(n => directoryKeyId(n.entry.path) === normalizedKey);
+    if (index >= 0) {
+      selectByIndex(index);
+    } else {
+      // Target not visible yet — try selecting nearest ancestor
+      selectTreePathOrAncestor(targetPath);
+    }
   }
 
   function startRename() {
@@ -873,101 +909,26 @@
     if (!projectRoot) return [];
     const nodes: TreeNode[] = [];
     const visit = (node: TreeNode) => {
-      if (selectedPaths.has(node.entry.path)) nodes.push(node);
+      if (selectionState.selectedPaths.has(node.entry.path)) nodes.push(node);
       node.children.forEach(visit);
     };
     visit(projectRoot);
     return nodes;
   }
 
-  function getSelectedTreeRoot(nodePath: string): string | null {
-    let root: string | null = null;
-    for (const candidate of selectedTreeRoots) {
-      if (isTreePathWithin(nodePath, candidate)
-        && (!root || treePathKey(candidate).length > treePathKey(root).length)) {
-        root = candidate;
-      }
-    }
-    return root;
-  }
-
-  function isTreePathExcluded(nodePath: string, rootPath: string): boolean {
-    return [...deselectedTreePaths].some(excludedPath =>
-      isTreePathWithin(excludedPath, rootPath) && isTreePathWithin(nodePath, excludedPath)
-    );
-  }
-
-  function isTreePathPartiallyDeselected(nodePath: string, rootPath: string): boolean {
-    return [...deselectedTreePaths].some(excludedPath =>
-      isTreePathWithin(excludedPath, rootPath) && isTreePathWithin(excludedPath, nodePath)
-    );
-  }
-
-  function isTreeNodeSelected(node: TreeNode): boolean {
-    if (selectedPaths.has(node.entry.path)) return true;
-    const rootPath = getSelectedTreeRoot(node.entry.path);
-    if (!rootPath) return selectedPaths.has(node.entry.path);
-    return !!rootPath
-      && !isTreePathExcluded(node.entry.path, rootPath)
-      && !isTreePathPartiallyDeselected(node.entry.path, rootPath);
-  }
-
-  function hasSelection(): boolean {
-    return selectedPaths.size > 0 || selectedTreeRoots.size > 0;
+  function checkHasSelection(): boolean {
+    return hasSelection(selectionState);
   }
 
   function clearSelection(): void {
-    selectedPaths = new Set();
-    selectedTreeRoots = new Set();
-    deselectedTreePaths = new Set();
+    selectionState = clearSelectionState();
   }
 
-  function getTreeEntry(nodePath: string, isDir: boolean = true): ClipboardEntry {
-    const node = findTreeNode(nodePath);
-    const name = node?.entry.name ?? nodePath.split(/[/\\]/).filter(Boolean).pop() ?? nodePath;
-    return { path: nodePath, name, is_dir: node?.entry.is_dir ?? isDir, size: node?.entry.size ?? undefined };
-  }
-
-  function getTreeSkipPaths(rootPath: string): string[] {
-    return [...deselectedTreePaths]
-      .filter(excludedPath => isTreePathWithin(excludedPath, rootPath))
-      .filter(excludedPath => ![...deselectedTreePaths].some(otherPath =>
-        otherPath !== excludedPath && isTreePathWithin(excludedPath, otherPath) && isTreePathWithin(otherPath, rootPath)
-      ))
-      .map(excludedPath => {
-        const normalizedRoot = rootPath.replace(/\//g, '\\').replace(/\\+$/, '');
-        const normalizedExcluded = excludedPath.replace(/\//g, '\\').replace(/\\+$/, '');
-        return normalizedExcluded.slice(normalizedRoot.length).replace(/^\\+/, '');
-      })
-      .filter(Boolean);
-  }
-
-  function getSelectedProjectEntries(): ClipboardEntry[] {
-    const entries: ClipboardEntry[] = [];
-    for (const rootPath of selectedTreeRoots) {
-      const selectedByAncestor = [...selectedTreeRoots].some(ancestorPath =>
-        ancestorPath !== rootPath
-        && isTreePathWithin(rootPath, ancestorPath)
-        && !isTreePathExcluded(rootPath, ancestorPath)
-      );
-      if (selectedByAncestor) continue;
-      entries.push({ ...getTreeEntry(rootPath), skip_rel_paths: getTreeSkipPaths(rootPath) });
-    }
-    for (const node of getSelectedProjectNodes()) {
-      const rootPath = getSelectedTreeRoot(node.entry.path);
-      if (selectedPaths.has(node.entry.path) && rootPath && isTreePathExcluded(node.entry.path, rootPath)) {
-        entries.push({ path: node.entry.path, name: node.entry.name, is_dir: node.entry.is_dir, size: node.entry.size ?? undefined });
-      } else if (!rootPath) {
-        entries.push({ path: node.entry.path, name: node.entry.name, is_dir: node.entry.is_dir, size: node.entry.size ?? undefined });
-      }
-    }
-    return entries;
-  }
 
   function startBatchRename() {
     const entries = projectMode
-      ? getSelectedProjectNodes().filter(node => !node.entry.is_dir && isTreeNodeSelected(node)).map(node => node.entry)
-      : files.filter(entry => selectedPaths.has(entry.path));
+      ? getSelectedProjectNodes().filter(node => !node.entry.is_dir && isTreeNodeSelected(selectionState, node.entry.path)).map(node => node.entry)
+      : files.filter(entry => selectionState.selectedPaths.has(entry.path));
     if (entries.length < 2) return;
     const renameFiles = entries.map(f => ({ path: f.path, name: f.name }));
     onBatchRenameStart(renameFiles);
@@ -1069,7 +1030,7 @@
           onToast('Filter cleared');
         }
       } else if (inputMode === 'compress') {
-        const entries = getEntriesToOperate();
+        const entries = collectEntriesToOperate();
         if (entries.length === 0) return;
         const destPath = path.replace(/[\\\/]+$/, '') + '\\' + value;
         try {
@@ -1209,7 +1170,14 @@
   }
 
   async function handleDelete(permanent: boolean) {
-    const entries = getEntriesToOperate();
+    const entries = getEntriesToOperate(
+      selectionState,
+      files,
+      displayFiles,
+      selectedIndex,
+      projectMode,
+      (path: string) => findTreeNode(path)
+    );
     if (entries.length === 0) return;
 
     const confirmed = await promptDelete(permanent);
@@ -1263,112 +1231,21 @@
     refocusPanel();
   }
 
-  function getEntriesToOperate(): ClipboardEntry[] {
-    if (hasSelection()) {
-      if (projectMode) return getSelectedProjectEntries();
-      return files
-        .filter(entry => entry.name !== '..' && selectedPaths.has(entry.path))
-        .map(entry => ({ path: entry.path, name: entry.name, is_dir: entry.is_dir, size: entry.size ?? undefined }));
-    }
-    if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
-      const f = displayFiles[selectedIndex];
-      if (f.name === '..') return [];
-      return [{ path: f.path, name: f.name, is_dir: f.is_dir, size: f.size ?? undefined }];
-    }
-    return [];
-  }
-
-  function togglePathSelection(entryPath: string): void {
-    const nextSelection = new Set(selectedPaths);
-    if (nextSelection.has(entryPath)) nextSelection.delete(entryPath);
-    else nextSelection.add(entryPath);
-    selectedPaths = nextSelection;
-  }
-
-  function selectTreeSubtree(node: TreeNode): void {
-    const nextRoots = new Set(selectedTreeRoots);
-    nextRoots.add(node.entry.path);
-    selectedTreeRoots = nextRoots;
-    selectedPaths = new Set([...selectedPaths].filter(path => !isTreePathWithin(path, node.entry.path)));
-    deselectedTreePaths = new Set([...deselectedTreePaths].filter(path => !isTreePathWithin(path, node.entry.path)));
-  }
-
-  function deselectTreeSubtree(node: TreeNode): void {
-    const ancestorRoot = [...selectedTreeRoots].find(rootPath =>
-      rootPath !== node.entry.path
-      && isTreePathWithin(node.entry.path, rootPath)
-      && !isTreePathExcluded(node.entry.path, rootPath)
+  function collectEntriesToOperate(): ClipboardEntry[] {
+    return getEntriesToOperate(
+      selectionState,
+      files,
+      displayFiles,
+      selectedIndex,
+      projectMode,
+      (path: string) => findTreeNode(path)
     );
-    selectedTreeRoots = new Set([...selectedTreeRoots].filter(path => !isTreePathWithin(path, node.entry.path)));
-    const nextDeselected = new Set([...deselectedTreePaths].filter(path => !isTreePathWithin(path, node.entry.path)));
-    if (ancestorRoot) nextDeselected.add(node.entry.path);
-    deselectedTreePaths = nextDeselected;
-    selectedPaths = new Set([...selectedPaths].filter(path => !isTreePathWithin(path, node.entry.path)));
-  }
-
-  function deselectTreeNode(node: TreeNode): void {
-    const rootPath = getSelectedTreeRoot(node.entry.path);
-    if (rootPath) {
-      const nextDeselected = new Set(deselectedTreePaths);
-      nextDeselected.add(node.entry.path);
-      deselectedTreePaths = nextDeselected;
-    }
-    const nextSelection = new Set(selectedPaths);
-    nextSelection.delete(node.entry.path);
-    selectedPaths = nextSelection;
-  }
-
-  function selectTreeNode(node: TreeNode): void {
-    const rootPath = getSelectedTreeRoot(node.entry.path);
-    if (rootPath) {
-      deselectedTreePaths = new Set([...deselectedTreePaths].filter(path => !isTreePathWithin(path, node.entry.path)));
-      return;
-    }
-    togglePathSelection(node.entry.path);
-  }
-
-  function toggleTreeSelection(node: TreeNode): void {
-    if (isTreeNodeSelected(node)) {
-      if (node.entry.is_dir) deselectTreeSubtree(node);
-      else deselectTreeNode(node);
-      return;
-    }
-    if (node.entry.is_dir) selectTreeSubtree(node);
-    else selectTreeNode(node);
-  }
-
-  function getArchiveFormat(name: string): ArchiveFormat {
-    const lower = name.toLowerCase();
-    if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'tar.gz';
-    if (lower.endsWith('.tar')) return 'tar';
-    if (lower.endsWith('.7z')) return '7z';
-    return 'zip';
-  }
-
-  function enterArchive(archivePath: string) {
-    const format = getArchiveFormat(archivePath);
-    layout.setArchiveState({ archivePath, internalPath: '', format });
-  }
-
-  async function markArchiveForExtraction(entry: FileEntry) {
-    try {
-      const entries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
-        'read_archive_directory',
-        { archivePath: entry.path, internalPath: '' },
-        'password'
-      );
-      if (entries === null) return;
-      layout.setMark('extract', [entry.path]);
-      onToast('Archive marked for extraction. Navigate to target and press p.');
-    } catch (error) {
-      onToast(`Failed to verify archive: ${error}`);
-    }
   }
 
   function handleArchiveUp() {
     if (!archiveState) return;
     if (archiveState.internalPath === '') {
-      // At root: exit archive mode
+      // Exiting archive mode
       layout.clearArchiveState();
     } else {
       // Go up one level within archive
@@ -1380,19 +1257,22 @@
 
   async function handleArchiveExtract() {
     if (!archiveState) return;
-    const entries = getEntriesToOperate();
+    const entries = getEntriesToOperate(
+      selectionState,
+      files,
+      displayFiles,
+      selectedIndex,
+      projectMode,
+      (path) => findTreeNode(path)
+    );
     if (entries.length === 0) return;
     const internalPaths = entries.map(e => e.path);
     const destDir = archiveState.archivePath.replace(/[\\/][^\\/]*$/, "");
     try {
-      const extracted = await invokeArchiveWithOptionalPassword<number>(
-        'extract_archive_files',
-        {
-          archivePath: archiveState.archivePath,
-          internalPaths,
-          destDir,
-        },
-        'password'
+      const extracted = await extractArchiveFiles(
+        archiveState.archivePath,
+        internalPaths,
+        destDir
       );
       if (extracted === null) return;
       onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} extracted`);
@@ -1407,14 +1287,21 @@
       onToast('Delete is only supported for ZIP archives');
       return;
     }
-    const entries = getEntriesToOperate();
+    const entries = getEntriesToOperate(
+      selectionState,
+      files,
+      displayFiles,
+      selectedIndex,
+      projectMode,
+      (path) => findTreeNode(path)
+    );
     if (entries.length === 0) return;
     const internalPaths = entries.map(e => e.path);
     try {
-      await invoke('archive_delete_entry', {
-        archivePath: archiveState.archivePath,
-        internalPaths,
-      });
+      await deleteArchiveEntries(
+        archiveState.archivePath,
+        internalPaths
+      );
       onToast(`${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} deleted`);
       refresh();
     } catch (e) {
@@ -1432,12 +1319,12 @@
   }
 
   async function handleExtractHere(archivePath: string) {
-    const destDir = path;
+    // Extract to the directory containing the archive file
+    const destDir = archivePath.replace(/[\\/][^\\/]*$/, '') || path;
     try {
-      const extracted = await invokeArchiveWithOptionalPassword<number>(
-        'extract_archive',
-        { archivePath, destDir },
-        'password'
+      const extracted = await extractArchive(
+        archivePath,
+        destDir
       );
       if (extracted === null) return;
       onToast('Archive extracted');
@@ -1448,7 +1335,14 @@
   }
 
   async function handleCompress() {
-    const entries = getEntriesToOperate();
+    const entries = getEntriesToOperate(
+      selectionState,
+      files,
+      displayFiles,
+      selectedIndex,
+      projectMode,
+      (path) => findTreeNode(path)
+    );
     if (entries.length === 0) return;
     const defaultName = entries.length === 1
       ? entries[0].name.replace(/\.\w+$/, '') + '.zip'
@@ -1520,7 +1414,7 @@
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
-            if (projectMode) void expandTreeNode(treeVisibleNodes[selectedIndex]);
+            if (projectMode) { toggleTreeNode(treeVisibleNodes[selectedIndex]); break; }
             else if (isArchiveMode) {
               // Navigate within archive
               if (entry.name === '..') {
@@ -1571,7 +1465,14 @@
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) break;
           if (isArchiveFile(entry.name)) {
-            void markArchiveForExtraction(entry);
+            void markArchiveForExtraction(
+              entry.path,
+              (paths) => {
+                layout.setMark('extract', paths);
+                onToast(`Archive marked: ${paths[0]}`);
+              },
+              (msg) => onToast(msg)
+            );
           } else {
             onToast('E key only works on archive files');
           }
@@ -1597,7 +1498,14 @@
         event.preventDefault();
         if (isArchiveMode) break; // C not available in archive mode
         {
-          const entries = getEntriesToOperate();
+          const entries = getEntriesToOperate(
+            selectionState,
+            files,
+            displayFiles,
+            selectedIndex,
+            projectMode,
+            (path: string) => findTreeNode(path)
+          );
           if (entries.length > 0) {
             layout.setMark('compress', entries.map(e => e.path));
             clearSelection();
@@ -1726,7 +1634,7 @@
                   } else {
                     // Normal mode: if it's an archive, enter archive mode
                     if (isArchiveFile(entry.name)) {
-                      enterArchive(entry.path);
+                      enterArchive(entry.path, layout);
                     } else {
                       onActivate(entry.path);
                     }
@@ -1755,8 +1663,8 @@
               const entry = displayFiles[selectedIndex];
               if (entry.name !== '..') {
                 const node = projectMode ? treeVisibleNodes[selectedIndex] : null;
-                if (node) toggleTreeSelection(node);
-                else togglePathSelection(entry.path);
+                if (node) selectionState = toggleTreeSelection(selectionState, node.entry.path, node.entry.is_dir);
+                else selectionState = togglePathSelection(selectionState, entry.path);
               }
               // Advance cursor
               selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
@@ -1764,18 +1672,28 @@
             break;
           case 'KeyV':
             event.preventDefault();
-            if (hasSelection()) {
+            if (checkHasSelection()) {
               clearSelection();
             } else if (projectMode && projectRoot) {
-              selectTreeSubtree(projectRoot);
+              selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
             } else {
-              selectedPaths = new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path));
+              selectionState = {
+                ...selectionState,
+                selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)),
+              };
             }
             break;
           case 'KeyY':
             event.preventDefault();
             if (isArchiveMode) {
-              const entries = getEntriesToOperate();
+              const entries = getEntriesToOperate(
+                selectionState,
+                files,
+                displayFiles,
+                selectedIndex,
+                projectMode,
+                (path: string) => findTreeNode(path)
+              );
               if (entries.length > 0 && archiveState) {
                 clipboard.yankFromArchive(archiveState.archivePath, entries);
                 layout.setMark('copy', entries.map(e => e.path));
@@ -1783,7 +1701,14 @@
                 onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked from archive`);
               }
             } else {
-              const entries = getEntriesToOperate();
+              const entries = getEntriesToOperate(
+                selectionState,
+                files,
+                displayFiles,
+                selectedIndex,
+                projectMode,
+                (path: string) => findTreeNode(path)
+              );
               if (entries.length > 0) {
                 clipboard.yank(entries);
                 layout.setMark('copy', entries.map(e => e.path));
@@ -1797,7 +1722,14 @@
             if (isArchiveMode) {
               handleArchiveExtract();
             } else {
-              const entries = getEntriesToOperate();
+              const entries = getEntriesToOperate(
+                selectionState,
+                files,
+                displayFiles,
+                selectedIndex,
+                projectMode,
+                (path: string) => findTreeNode(path)
+              );
               if (entries.length > 0) {
                 clipboard.cut(entries);
                 layout.setMark('cut', entries.map(e => e.path));
@@ -1962,63 +1894,50 @@
     {:else if displayFiles.length === 0}
       <p class="placeholder">Empty directory</p>
     {:else}
-      <div class="file-list">
-        {#each displayFiles as file, index (file.path)}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            class="file-item"
-            class:selected={selectedFile?.path === file.path}
-            class:multi-selected={projectMode ? isTreeNodeSelected(treeVisibleNodes[index]) : selectedPaths.has(file.path)}
-            class:cut-marked={cutPaths.has(file.path)}
-            class:directory={file.is_dir}
-            class:hidden-file={file.is_hidden}
-            id={projectMode ? `project-tree-${type}-${index}` : undefined}
-            role={projectMode ? 'treeitem' : undefined}
-            tabindex="-1"
-            aria-expanded={projectMode && file.is_dir ? treeVisibleNodes[index]?.expanded : undefined}
-            onclick={(event) => handleItemClick(index, event)}
-            ondblclick={(event) => handleItemDblClick(file, event, index)}
-            onkeydown={() => {}}
-            data-path={file.path}
-            data-index={index}
-          >
-            {#if cutPaths.has(file.path)}
-              <span class="cut-marker">x</span>
-            {/if}
-            {#if projectMode}
-              <span class="tree-indent" style={`width: ${(treeVisibleNodes[index]?.depth ?? 0) * 16}px`}></span>
-              <button
-                type="button"
-                tabindex="-1"
-                aria-label={treeVisibleNodes[index]?.expanded ? 'Collapse directory' : 'Expand directory'}
-                class="tree-toggle"
-                class:expanded={treeVisibleNodes[index]?.expanded}
-                class:directory-toggle={file.is_dir}
-                onmousedown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-                onclick={(event) => {
-                  if (!file.is_dir) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  panelElement?.focus();
-                  const node = treeVisibleNodes[index];
-                  if (node) toggleTreeNode(node);
-                }}
-                ondblclick={(event) => event.stopPropagation()}
-              ></button>
-            {/if}
-            <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
-          </div>
-        {/each}
-      </div>
+      {#if projectMode}
+        <ProjectTreePanel
+          visibleNodes={treeVisibleNodes}
+          selectedIndex={selectedIndex}
+          showHidden={showHidden}
+          onSelect={selectByIndex}
+          onToggle={toggleTreeNode}
+          onDblClick={(node, event) => handleItemDblClick(node.entry, event, treeVisibleNodes.indexOf(node))}
+          cutPaths={cutPaths}
+          isTreeNodeSelected={(node) => isTreeNodeSelected(selectionState, node.entry.path)}
+          type={type}
+        />
+      {:else}
+        <div class="file-list">
+          {#each displayFiles as file, index (file.path)}
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              class="file-item"
+              class:selected={selectedFile?.path === file.path}
+              class:multi-selected={selectionState.selectedPaths.has(file.path)}
+              class:cut-marked={cutPaths.has(file.path)}
+              class:directory={file.is_dir}
+              class:hidden-file={file.is_hidden}
+              tabindex="-1"
+              onclick={(event) => handleItemClick(index, event)}
+              ondblclick={(event) => handleItemDblClick(file, event, index)}
+              onkeydown={() => {}}
+              data-path={file.path}
+              data-index={index}
+            >
+              {#if cutPaths.has(file.path)}
+                <span class="cut-marker">x</span>
+              {/if}
+              <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </div>
 
   <SearchModal
     visible={isSearchModalOpen}
-    rootPath={path}
+    rootPath={projectMode && projectRoot ? projectRoot.entry.path : path}
     mode={searchMode}
     allowRecursive={!path.startsWith('ftp://')}
     entries={path.startsWith('ftp://') ? files : null}
@@ -2030,8 +1949,8 @@
     visible={showDeleteConfirm}
     title={deleteIsPermanent ? 'Permanent Delete' : 'Move to Trash'}
     fileName={deleteIsPermanent
-      ? `Permanently delete ${getEntriesToOperate().length} item(s)?`
-      : `Move ${getEntriesToOperate().length} item(s) to trash?`}
+      ? `Permanently delete ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path) => findTreeNode(path)).length} item(s)?`
+      : `Move ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path) => findTreeNode(path)).length} item(s) to trash?`}
     buttons={[
       { key: 'D', label: 'elete', action: handleDeleteConfirm, style: 'danger' },
       { key: 'C', label: 'ancel', action: handleDeleteCancel },
