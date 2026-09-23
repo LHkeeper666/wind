@@ -1043,7 +1043,7 @@
     </div>
 
     <!-- Fullscreen Editor Overlay -->
-    {#if $layout.fullscreenEditorOpen && selectedFile}
+    {#if $layout.fullscreenViewer === 'editor' && selectedFile}
       <FullscreenEditor
         bind:this={fullscreenEditor}
         filePath={selectedFile}
@@ -1055,7 +1055,7 @@
     {/if}
 
     <!-- Fullscreen Image Viewer Overlay -->
-    {#if $layout.fullscreenImageViewerOpen && getFullscreenImageList().length > 0}
+    {#if $layout.fullscreenViewer === 'image' && getFullscreenImageList().length > 0}
       <FullscreenImageViewer
         imageList={getFullscreenImageList()}
         currentIndex={getFullscreenImageIndex()}
@@ -1065,7 +1065,7 @@
     {/if}
 
     <!-- Fullscreen PDF Viewer Overlay -->
-    {#if $layout.fullscreenPdfViewerOpen && getFullscreenPdfPath()}
+    {#if $layout.fullscreenViewer === 'pdf' && getFullscreenPdfPath()}
       <FullscreenPdfViewer
         pdfPath={getFullscreenPdfPath()}
         initialPage={getFullscreenPdfPage()}
@@ -1076,7 +1076,7 @@
     {/if}
 
     <!-- Fullscreen Video Player Overlay -->
-    {#if $layout.fullscreenVideoPlayerOpen && getFullscreenVideoPlayerPath()}
+    {#if $layout.fullscreenViewer === 'video' && getFullscreenVideoPlayerPath()}
       <FullscreenVideoPlayer
         filePath={getFullscreenVideoPlayerPath()}
         fileSize={getFullscreenVideoPlayerFileSize()}

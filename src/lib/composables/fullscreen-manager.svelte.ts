@@ -55,7 +55,7 @@ export function handleFullscreenEditor(
     fullscreenImageList = imageFiles;
     fullscreenImageIndex = idx >= 0 ? idx : 0;
     const unsub = layout.subscribe(v => { preFullscreenColumn = v.activeColumn; })();
-    layout.openFullscreenImageViewer();
+    layout.setFullscreenViewer('image');
   } else if (selectedFile && isPdfFile(selectedFile)) {
     const pdfInfo = previewEditor?.getPdfInfo();
     fullscreenPdfPath = selectedFile;
@@ -63,21 +63,21 @@ export function handleFullscreenEditor(
     fullscreenPdfPageCount = pdfInfo?.pageCount ?? 0;
     fullscreenPdfFileSize = 0;
     const unsub = layout.subscribe(v => { preFullscreenColumn = v.activeColumn; })();
-    layout.openFullscreenPdfViewer();
+    layout.setFullscreenViewer('pdf');
   } else if (selectedFile && isVideoFile(selectedFile)) {
     fullscreenVideoPlayerPath = selectedFile;
     fullscreenVideoPlayerFileSize = currentDirectoryPanel?.getSelectedFileSize() ?? 0;
     const unsub = layout.subscribe(v => { preFullscreenColumn = v.activeColumn; })();
-    layout.openFullscreenVideoPlayer();
+    layout.setFullscreenViewer('video');
   } else {
     const unsub = layout.subscribe(v => { preFullscreenColumn = v.activeColumn; })();
     editorInitialLine = previewEditor?.getVisibleLine() ?? 0;
-    layout.openFullscreenEditor();
+    layout.setFullscreenViewer('editor');
   }
 }
 
 export function handleCloseFullscreen(focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void) {
-  layout.closeFullscreenEditor();
+  layout.closeFullscreenViewer();
   const restoreTo = preFullscreenColumn || 'current';
   preFullscreenColumn = null;
   focusPanel(restoreTo);
@@ -90,21 +90,21 @@ export function handleSaveFullscreen(content: string, previewEditor: any) {
 }
 
 export function handleCloseImageViewer(focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void) {
-  layout.closeFullscreenImageViewer();
+  layout.closeFullscreenViewer();
   const restoreTo = preFullscreenColumn || 'current';
   preFullscreenColumn = null;
   focusPanel(restoreTo);
 }
 
 export function handleClosePdfViewer(focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void) {
-  layout.closeFullscreenPdfViewer();
+  layout.closeFullscreenViewer();
   const restoreTo = preFullscreenColumn || 'current';
   preFullscreenColumn = null;
   focusPanel(restoreTo);
 }
 
 export function handleCloseVideoPlayer(focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void) {
-  layout.closeFullscreenVideoPlayer();
+  layout.closeFullscreenViewer();
   fullscreenVideoPlayerPath = '';
   const restoreTo = preFullscreenColumn || 'current';
   preFullscreenColumn = null;

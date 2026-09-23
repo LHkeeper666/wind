@@ -8,6 +8,8 @@ export interface ArchiveState {
   format: ArchiveFormat;
 }
 
+export type FullscreenViewer = 'none' | 'editor' | 'image' | 'pdf' | 'video';
+
 export type MarkType = 'copy' | 'cut' | 'extract' | 'compress' | null;
 
 export interface LayoutState {
@@ -31,19 +33,10 @@ export interface LayoutState {
   // Preview/Editor mode
   previewMode: 'global-normal' | 'editor-normal' | 'editor-insert';
 
-  // Fullscreen editor state
-  fullscreenEditorOpen: boolean;
+  // Fullscreen viewer state (replaces 4 separate booleans)
+  fullscreenViewer: FullscreenViewer;
 
-  // Fullscreen image viewer state
-  fullscreenImageViewerOpen: boolean;
-
-  // Fullscreen PDF viewer state
-  fullscreenPdfViewerOpen: boolean;
-
-  // Fullscreen video player state
-  fullscreenVideoPlayerOpen: boolean;
-
-  // Fullscreen terminal state
+  // Fullscreen terminal state (kept separate - it's a layout mode saved in tab state)
   fullscreenTerminalOpen: boolean;
 
   // Terminal state
@@ -81,10 +74,7 @@ const initialState: LayoutState = {
   selectedFile: null,
   activeColumn: 'current',
   previewMode: 'global-normal',
-  fullscreenEditorOpen: false,
-  fullscreenImageViewerOpen: false,
-  fullscreenPdfViewerOpen: false,
-  fullscreenVideoPlayerOpen: false,
+  fullscreenViewer: 'none',
   fullscreenTerminalOpen: false,
   terminalVisible: false,
   terminalHeight: 300,
@@ -224,49 +214,14 @@ function createLayoutStore() {
       update(state => ({ ...state, previewMode: mode }));
     },
 
-    // Toggle fullscreen editor
-    toggleFullscreenEditor() {
-      update(state => ({ ...state, fullscreenEditorOpen: !state.fullscreenEditorOpen }));
+    // Set fullscreen viewer type
+    setFullscreenViewer(viewer: FullscreenViewer) {
+      update(state => ({ ...state, fullscreenViewer: viewer }));
     },
 
-    // Open fullscreen editor
-    openFullscreenEditor() {
-      update(state => ({ ...state, fullscreenEditorOpen: true }));
-    },
-
-    // Close fullscreen editor
-    closeFullscreenEditor() {
-      update(state => ({ ...state, fullscreenEditorOpen: false }));
-    },
-
-    // Open fullscreen image viewer
-    openFullscreenImageViewer() {
-      update(state => ({ ...state, fullscreenImageViewerOpen: true }));
-    },
-
-    // Close fullscreen image viewer
-    closeFullscreenImageViewer() {
-      update(state => ({ ...state, fullscreenImageViewerOpen: false }));
-    },
-
-    // Open fullscreen PDF viewer
-    openFullscreenPdfViewer() {
-      update(state => ({ ...state, fullscreenPdfViewerOpen: true }));
-    },
-
-    // Close fullscreen PDF viewer
-    closeFullscreenPdfViewer() {
-      update(state => ({ ...state, fullscreenPdfViewerOpen: false }));
-    },
-
-    // Open fullscreen video player
-    openFullscreenVideoPlayer() {
-      update(state => ({ ...state, fullscreenVideoPlayerOpen: true }));
-    },
-
-    // Close fullscreen video player
-    closeFullscreenVideoPlayer() {
-      update(state => ({ ...state, fullscreenVideoPlayerOpen: false }));
+    // Close fullscreen viewer (back to none)
+    closeFullscreenViewer() {
+      update(state => ({ ...state, fullscreenViewer: 'none' }));
     },
 
     // Open fullscreen terminal
@@ -455,5 +410,6 @@ export const columnWidths = derived(layout, ($layout) => {
 });
 
 export const isEditing = derived(layout, ($layout) => $layout.previewMode !== 'global-normal');
-export const isFullscreenEditor = derived(layout, ($layout) => $layout.fullscreenEditorOpen);
+export const isFullscreen = derived(layout, ($layout) => $layout.fullscreenViewer !== 'none' || $layout.fullscreenTerminalOpen);
+export const isFullscreenEditor = derived(layout, ($layout) => $layout.fullscreenViewer === 'editor');
 export const isTerminalVisible = derived(layout, ($layout) => $layout.terminalVisible);

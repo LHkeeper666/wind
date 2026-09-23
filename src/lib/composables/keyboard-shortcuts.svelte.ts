@@ -152,9 +152,7 @@ function getPreviewMode(): string {
 function canOpenCommandPalette(): boolean {
   const l = get(layout);
   const previewMode = getPreviewMode();
-  return !l.fullscreenEditorOpen && !l.fullscreenImageViewerOpen
-    && !l.fullscreenPdfViewerOpen && !l.fullscreenVideoPlayerOpen
-    && !l.fullscreenTerminalOpen
+  return l.fullscreenViewer === 'none' && !l.fullscreenTerminalOpen
     && (l.activeColumn !== 'preview' || previewMode === 'global-normal');
 }
 
@@ -163,8 +161,7 @@ function canUseTabShortcuts(): boolean {
   const deps = _deps!;
   const previewMode = getPreviewMode();
   return !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-    && !l.fullscreenEditorOpen && !l.fullscreenImageViewerOpen
-    && !l.fullscreenPdfViewerOpen && !l.fullscreenVideoPlayerOpen
+    && l.fullscreenViewer === 'none'
     && !(l.activeColumn === 'preview' && previewMode === 'editor-insert');
 }
 
@@ -173,8 +170,7 @@ function canUseGlobalFileOperations(): boolean {
   const deps = _deps!;
   const previewMode = getPreviewMode();
   return !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-    && !l.fullscreenEditorOpen && !l.fullscreenImageViewerOpen
-    && !l.fullscreenPdfViewerOpen && !l.fullscreenVideoPlayerOpen
+    && l.fullscreenViewer === 'none'
     && !(l.activeColumn === 'preview' && previewMode !== 'global-normal');
 }
 
@@ -228,7 +224,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   const l0 = get(layout);
   const isPreviewCodeMirrorTab = event.key === 'Tab'
     && l0.activeColumn === 'preview'
-    && !l0.fullscreenEditorOpen
+    && l0.fullscreenViewer !== 'editor'
     && target instanceof Element
     && target.closest('.preview-panel .cm-editor') !== null;
   const isPdfPreview = l0.activeColumn === 'preview'
@@ -255,7 +251,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     const l = get(layout);
     const isPreviewEditorTab = l.activeColumn === 'preview'
-      && !l.fullscreenEditorOpen
+      && l.fullscreenViewer !== 'editor'
       && target instanceof Element
       && target.closest('.preview-panel .cm-editor') !== null;
     if (isPreviewEditorTab) {
@@ -266,7 +262,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
       }
       return;
     }
-    if (l.fullscreenEditorOpen) {
+    if (l.fullscreenViewer === 'editor') {
       if (event.shiftKey) {
         deps.getFullscreenEditor()?.pressShiftTab();
       } else {
@@ -304,7 +300,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.ctrlKey && !event.altKey && event.key === 't' && !waitingForWindowKey) {
     const l = get(layout);
     const canToggle = !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-      && !l.fullscreenEditorOpen && !l.fullscreenImageViewerOpen
+      && l.fullscreenViewer === 'none'
       && !l.fullscreenTerminalOpen;
     if (canToggle) {
       event.preventDefault();
@@ -335,8 +331,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
     const l = get(layout);
     const canRestore = !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-      && !l.fullscreenEditorOpen && !l.fullscreenImageViewerOpen
-      && !l.fullscreenPdfViewerOpen && !l.fullscreenVideoPlayerOpen;
+      && l.fullscreenViewer === 'none';
     if (canRestore) {
       event.preventDefault();
       deps.focusPanel(l.activeColumn);
@@ -382,9 +377,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   // g prefix for recycle bin (gr)
   const l1 = get(layout);
   if (event.key === 'g' && !event.ctrlKey && !event.altKey && !event.metaKey
-    && !waitingForWindowKey && !l1.fullscreenEditorOpen
-    && !l1.fullscreenImageViewerOpen && !l1.fullscreenPdfViewerOpen
-    && !l1.fullscreenVideoPlayerOpen) {
+    && !waitingForWindowKey && l1.fullscreenViewer === 'none') {
     waitingForGKey = true;
     layout.setKeyPrefix('g');
     if (gKeyTimeout) clearTimeout(gKeyTimeout);
