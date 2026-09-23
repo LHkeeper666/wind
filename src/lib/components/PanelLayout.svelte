@@ -3,7 +3,6 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy, tick } from 'svelte';
-  import { get } from 'svelte/store';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
@@ -12,10 +11,38 @@
   import RecycleBinPanel from './RecycleBinPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
   import FullscreenEditor from './FullscreenEditor.svelte';
+  import CommandPalette from './CommandPalette.svelte';
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
   import FullscreenVideoPlayer from './FullscreenVideoPlayer.svelte';
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
-  import { isImageFile, isPdfFile, isVideoFile } from '$lib/utils/file-types';
+  import {
+    getCompressDialogVisible, getCompressDialogValue, getCompressMarkPaths,
+    getShowConfirmModal, getConfirmFileName,
+    getStreamConflictVisible, getStreamConflictName, getScanningConflicts,
+    getShowUnsavedConfirm, getPendingActionPath, getPendingAction,
+    setCompressDialogVisible, setCompressDialogValue, setCompressMarkPaths,
+    setShowConfirmModal, setConfirmFileName,
+    setStreamConflictVisible, setStreamConflictName, setScanningConflicts,
+    setShowUnsavedConfirm, setPendingActionPath, setPendingAction,
+    resolveStreamConflict,
+    handleConfirmOverwrite, handleConfirmSkip, handleConfirmAbort,
+    handleUnsavedSave, handleUnsavedDiscard, handleUnsavedCancel,
+    handleCompressDialogConfirm as doCompressConfirm, handleCompressDialogCancel,
+    initDialogDeps,
+  } from '$lib/composables/dialog-state.svelte';
+  import {
+    getFullscreenImageList, getFullscreenImageIndex,
+    getFullscreenPdfPath, getFullscreenPdfPage, getFullscreenPdfPageCount, getFullscreenPdfFileSize,
+    getFullscreenVideoPlayerPath, getFullscreenVideoPlayerFileSize,
+    getEditorInitialLine, setEditorInitialLine,
+    handleFullscreenEditor as doFullscreenEditor,
+    handleCloseFullscreen as doCloseFullscreen,
+    handleSaveFullscreen as doSaveFullscreen,
+    handleCloseImageViewer as doCloseImageViewer,
+    handleClosePdfViewer as doClosePdfViewer,
+    handleCloseVideoPlayer as doCloseVideoPlayer,
+    handleImageViewerNavigate as doImageViewerNavigate,
+  } from '$lib/composables/fullscreen-manager.svelte';
   import FloatingTerminal from './FloatingTerminal.svelte';
   import { terminalManager } from '$lib/terminal/terminal-manager';
   import SearchModal from './SearchModal.svelte';
@@ -27,9 +54,14 @@
   import TransferManager from './TransferManager.svelte';
   import ArchivePasswordDialog from './ArchivePasswordDialog.svelte';
   import { transfer, activeTransferCount } from '$lib/stores/transfer';
-  import { clipboard, clipboardSummary, markSummary } from '$lib/stores/clipboard';
+  import { clipboardSummary, markSummary } from '$lib/stores/clipboard';
   import { directoryCache } from '$lib/utils/directory-cache';
-  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+  import { handlePaste as doPaste, initClipboardDeps } from '$lib/utils/clipboard-operations';
+  import {
+    getSwitcherActive, getSwitcherSelectionId,
+    initKeyboardDeps, setup as setupKeyboard, teardown as teardownKeyboard,
+    notifyWindowFocusLost,
+  } from '$lib/composables/keyboard-shortcuts.svelte';
   import {
     adaptLegacyTransferEvent,
     DirectoryRefreshCoordinator,
@@ -41,9 +73,7 @@
   let leftPanelPath: string = $derived($layout.leftMode === 'manual' ? $layout.leftPath : $layout.parentPath);
   let selectedFile: string | null = $state(null);
   let selectedFileIsDir: boolean | null = $state(null);
-  let showCommandPalette: boolean = $state(false);
-  let commandQuery: string = $state('');
-  let commandInput: HTMLInputElement | undefined = $state(undefined);
+  let commandPaletteVisible: boolean = $state(false);
   let showFileSearch: boolean = $state(false);
   let showHelp: boolean = $state(false);
   let showTransfer: boolean = $state(false);
@@ -51,7 +81,6 @@
   let zoomLevel: number = $state(1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
   let fullscreenEditor: FullscreenEditor | undefined = $state(undefined);
-  let editorInitialLine: number = $state(0);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
   let currentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
@@ -63,45 +92,9 @@
   // Batch rename state
   let batchRenameTempPath: string | null = $state(null);
 
-  // Compress mark dialog state
-  let compressDialogVisible: boolean = $state(false);
-  let compressDialogValue: string = $state('');
-  let compressMarkPaths: string[] = $state([]);
-
-  // Paste conflict state
-  let showConfirmModal: boolean = $state(false);
-  let confirmFileName: string = $state('');
-  let pasteResolve: ((choice: 'overwrite' | 'skip' | 'abort') => void) | null = null;
-
-  // Streaming conflict prompt state
-  let streamConflictVisible: boolean = $state(false);
-  let streamConflictName: string = $state('');
-  let streamConflictResolve: ((choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') => void) | null = null;
-  let scanningConflicts: boolean = $state(false);
-
-  // Unsaved changes confirm state
-  let showUnsavedConfirm: boolean = $state(false);
-  let pendingActionPath: string = $state('');
-  let pendingAction: 'navigate' | 'activate' = $state('activate');
-
-  // Ctrl+W prefix state for vim-style window navigation
-  let waitingForWindowKey: boolean = $state(false);
-  let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  // g prefix state for recycle bin and other g-prefix shortcuts
-  let waitingForGKey: boolean = $state(false);
-  let gKeyTimeout: ReturnType<typeof setTimeout> | null = null;
-
   // Recycle bin state
   let recycleBinPanel: RecycleBinPanel | undefined = $state(undefined);
   let recycleBinPreviewItem: { id: string; name: string; original_path: string; date_deleted: number; size: number | null } | null = $state(null);
-
-  let altHeld: boolean = $state(false);
-  let switcherActive: boolean = $state(false);
-  let switcherSelectionId: number = $state(-1);
-  let switcherOriginTabId: number = $state(-1);
-  let switcherMruIds: number[] = $state([]);
-  let switcherPhysicalIds: number[] = $state([]);
 
   // Focus restore state
   let windowReady: boolean = $state(false);
@@ -112,25 +105,6 @@
     performance.mark(name);
     const measure = performance.measure(name, start, name);
     if (measure.duration > 16) console.debug(`[PanelLayout] ${name}: ${measure.duration.toFixed(1)}ms`);
-  }
-
-  // Tab completion state for command palette
-  let completions: { name: string; is_dir: boolean }[] = [];
-  let completionIndex: number = -1;
-  let completionPrefix: string = '';
-  let completionDir: string = '';
-
-  const supportedAltTabCodes = new Set([
-    'KeyN', 'KeyM', 'KeyU', 'KeyR', 'KeyH', 'KeyL', 'Comma', 'Period', 'KeyD',
-    'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
-  ]);
-
-  function isSupportedAltTabCode(code: string): boolean {
-    return supportedAltTabCodes.has(code);
-  }
-
-  function isTerminalInputTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && target.closest('.terminal-containers') !== null;
   }
 
   // Toast notification
@@ -150,168 +124,10 @@
     showToast(`Zoom: ${Math.round(zoomLevel * 100)}%`);
   }
 
-  // Resolve a path argument relative to currentPath
-  function resolvePath(input: string): string {
-    let trimmed = input.trim();
-    if (!trimmed) return '';
-    // Don't convert slashes for FTP URLs
-    if (trimmed.startsWith('ftp://')) return trimmed.replace(/\\/g, '/');
-    trimmed = trimmed.replace(/\//g, '\\');
-    // Git Bash style: /d/ → D:\, /c/Users → C:\Users, /d → D:\
-    // Only single letter after \ is treated as drive letter
-    if (/^\\[A-Za-z]$/.test(trimmed) || /^\\[A-Za-z]\\/.test(trimmed)) {
-      const rest = trimmed.substring(2); // after \X
-      trimmed = trimmed[1].toUpperCase() + ':' + (rest.startsWith('\\') ? rest : (rest ? '\\' + rest : '\\'));
-    }
-    // Absolute path: X:\, \ (root)
-    if (/^[A-Za-z]:\\/.test(trimmed) || trimmed === '\\') {
-      return trimmed;
-    }
-    // Relative path
-    return currentPath + '\\' + trimmed;
-  }
-
-  // Reset completion state
-  function resetCompletion() {
-    completions = [];
-    completionIndex = -1;
-    completionPrefix = '';
-    completionDir = '';
-  }
-
-  // Trigger tab completion for cd/e commands
-  async function triggerCompletion() {
-    const q = commandQuery.trim();
-    // Parse: "cd path/prefix" or "e path/prefix"
-    const cdMatch = q.match(/^(cd\s+)(.+)$/);
-    const eMatch = q.match(/^(e\s+)(.+)$/);
-
-    let cmdPrefix: string;
-    let pathInput: string;
-    let dirsOnly: boolean;
-
-    if (cdMatch) {
-      cmdPrefix = cdMatch[1];
-      pathInput = cdMatch[2].replace(/\//g, '\\');
-      dirsOnly = true;
-    } else if (eMatch) {
-      cmdPrefix = eMatch[1];
-      pathInput = eMatch[2].replace(/\//g, '\\');
-      dirsOnly = false;
-    } else {
-      return;
-    }
-
-    // Strip trailing backslash so parsing treats the last component as
-    // the partial name (enables cycling through directory completions).
-    if (pathInput.endsWith('\\') && pathInput !== '\\') {
-      pathInput = pathInput.slice(0, -1);
-    }
-
-    // Determine parent dir and partial name
-    let parentDir: string;
-    let partial: string;
-
-    if (pathInput.includes('\\')) {
-      const lastSlash = pathInput.lastIndexOf('\\');
-      const dirPart = pathInput.substring(0, lastSlash) || '\\';
-      partial = pathInput.substring(lastSlash + 1);
-      parentDir = resolvePath(dirPart);
-    } else {
-      partial = pathInput;
-      parentDir = currentPath;
-    }
-
-    // Check if we're cycling through existing completions
-    let doFetch = true;
-    if (completionDir === parentDir && completions.length > 0) {
-      const currentMatchIdx = completions.findIndex(c => c.name.toLowerCase() === partial.toLowerCase());
-      if (currentMatchIdx >= 0) {
-        // Cycle: find next completion that matches the original prefix
-        doFetch = false;
-        const prefix = completionPrefix.toLowerCase();
-        for (let i = 1; i <= completions.length; i++) {
-          const idx = (currentMatchIdx + i) % completions.length;
-          if (completions[idx].name.toLowerCase().startsWith(prefix)) {
-            completionIndex = idx;
-            break;
-          }
-        }
-      }
-    }
-
-    if (doFetch) {
-      try {
-        const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>('read_directory', { path: parentDir });
-        const filtered = entries
-          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()) && (dirsOnly ? e.is_dir : true));
-        if (filtered.length === 0) { resetCompletion(); return; }
-        completions = filtered;
-        completionDir = parentDir;
-        completionPrefix = partial;
-        completionIndex = 0;
-      } catch { resetCompletion(); return; }
-    }
-
-    // Apply completion
-    const completed = completions[completionIndex];
-    // Rebuild the path: replace the partial with the completed name
-    let newPath: string;
-    if (pathInput.includes('\\')) {
-      const lastSlash = pathInput.lastIndexOf('\\');
-      newPath = pathInput.substring(0, lastSlash + 1) + completed.name;
-    } else {
-      newPath = completed.name;
-    }
-    commandQuery = cmdPrefix + newPath;
-    // Append backslash for directory completions
-    if (completed.is_dir && !commandQuery.endsWith('\\')) {
-      commandQuery += '\\';
-    }
-  }
-
-  // Track active column before fullscreen for restoration
-  let preFullscreenColumn: 'parent' | 'current' | 'preview' | 'terminal' | null = null;
-
-  // Fullscreen image viewer state
-  let fullscreenImageList: { name: string; path: string }[] = $state([]);
-  let fullscreenImageIndex: number = $state(0);
-
-  // Fullscreen PDF viewer state
-  let fullscreenPdfPath: string = $state('');
-  let fullscreenPdfPage: number = $state(0);
-  let fullscreenPdfPageCount: number = $state(0);
-  let fullscreenPdfFileSize: number = $state(0);
-
-  // Fullscreen video player state
-  let fullscreenVideoPlayerPath: string = $state('');
-  let fullscreenVideoPlayerFileSize: number = $state(0);
-
   // Drag state for column resizing
   let isDragging: 'first' | 'second' | null = $state(null);
   let dragStartX: number = 0;
   let dragStartRatios: [number, number, number] = [1, 1, 3];
-
-  const commands = [
-    { name: 'Open File', action: () => layout.setActiveColumn('current') },
-    { name: 'Open Terminal', action: () => layout.toggleTerminal() },
-    { name: 'Open Editor', action: () => layout.setActiveColumn('preview') },
-    { name: 'Toggle Terminal', action: () => layout.toggleTerminal() },
-    { name: 'ratio 1:1:3', action: () => layout.setRatios([1, 1, 3]) },
-    { name: 'ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
-    { name: 'Close Panel', action: () => { showCommandPalette = false; } },
-    { name: 'Help', action: () => { showCommandPalette = false; showHelp = true; } },
-    { name: 'Tab: New', action: () => handleTabNew() },
-    { name: 'Tab: Close', action: () => handleTabClose() },
-    { name: 'Tab: Swap Next', action: () => tabs.swapTab(1) },
-    { name: 'Tab: Swap Prev', action: () => tabs.swapTab(-1) },
-  ];
-
-  let filteredCommands = $derived(
-    commandQuery
-      ? commands.filter(cmd => cmd.name.toLowerCase().includes(commandQuery.toLowerCase()))
-      : commands
-  );
 
   function getDirectoryVersion(directory: DirectoryKey): number {
     return refreshCoordinator?.getVersion(directory) ?? 0;
@@ -362,6 +178,53 @@
   }
 
   onMount(async () => {
+    initDialogDeps({
+      getSelectedFile: () => selectedFile,
+      getPreviewEditor: () => previewEditor,
+      showToast,
+      focusPanel,
+      getCurrentPath: () => currentPath,
+    });
+    initClipboardDeps({
+      showToast,
+      refreshPanels: refreshPanelsForDirectoryChanges,
+      onOpenTransfer: () => { showTransfer = true; },
+    });
+    initKeyboardDeps({
+      getPreviewEditor: () => previewEditor,
+      getFullscreenEditor: () => fullscreenEditor,
+      getRecycleBinPanel: () => recycleBinPanel,
+      getCurrentDirectoryPanel: () => currentDirectoryPanel,
+      getCommandPaletteVisible: () => commandPaletteVisible,
+      setCommandPaletteVisible: (v) => { commandPaletteVisible = v; },
+      getShowFileSearch: () => showFileSearch,
+      setShowHelp: (v) => { showHelp = v; },
+      toggleShowTransfer: () => { showTransfer = !showTransfer; },
+      getZoomLevel: () => zoomLevel,
+      applyZoom,
+      focusPanel,
+      handleTabNew,
+      handleTabClose,
+      handleTabSwitchByIndex,
+      handlePaste,
+      showToast,
+      saveCurrentTabState,
+      getTabActiveId: () => getTabsState().activeTabId,
+      getTabPhysicalIds: () => getTabsState().tabs.map((t: any) => t.id),
+      getTabsMruOrder: () => tabs.getMruOrder().map((t: any) => t.id),
+      restoreTabContent,
+      getTabById: (id) => getTabsState().tabs.find((t: any) => t.id === id),
+      commitTabSwitch: (tabId) => { tabs.switchTab(tabId); },
+      swapTab: (delta) => { tabs.swapTab(delta); },
+      renameActiveTab: (path) => { tabs.renameTab(getTabsState().activeTabId, getDirName(path)); },
+      openFileSearch: async () => {
+        const homeDir = await invoke<string>('get_home_dir');
+        fileSearchHomeDir = homeDir;
+        showFileSearch = true;
+      },
+      synchronizeProjectTreeWatcher,
+    });
+
     refreshCoordinator = new DirectoryRefreshCoordinator({
       cache: directoryCache,
       getActivePanels: getRefreshPanels,
@@ -379,10 +242,7 @@
     // Pre-load vim config so options are ready before first editor init
     vimOptions.preload();
 
-    // Register global listeners in capturing phase
-    window.addEventListener('keydown', handleGlobalKeydown, true);
-    window.addEventListener('keyup', handleGlobalKeyup, true);
-    window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true });
+    setupKeyboard();
 
     // Register Tauri window focus listener for auto-restore
     getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -429,9 +289,7 @@
     fileOpUnlistens.forEach(fn => fn());
     refreshCoordinator?.dispose();
     refreshCoordinator = null;
-    window.removeEventListener('keydown', handleGlobalKeydown, true);
-    window.removeEventListener('keyup', handleGlobalKeyup, true);
-    window.removeEventListener('wheel', handleGlobalWheel, { capture: true } as any);
+    teardownKeyboard();
     if (focusUnlisten) { focusUnlisten(); focusUnlisten = null; }
     if (directoryWatchUnlisten) directoryWatchUnlisten();
     if (directoryWatchTimer) clearTimeout(directoryWatchTimer);
@@ -461,7 +319,7 @@
       // During MRU switcher preview, layout temporarily shows another tab's
       // content without changing activeTabId — skip auto-rename so the origin
       // tab's name isn't clobbered by the previewed tab's directory/file name.
-      if (switcherActive) return;
+      if (getSwitcherActive()) return;
       // Auto-name active tab: file name if selected, otherwise directory name
       const projectTree = currentDirectoryPanel?.getProjectTreeState();
       const name = projectTree?.enabled && projectTree.rootPath
@@ -477,9 +335,9 @@
 
   function handleNavigate(path: string) {
     if (previewEditor?.getIsModified()) {
-      pendingActionPath = path;
-      pendingAction = 'navigate';
-      showUnsavedConfirm = true;
+      setPendingActionPath(path);
+      setPendingAction('navigate');
+      setShowUnsavedConfirm(true);
       return;
     }
     // Preserve slashes for FTP paths, normalize for local
@@ -574,22 +432,6 @@
     console.log(`[tab-perf] handleTabSwitch total=${(t3-t0).toFixed(1)}ms save=${(t1-t0).toFixed(1)}ms switch=${(t2-t1).toFixed(1)}ms restore=${(t3-t2).toFixed(1)}ms`);
   }
 
-  function startSwitcher(mode: 'mru' | 'physical', direction: 1 | -1 = 1) {
-    const state = getTabsState();
-    if (state.tabs.length <= 1) return;
-    saveCurrentTabState();
-    switcherOriginTabId = state.activeTabId;
-    switcherMruIds = tabs.getMruOrder().map((t: TabState) => t.id);
-    switcherPhysicalIds = state.tabs.map((t: TabState) => t.id);
-    switcherSelectionId = state.activeTabId;
-    switcherActive = true;
-    if (mode === 'physical') {
-      moveSwitcherIn(switcherPhysicalIds, direction);
-    } else {
-      moveSwitcherIn(switcherMruIds, 1);
-    }
-  }
-
   async function synchronizeProjectTreeWatcher(): Promise<void> {
     const tree = currentDirectoryPanel?.getProjectTreeState();
     if (tree?.enabled && tree.rootPath && !tree.rootPath.startsWith('ftp://')) {
@@ -612,32 +454,6 @@
       tabs.renameTab(getTabsState().activeTabId, getDirName(path));
       await synchronizeProjectTreeWatcher();
     }
-  }
-
-  function moveSwitcherIn(ids: number[], direction: 1 | -1) {
-    const idx = ids.indexOf(switcherSelectionId);
-    if (idx === -1) return;
-    const newIdx = (idx + direction + ids.length) % ids.length;
-    switcherSelectionId = ids[newIdx];
-    const tab = getTabsState().tabs.find((t: TabState) => t.id === switcherSelectionId);
-    if (tab) restoreTabContent(tab);
-  }
-
-  function commitSwitcher() {
-    if (!switcherActive) return;
-    const selectionId = switcherSelectionId;
-    const originId = switcherOriginTabId;
-    // Commit the active tab before clearing switcher state. PreviewEditor is
-    // already rendering into selectionId's slot, so no delayed reload is
-    // needed (and a reload can race an in-flight Markdown render).
-    if (selectionId !== originId && selectionId >= 0) {
-      tabs.switchTab(selectionId);
-    }
-    switcherActive = false;
-    switcherSelectionId = -1;
-    switcherOriginTabId = -1;
-    switcherMruIds = [];
-    switcherPhysicalIds = [];
   }
 
   function handleTabSwitchByIndex(index: number) {
@@ -766,9 +582,9 @@
   function handleActivate(filePath: string) {
     // Check for unsaved changes before switching files
     if (previewEditor?.getIsModified()) {
-      pendingActionPath = filePath;
-      pendingAction = 'activate';
-      showUnsavedConfirm = true;
+      setPendingActionPath(filePath);
+      setPendingAction('activate');
+      setShowUnsavedConfirm(true);
       return;
     }
     layout.setSelectedFile(filePath);
@@ -780,590 +596,12 @@
     focusPanel('preview');
   }
 
-  function promptConflict(fileName: string): Promise<'overwrite' | 'skip' | 'abort'> {
-    return new Promise(resolve => {
-      confirmFileName = fileName;
-      showConfirmModal = true;
-      pasteResolve = resolve;
-    });
-  }
-
-  function promptConflictStream(fileName: string): Promise<'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort'> {
-    return new Promise(resolve => {
-      streamConflictName = fileName;
-      streamConflictVisible = true;
-      streamConflictResolve = resolve;
-    });
-  }
-
-  function resolveStreamConflict(choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') {
-    streamConflictVisible = false;
-    streamConflictResolve?.(choice);
-    streamConflictResolve = null;
-  }
-
-  async function scanConflicts(startScan: () => Promise<unknown>): Promise<{ dirSkipMap: Map<string, string[]>; fileSkipSet: Set<string> } | null> {
-    const dirSkipMap = new Map<string, string[]>();
-    const fileSkipSet = new Set<string>();
-    let applyToAll: 'overwrite' | 'skip' | null = null;
-    let queue: Array<{ kind: string; dir_source: string; rel_path: string }> = [];
-    let processing = false;
-    let finished = false;
-    let aborted = false;
-
-    const addSkip = (kind: string, dir_source: string, rel: string) => {
-      if (kind === 'dir') {
-        if (!dirSkipMap.has(dir_source)) dirSkipMap.set(dir_source, []);
-        dirSkipMap.get(dir_source)!.push(rel);
-      } else {
-        fileSkipSet.add(rel);
-      }
-    };
-
-    return new Promise((resolve) => {
-      let unlistenFound: (() => void) | null = null;
-      let unlistenDone: (() => void) | null = null;
-
-      const maybeFinish = () => {
-        if (finished && !processing && queue.length === 0) {
-          unlistenFound?.();
-          unlistenDone?.();
-          resolve(aborted ? null : { dirSkipMap, fileSkipSet });
-        }
-      };
-
-      const processQueue = async () => {
-        if (processing) return;
-        processing = true;
-        while (queue.length > 0 && !aborted) {
-          const c = queue.shift()!;
-          if (applyToAll === 'skip') {
-            addSkip(c.kind, c.dir_source, c.rel_path);
-          } else if (applyToAll === 'overwrite') {
-            // 覆盖所有：不 skip
-          } else {
-            const choice = await promptConflictStream(c.rel_path);
-            if (choice === 'skip') addSkip(c.kind, c.dir_source, c.rel_path);
-            else if (choice === 'overwrite-all') applyToAll = 'overwrite';
-            else if (choice === 'skip-all') { applyToAll = 'skip'; addSkip(c.kind, c.dir_source, c.rel_path); }
-            else if (choice === 'abort') aborted = true;
-          }
-        }
-        queue.length = 0;
-        processing = false;
-        maybeFinish();
-      };
-
-      Promise.all([
-        listen<Record<string, unknown>>('transfer-conflict-found', (event) => {
-          if (aborted) return;
-          queue.push(event.payload as any);
-          processQueue();
-        }),
-        listen('transfer-conflict-scan-done', () => {
-          finished = true;
-          maybeFinish();
-        }),
-      ]).then(([found, done]) => {
-        unlistenFound = found;
-        unlistenDone = done;
-        startScan().catch(() => {
-          finished = true;
-          maybeFinish();
-        });
-      });
-    });
-  }
-
-  function handleConfirmOverwrite() {
-    showConfirmModal = false;
-    pasteResolve?.('overwrite');
-    pasteResolve = null;
-  }
-
-  function handleConfirmSkip() {
-    showConfirmModal = false;
-    pasteResolve?.('skip');
-    pasteResolve = null;
-  }
-
-  function handleConfirmAbort() {
-    showConfirmModal = false;
-    pasteResolve?.('abort');
-    pasteResolve = null;
-  }
-
-  async function handleUnsavedSave() {
-    showUnsavedConfirm = false;
-    const targetPath = pendingActionPath;
-    const action = pendingAction;
-    pendingActionPath = '';
-    const filePath = selectedFile;
-    const content = previewEditor?.getContent();
-    if (filePath && content !== undefined) {
-      try {
-        await invoke('write_file', { path: filePath, content });
-        previewEditor?.setContent(content);
-      } catch (e) {
-        showToast(`Failed to save: ${e}`);
-        return;
-      }
-    }
-    dispatchPendingAction(targetPath, action);
-  }
-
-  function handleUnsavedDiscard() {
-    showUnsavedConfirm = false;
-    const targetPath = pendingActionPath;
-    const action = pendingAction;
-    pendingActionPath = '';
-    dispatchPendingAction(targetPath, action);
-  }
-
-  function handleUnsavedCancel() {
-    showUnsavedConfirm = false;
-    pendingActionPath = '';
-    focusPanel('preview');
-  }
-
-  function dispatchPendingAction(path: string, action: 'navigate' | 'activate') {
-    if (action === 'navigate') {
-      layout.setCurrentPath(path);
-      currentPath = path;
-    } else {
-      layout.setSelectedFile(path);
-      selectedFile = path;
-      if (!$layout.previewExpanded) {
-        layout.expandPreview();
-      }
-      focusPanel('preview');
-    }
-  }
-
-  function isFtpPath(p: string): boolean { return p.startsWith('ftp://'); }
-  function getFtpConnName(p: string): string {
-    const rest = p.slice(6);
-    const slash = rest.indexOf('/');
-    return slash >= 0 ? rest.substring(0, slash) : rest;
-  }
-  function getFtpRemotePath(p: string): string {
-    const rest = p.slice(6);
-    const slash = rest.indexOf('/');
-    return slash >= 0 ? rest.substring(slash) : '/';
-  }
-  function getFtpDestPath(dirPath: string, name: string): string {
-    const base = dirPath.replace(/\/$/, '');
-    return base + '/' + name;
-  }
-
-  async function handlePaste(force: boolean = false) {
-    // Check for extract mark first (from layout store)
-    const layoutVal = get(layout);
-    if (layoutVal.markType === 'extract' && layoutVal.markPaths.length > 0) {
-      const archivePath = layoutVal.markPaths[0];
-      const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
-      try {
-        const extracted = await invokeArchiveWithOptionalPassword<number>(
-          'extract_archive',
-          { archivePath, destDir },
-          'password'
-        );
-        if (extracted === null) return;
-        showToast('Archive extracted');
-        layout.clearMark();
-        await refreshPanelsForDirectoryChanges([destDir]);
-      } catch (e) {
-        showToast(`Extract failed: ${e}`);
-      }
-      return;
-    }
-
-    // Check for compress mark (C key marks files, p shows compress dialog)
-    if (layoutVal.markType === 'compress' && layoutVal.markPaths.length > 0) {
-      compressMarkPaths = layoutVal.markPaths;
-      const defaultName = compressMarkPaths.length === 1
-        ? (compressMarkPaths[0].split(/[/\\]/).pop() || 'file').replace(/\.\w+$/, '') + '.zip'
-        : 'archive.zip';
-      compressDialogValue = defaultName;
-      compressDialogVisible = true;
-      return;
-    }
-
-    let state: any;
-    const unsub = clipboard.subscribe(v => state = v)();
-    if (!state.entries || state.entries.length === 0) {
-      showToast('Clipboard empty');
-      return;
-    }
-
-    // Check for archive clipboard entries (yanked from within an archive)
-    if (state.archivePath) {
-      const destDir = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
-      const internalPaths = state.entries.map((e: any) => e.path);
-      try {
-        const extracted = await invokeArchiveWithOptionalPassword<number>(
-          'extract_archive_files',
-          {
-            archivePath: state.archivePath,
-            internalPaths,
-            destDir,
-          },
-          'password'
-        );
-        if (extracted === null) return;
-        showToast(`${state.entries.length} ${state.entries.length === 1 ? 'file' : 'files'} extracted from archive`);
-        clipboard.clear();
-        layout.clearMark();
-        await refreshPanelsForDirectoryChanges([destDir]);
-      } catch (e) {
-        showToast(`Extract failed: ${e}`);
-      }
-      return;
-    }
-
-    // Check if we're in archive mode: paste files INTO the archive (ZIP only)
-    const archiveState = layoutVal.archiveState;
-    if (archiveState && !state.archivePath) {
-      const sourcePaths = state.entries.map((e: any) => e.path);
-      try {
-        await invoke('archive_add_files', {
-          archivePath: archiveState.archivePath,
-          sourcePaths,
-          internalPath: archiveState.internalPath,
-        });
-        showToast(`${sourcePaths.length} ${sourcePaths.length === 1 ? 'file' : 'files'} added to archive`);
-        clipboard.clear();
-        layout.clearMark();
-        currentDirectoryPanel?.refresh();
-      } catch (e) {
-        showToast(`Add to archive failed: ${e}`);
-      }
-      return;
-    }
-
-    const entries = state.entries;
-    const operation = state.operation;
-    const destinationPath = currentDirectoryPanel?.getOperationDirectory() ?? currentPath;
-    const destIsFtp = isFtpPath(destinationPath);
-    const srcIsFtp = entries.some((e: any) => isFtpPath(e.path));
-    const isCrossBackend = destIsFtp || srcIsFtp;
-
-    // Cross-backend paste: skip local conflict detection
-    if (isCrossBackend) {
-      if (srcIsFtp && !destIsFtp) {
-        // FTP → Local: download via TransferManager
-        const destDir = destinationPath.replace(/[\\\/]+$/, '');
-
-        const dirs = entries.filter((e: any) => e.is_dir);
-        const files = entries.filter((e: any) => !e.is_dir);
-
-        // Stream conflict detection on local targets
-        const skipFiles = new Set<string>();
-        const skipDirMap = new Map<string, string[]>();   // dir.path (ftp://) -> rel 列表
-        if (!force) {
-          scanningConflicts = true;
-          const result = await scanConflicts(() => invoke('scan_ftp_download_conflicts', {
-            connName: getFtpConnName(entries[0].path),
-            files: files.map((e: any) => e.path),
-            dirs: dirs.map((e: any) => e.path),
-            localDir: destDir,
-          }));
-          scanningConflicts = false;
-          if (result === null) {
-            showToast('Download aborted');
-            currentDirectoryPanel?.refresh();
-            return;
-          }
-          for (const [dirSource, rels] of result.dirSkipMap) {
-            skipDirMap.set(dirSource, rels);
-          }
-          for (const f of result.fileSkipSet) {
-            skipFiles.add(f);
-          }
-        }
-
-        let totalQueued = 0;
-
-        // Download folders as batch downloads (skip internal conflicting files)
-        for (const dir of dirs) {
-          const skipRel = skipDirMap.get(dir.path) || [];
-          await invoke('ftp_download_folder', {
-            connName: getFtpConnName(dir.path),
-            remotePath: getFtpRemotePath(dir.path),
-            localPath: destDir + '\\' + dir.name,
-            moveMode: operation === 'cut',
-            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
-          });
-          totalQueued++;
-        }
-
-        // Download files as individual transfers (skip conflicting files)
-        const downloadFiles = files.filter((f: any) => !skipFiles.has(f.name));
-        if (downloadFiles.length > 0) {
-          const tasks = downloadFiles.map((entry: any) => ({
-            op_type: 'ftp-download' as const,
-            source: entry.path,
-            destination: destDir + '\\' + entry.name,
-            total_bytes: entry.size || 0,
-            conn_name: getFtpConnName(entry.path),
-          }));
-          const ids = await transfer.enqueueTransfers(tasks);
-          totalQueued += ids.length;
-        }
-
-        if (totalQueued > 0) {
-          showToast(`Queued ${totalQueued} download(s)`);
-          showTransfer = true;
-        }
-
-        if (operation === 'cut') {
-          // Delete remote sources, but preserve skipped files; skip whole dir if any file skipped
-          for (const entry of files) {
-            if (skipFiles.has(entry.name)) continue;
-            await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
-          }
-          for (const dir of dirs) {
-            const hasSkipped = (skipDirMap.get(dir.path) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
-            if (hasSkipped) continue;
-            await invoke('ftp_delete', { path: dir.path, permanent: true }).catch(() => {});
-          }
-        }
-      } else if (!srcIsFtp && destIsFtp) {
-        // Local → FTP: upload via TransferManager
-        const destConn = getFtpConnName(destinationPath);
-        const destBase = getFtpRemotePath(destinationPath).replace(/\/+$/, '');
-
-        const dirs = entries.filter((e: any) => e.is_dir);
-        const files = entries.filter((e: any) => !e.is_dir);
-
-        // Stream conflict detection on remote targets
-        const skipFiles = new Set<string>();                // 顶层文件冲突（basename）
-        const skipDirMap = new Map<string, string[]>();     // 目录名 -> 内部 skip 相对路径
-        if (!force) {
-          scanningConflicts = true;
-          const result = await scanConflicts(() => invoke('scan_ftp_upload_conflicts', {
-            connName: destConn,
-            sources: entries.map((e: any) => e.path),
-            remoteDir: destBase,
-          }));
-          scanningConflicts = false;
-          if (result === null) {
-            showToast('Upload aborted');
-            currentDirectoryPanel?.refresh();
-            return;
-          }
-          for (const [dirSource, rels] of result.dirSkipMap) {
-            const name = dirSource.split(/[/\\]/).pop() || dirSource;
-            skipDirMap.set(name, rels);
-          }
-          for (const f of result.fileSkipSet) {
-            skipFiles.add(f);
-          }
-        }
-
-        let totalQueued = 0;
-
-        // Upload folders as batch uploads (skip internal conflicting files)
-        for (const dir of dirs) {
-          const skipRel = skipDirMap.get(dir.name) || [];
-          await invoke('ftp_upload_folder', {
-            connName: destConn,
-            localPath: dir.path,
-            remotePath: `${destBase}/${dir.name}`,
-            moveMode: operation === 'cut',
-            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
-          });
-          totalQueued++;
-        }
-
-        // Upload files as individual transfers (skip conflicting files)
-        const uploadFiles = files.filter((f: any) => !skipFiles.has(f.name));
-        if (uploadFiles.length > 0) {
-          const tasks = uploadFiles.map((entry: any) => ({
-            op_type: 'ftp-upload' as const,
-            source: entry.path,
-            destination: `ftp://${destConn}${destBase}/${entry.name}`,
-            total_bytes: 0,
-            conn_name: destConn,
-          }));
-          const ids = await transfer.enqueueTransfers(tasks);
-          totalQueued += ids.length;
-        }
-
-        if (totalQueued > 0) {
-          showToast(`Queued ${totalQueued} upload(s)`);
-          showTransfer = true;
-        }
-
-        if (operation === 'cut') {
-          const delEntries = entries.filter((e: any) => !e.is_dir && !skipFiles.has(e.name));
-          if (delEntries.length > 0) {
-            const delTasks = delEntries.map((entry: any) => ({
-              op_type: 'delete' as const,
-              source: entry.path,
-              destination: '',
-              total_bytes: entry.size || 0,
-            }));
-            await transfer.enqueueTransfers(delTasks);
-          }
-          // Directories in cut mode: delete locally after enqueuing upload batch.
-          // Skip directories that had internal conflicting files skipped, to avoid
-          // deleting files that were not uploaded.
-          for (const dir of dirs) {
-            const hasSkipped = (skipDirMap.get(dir.name) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
-            if (hasSkipped) continue;
-            await invoke('delete_file', { path: dir.path }).catch(() => {});
-          }
-        }
-      } else if (srcIsFtp && destIsFtp) {
-        // FTP → FTP
-        const srcConn = getFtpConnName(entries[0].path);
-        const destConn = getFtpConnName(destinationPath);
-        if (srcConn === destConn) {
-          const destBase = getFtpDestPath(destinationPath, '').replace(/\/+$/, '');
-          if (operation === 'cut') {
-            // Move: server-side rename (instant, regardless of file size)
-            for (const entry of entries) {
-              const newFullPath = destBase + '/' + entry.name;
-              try {
-                await invoke('ftp_rename', { oldPath: entry.path, newPath: newFullPath });
-              } catch (e: any) {
-                showToast(`Move failed: ${e}`);
-              }
-            }
-            showToast(`Moved ${entries.length} item(s) on ${srcConn}`);
-          } else {
-            // Copy: need download + re-upload (no server-side copy in FTP)
-            let done = 0;
-            for (const entry of entries) {
-              showToast(`Copying ${entry.name} (${done + 1}/${entries.length})...`);
-              const newRemote = destBase + '/' + entry.name;
-              // Download to temp, re-upload (streaming)
-              await invoke('ftp_copy', {
-                connName: srcConn,
-                srcPath: getFtpRemotePath(entry.path),
-                dstPath: newRemote,
-              }).catch((e: any) => { showToast(`Copy failed: ${e}`); });
-              done++;
-            }
-            showToast(`Copied ${entries.length} item(s) on ${srcConn}`);
-          }
-        } else {
-          // Different servers: download + upload relay
-          showToast('Cross-server transfer not yet supported');
-        }
-      }
-
-      if (operation === 'cut') {
-        clipboard.clear();
-      }
-      // Refresh panels after cross-backend transfer
-      currentDirectoryPanel?.refresh();
-      return;
-    }
-
-    // Local-to-local paste (existing behavior)
-    const destDir = destinationPath.replace(/[\\\/]+$/, '');
-    let processed = 0;
-    let firstPastedPath: string | null = null;
-    const resolvedSources: string[] = [];
-    const skipMap = new Map<string, string[]>();
-
-    const dirEntries = entries.filter((e: any) => e.is_dir);
-    const fileEntries = entries.filter((e: any) => !e.is_dir);
-
-    // Phase 1a: directories — stream conflict detection
-    if (dirEntries.length > 0) {
-      if (force) {
-        for (const dir of dirEntries) {
-          resolvedSources.push(dir.path);
-          if (!firstPastedPath) firstPastedPath = destDir + '\\' + dir.name;
-        }
-      } else {
-        const dirTasks = dirEntries.map((entry: any) => ({
-          op_type: operation === 'copy' ? 'copy' : 'move',
-          source: entry.path,
-          destination: destDir + '\\' + entry.name,
-          total_bytes: 0,
-          skip_rel_paths: entry.skip_rel_paths || [],
-        }));
-        scanningConflicts = true;
-        const result = await scanConflicts(() => invoke('scan_transfer_conflicts', { tasks: dirTasks }));
-        scanningConflicts = false;
-        if (result === null) {
-          showToast('Paste aborted');
-          currentDirectoryPanel?.refresh();
-          return;
-        }
-        for (const dir of dirEntries) {
-          resolvedSources.push(dir.path);
-          if (!firstPastedPath) firstPastedPath = destDir + '\\' + dir.name;
-          const skip = result.dirSkipMap.get(dir.path);
-          if (skip) skipMap.set(dir.path, skip);
-        }
-      }
-    }
-
-    // Phase 1b: files — existing sync conflict check
-    for (const entry of fileEntries) {
-      const destPath = destDir + '\\' + entry.name;
-
-      let exists = false;
-      try {
-        exists = await invoke<boolean>('file_exists', { path: destPath });
-      } catch {
-        exists = false;
-      }
-
-      if (exists) {
-        if (!force) {
-          const choice = await promptConflict(entry.name);
-          if (choice === 'abort') {
-            showToast(`Paste aborted (${processed}/${entries.length} done)`);
-            currentDirectoryPanel?.refresh();
-            return;
-          }
-          if (choice === 'skip') {
-            continue;
-          }
-        }
-        // Overwrite: delete existing first
-        try {
-          await invoke('delete_file', { path: destPath });
-        } catch (e) {
-          showToast(`Failed to overwrite ${entry.name}: ${e}`);
-          continue;
-        }
-      }
-
-      resolvedSources.push(entry.path);
-      if (!firstPastedPath) firstPastedPath = destPath;
-    }
-
-    if (resolvedSources.length === 0) return;
-
-    // Phase 2: execute via TransferManager
-    const tasks = resolvedSources.map((src: string) => {
-      // Find the original entry to get its size
-      const origEntry = entries.find((e: any) => e.path === src);
-      return {
-        op_type: operation === 'copy' ? 'copy' : 'move',
-        source: src,
-        destination: destDir + '\\' + (src.split(/[/\\]/).pop() || src),
-        total_bytes: origEntry?.size || 0,
-        skip_rel_paths: [...(origEntry?.skip_rel_paths || []), ...(skipMap.get(src) || [])],
-      };
-    });
-    const ids = await transfer.enqueueTransfers(tasks);
-    showToast(`Queued ${ids.length} transfer(s)`);
-    if (ids.length > 0) showTransfer = true;
-
-    // Cut: clear clipboard since source files no longer exist
-    if (operation === 'cut') {
-      clipboard.clear();
-    }
-
-    // Auto-refresh handled by persistent listeners in onMount
+  function handlePaste(force: boolean = false) {
+    return doPaste(
+      currentPath,
+      () => currentDirectoryPanel?.getOperationDirectory() ?? currentPath,
+      force,
+    );
   }
 
   function togglePreviewLayout() {
@@ -1388,7 +626,6 @@
       } else if (current === 'current') {
         focusPanel('preview');
       } else if (current === 'preview') {
-        // Ctrl+W l from preview content: switch to TOC if visible and TOC not already focused
         if ($layout.previewExpanded && previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
           previewEditor.focusToc();
         }
@@ -1397,46 +634,15 @@
   }
 
   function handleFullscreenEditor() {
-    if (selectedFile && isImageFile(selectedFile)) {
-      const imageFiles = currentDirectoryPanel?.getImageFiles() || [];
-      const idx = imageFiles.findIndex(f => f.path === selectedFile);
-      fullscreenImageList = imageFiles;
-      fullscreenImageIndex = idx >= 0 ? idx : 0;
-      preFullscreenColumn = $layout.activeColumn;
-      layout.openFullscreenImageViewer();
-    } else if (selectedFile && isPdfFile(selectedFile)) {
-      const pdfInfo = previewEditor?.getPdfInfo();
-      fullscreenPdfPath = selectedFile;
-      fullscreenPdfPage = pdfInfo?.currentPage ?? 0;
-      fullscreenPdfPageCount = pdfInfo?.pageCount ?? 0;
-      fullscreenPdfFileSize = 0;
-      preFullscreenColumn = $layout.activeColumn;
-      layout.openFullscreenPdfViewer();
-    } else if (selectedFile && isVideoFile(selectedFile)) {
-      fullscreenVideoPlayerPath = selectedFile;
-      fullscreenVideoPlayerFileSize = currentDirectoryPanel?.getSelectedFileSize() ?? 0;
-      preFullscreenColumn = $layout.activeColumn;
-      layout.openFullscreenVideoPlayer();
-    } else {
-      preFullscreenColumn = $layout.activeColumn;
-      editorInitialLine = previewEditor?.getVisibleLine() ?? 0;
-      layout.openFullscreenEditor();
-    }
+    doFullscreenEditor(selectedFile, currentDirectoryPanel, previewEditor);
   }
 
   function handleCloseFullscreen() {
-    layout.closeFullscreenEditor();
-    // Restore focus to the column that was active before fullscreen
-    const restoreTo = preFullscreenColumn || 'current';
-    preFullscreenColumn = null;
-    focusPanel(restoreTo);
+    doCloseFullscreen(focusPanel);
   }
 
   function handleSaveFullscreen(content: string) {
-    // Update preview editor content if needed
-    if (previewEditor) {
-      previewEditor.setContent(content);
-    }
+    doSaveFullscreen(content, previewEditor);
   }
 
   async function handleBatchRenameStart(files: { path: string; name: string }[]) {
@@ -1508,25 +714,7 @@
   }
 
   async function handleCompressDialogConfirm(value: string) {
-    compressDialogVisible = false;
-    if (!value || compressMarkPaths.length === 0) {
-      layout.clearMark();
-      return;
-    }
-    const destPath = currentPath.replace(/[\\/]+$/, '') + '\\' + value;
-    try {
-      await invoke('compress_files', { sources: compressMarkPaths, destPath });
-      showToast(`Archive created: ${value}`);
-      layout.clearMark();
-      currentDirectoryPanel?.refresh();
-    } catch (e) {
-      showToast(`Compress failed: ${e}`);
-    }
-  }
-
-  function handleCompressDialogCancel() {
-    compressDialogVisible = false;
-    layout.clearMark();
+    await doCompressConfirm(value, currentDirectoryPanel);
   }
 
   function handleCloseTerminal() {
@@ -1535,778 +723,19 @@
   }
 
   function handleCloseImageViewer() {
-    layout.closeFullscreenImageViewer();
-    const restoreTo = preFullscreenColumn || 'current';
-    preFullscreenColumn = null;
-    focusPanel(restoreTo);
+    doCloseImageViewer(focusPanel);
   }
 
   function handleClosePdfViewer() {
-    layout.closeFullscreenPdfViewer();
-    const restoreTo = preFullscreenColumn || 'current';
-    preFullscreenColumn = null;
-    focusPanel(restoreTo);
+    doClosePdfViewer(focusPanel);
   }
 
   function handleCloseVideoPlayer() {
-    layout.closeFullscreenVideoPlayer();
-    fullscreenVideoPlayerPath = '';
-    const restoreTo = preFullscreenColumn || 'current';
-    preFullscreenColumn = null;
-    focusPanel(restoreTo);
+    doCloseVideoPlayer(focusPanel);
   }
 
   function handleImageViewerNavigate(index: number) {
-    fullscreenImageIndex = index;
-  }
-
-  async function handleGlobalKeydown(event: KeyboardEvent) {
-    // Skip when typing in an input field (InputDialog, SearchModal search box, etc.)
-    if ((event.code === 'AltLeft' || event.code === 'AltRight') && !event.repeat) {
-      altHeld = true;
-    }
-
-    const target = event.target as HTMLElement | null;
-    const isTerminalAltTabChord = event.altKey && !event.ctrlKey && !event.metaKey
-      && !event.shiftKey && isSupportedAltTabCode(event.code) && isTerminalInputTarget(event.target);
-    const isPreviewCodeMirrorTab = event.key === 'Tab'
-      && $layout.activeColumn === 'preview'
-      && !$layout.fullscreenEditorOpen
-      && target instanceof Element
-      && target.closest('.preview-panel .cm-editor') !== null;
-    const isPdfPreview = $layout.activeColumn === 'preview'
-      && (previewEditor?.getFile?.() || '').toLowerCase().endsWith('.pdf');
-    if (isPdfPreview && event.ctrlKey
-      && (event.key === '=' || event.key === '+' || event.key === '-')) {
-      return;
-    }
-    if ((target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable)
-      && !isTerminalAltTabChord
-      && !isPreviewCodeMirrorTab) {
-      // Only allow Escape and Ctrl shortcuts through
-      if (event.key !== 'Escape' && !event.ctrlKey) return;
-    }
-
-    // Skip keys when focus is inside PdfPreviewPanel (let the component handle them)
-    if (target instanceof Element && target.closest('.pdf-preview-panel')) {
-      // Non-modifier keys: always let PDF panel handle
-      if (!event.ctrlKey && !event.altKey && !event.metaKey) return;
-      // Ctrl+=/-: let PDF panel handle zoom
-      if (event.ctrlKey && (event.key === '=' || event.key === '+' || event.key === '-')) return;
-    }
-
-    // Tab / Shift+Tab: prevent native focus switching
-    // Skip when command palette is open (Tab = path completion)
-    if (event.key === 'Tab' && !showCommandPalette) {
-      event.preventDefault();
-      const isPreviewEditorTab = $layout.activeColumn === 'preview'
-        && !$layout.fullscreenEditorOpen
-        && target instanceof Element
-        && target.closest('.preview-panel .cm-editor') !== null;
-      if (isPreviewEditorTab) {
-        if (event.shiftKey) {
-          previewEditor?.pressShiftTab();
-        } else {
-          previewEditor?.pressTab();
-        }
-        return;
-      }
-      if ($layout.fullscreenEditorOpen) {
-        if (event.shiftKey) {
-          fullscreenEditor?.pressShiftTab();
-        } else {
-          fullscreenEditor?.pressTab();
-        }
-        return;
-      }
-    }
-
-
-    // Ctrl+= / Ctrl+- / Ctrl+0 for zoom
-    if (event.ctrlKey && (event.key === '=' || event.key === '+')) {
-      event.preventDefault();
-      applyZoom(zoomLevel + 0.1);
-      return;
-    }
-    if (event.ctrlKey && event.key === '-') {
-      event.preventDefault();
-      applyZoom(zoomLevel - 0.1);
-      return;
-    }
-    if (event.ctrlKey && event.key === '0') {
-      event.preventDefault();
-      applyZoom(1);
-      return;
-    }
-
-    // F1 to show help overlay
-    if (event.key === 'F1') {
-      event.preventDefault();
-      showHelp = true;
-      return;
-    }
-
-    // Ctrl+T to toggle Transfer Manager
-    if (event.ctrlKey && !event.altKey && event.key === 't' && !waitingForWindowKey) {
-      const canToggle = !showCommandPalette && !showFileSearch
-        && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-        && !$layout.fullscreenTerminalOpen;
-      if (canToggle) {
-        event.preventDefault();
-        showTransfer = !showTransfer;
-        return;
-      }
-    }
-
-    // Ctrl+L to manually restore focus (skip if Ctrl+W prefix is active)
-    if (event.ctrlKey && event.shiftKey && event.code === 'KeyE'
-      && $layout.activeColumn === 'current' && !showCommandPalette && !showFileSearch) {
-      event.preventDefault();
-      event.stopPropagation();
-      const state = currentDirectoryPanel?.getProjectTreeState();
-      await currentDirectoryPanel?.setProjectMode(!state?.enabled);
-      const tree = currentDirectoryPanel?.getProjectTreeState();
-      if (tree?.enabled && tree.rootPath) tabs.renameTab(getTabsState().activeTabId, getDirName(tree.rootPath));
-      await synchronizeProjectTreeWatcher();
-      return;
-    }
-
-    if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
-      const canRestore = !showCommandPalette && !showFileSearch
-        && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-        && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen;
-      if (canRestore) {
-        event.preventDefault();
-        focusPanel($layout.activeColumn);
-        showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
-      }
-      return;
-    }
-
-    // Ctrl+Shift+` to toggle fullscreen terminal
-    // When Shift is pressed, backtick becomes tilde
-    if (event.ctrlKey && event.shiftKey && (event.key === '`' || event.key === '~')) {
-      event.preventDefault();
-      if ($layout.fullscreenTerminalOpen) {
-        // Exit fullscreen but keep terminal visible
-        layout.closeFullscreenTerminal();
-      } else if ($layout.terminalVisible) {
-        // Terminal visible, enter fullscreen
-        layout.openFullscreenTerminal();
-      } else {
-        // Terminal hidden, show it and enter fullscreen
-        layout.showTerminal();
-        layout.openFullscreenTerminal();
-        focusPanel('terminal');
-      }
-      return;
-    }
-
-    // Ctrl+` to toggle terminal
-    if (event.ctrlKey && event.key === '`' && !event.shiftKey) {
-      event.preventDefault();
-      if ($layout.fullscreenTerminalOpen) {
-        // In fullscreen mode, Ctrl+` closes terminal completely
-        layout.closeFullscreenTerminal();
-        layout.hideTerminal();
-        focusPanel($layout.activeColumn);
-      } else if ($layout.terminalVisible) {
-        layout.hideTerminal();
-        focusPanel($layout.activeColumn);
-      } else {
-        layout.showTerminal();
-        focusPanel('terminal');
-      }
-      return;
-    }
-
-    // g prefix for recycle bin (gr) — don't consume 'g', let panels handle gg/gd/g/
-    // Only intercept 'r' when it follows 'g' within 500ms
-    if (event.key === 'g' && !event.ctrlKey && !event.altKey && !event.metaKey
-      && !waitingForWindowKey && !$layout.fullscreenEditorOpen
-      && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen
-      && !$layout.fullscreenVideoPlayerOpen) {
-      waitingForGKey = true;
-      layout.setKeyPrefix('g');
-      if (gKeyTimeout) clearTimeout(gKeyTimeout);
-      gKeyTimeout = setTimeout(() => { waitingForGKey = false; layout.clearKeyPrefix(); }, 500);
-      // Don't return — let the event propagate to panels
-    }
-
-    if (waitingForGKey && event.key === 'r' && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      waitingForGKey = false;
-      layout.clearKeyPrefix();
-      if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
-      event.preventDefault();
-      event.stopPropagation();
-      if (!$layout.recycleBinMode) {
-        layout.recycleBinEnter();
-        focusPanel('current');
-        tick().then(() => recycleBinPanel?.reload());
-        showToast('Recycle Bin');
-      } else {
-        layout.recycleBinExit();
-        focusPanel('current');
-        showToast('Exited Recycle Bin');
-      }
-      return;
-    }
-
-    if (waitingForGKey && event.key !== 'g' && event.key !== 'r') {
-      waitingForGKey = false;
-      layout.clearKeyPrefix();
-      if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
-    }
-
-    // Ctrl+W prefix for vim-style window navigation
-    // Skip when fullscreen terminal is open (no panel switching in fullscreen)
-    if (event.ctrlKey && event.key === 'w' && !$layout.fullscreenTerminalOpen) {
-      event.preventDefault();
-      if ($layout.activeColumn === 'terminal') {
-        event.stopPropagation(); // prevent Ctrl+W from reaching xterm.js
-      }
-      waitingForWindowKey = true;
-      layout.setKeyPrefix('^W');
-      if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
-      windowKeyTimeout = setTimeout(() => { waitingForWindowKey = false; layout.clearKeyPrefix(); }, 1000);
-      return;
-    }
-
-    // Handle direction keys after Ctrl+W
-    if (waitingForWindowKey) {
-      waitingForWindowKey = false;
-      layout.clearKeyPrefix();
-      if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
-
-      const code = event.code;
-      // TOC focused: Ctrl+W h → focus preview content
-      if (previewEditor?.isTocFocused?.() && code === 'KeyH') {
-        event.preventDefault();
-        event.stopPropagation();
-        previewEditor.focusContent();
-        return;
-      }
-      if (code === 'KeyH') {
-        event.preventDefault();
-        event.stopPropagation();
-        handleSwitchPanel('left');
-        return;
-      } else if (code === 'KeyL') {
-        event.preventDefault();
-        event.stopPropagation();
-        handleSwitchPanel('right');
-        return;
-      } else if (code === 'KeyJ') {
-        event.preventDefault();
-        event.stopPropagation();
-        if ($layout.terminalVisible && $layout.activeColumn !== 'terminal') {
-          layout.setPreTerminalColumn($layout.activeColumn as 'parent' | 'current' | 'preview');
-          focusPanel('terminal');
-        }
-        return;
-      } else if (code === 'KeyK') {
-        event.preventDefault();
-        event.stopPropagation();
-        if ($layout.activeColumn === 'terminal') {
-          focusPanel($layout.preTerminalColumn === 'terminal' ? 'current' : $layout.preTerminalColumn);
-        }
-        return;
-      } else if (code === 'KeyM') {
-        // Ctrl+W m: toggle expanded/collapsed preview layout
-        event.preventDefault();
-        event.stopPropagation();
-        togglePreviewLayout();
-        return;
-      }
-    }
-
-    const previewMode = previewEditor?.getMode?.() || 'global-normal';
-    const canOpenCommandPalette = !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen && !$layout.fullscreenTerminalOpen && ($layout.activeColumn !== 'preview' || previewMode === 'global-normal');
-
-    const canUseTabShortcuts = !showCommandPalette && !showFileSearch
-      && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-      && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
-      && !($layout.activeColumn === 'preview' && previewMode === 'editor-insert');
-    const canUseGlobalFileOperations = !showCommandPalette && !showFileSearch
-      && !$layout.fullscreenEditorOpen && !$layout.fullscreenImageViewerOpen
-      && !$layout.fullscreenPdfViewerOpen && !$layout.fullscreenVideoPlayerOpen
-      && !($layout.activeColumn === 'preview' && previewMode !== 'global-normal');
-
-    if (switcherActive && altHeld) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.code === 'KeyM') {
-        moveSwitcherIn(switcherMruIds, 1);
-      } else if (event.code === 'KeyL') {
-        moveSwitcherIn(switcherPhysicalIds, 1);
-      } else if (event.code === 'KeyH') {
-        moveSwitcherIn(switcherPhysicalIds, -1);
-      }
-      return;
-    }
-
-    const isAltTabShortcut = event.altKey && !event.ctrlKey && !event.metaKey
-      && !event.shiftKey && canUseTabShortcuts && isSupportedAltTabCode(event.code);
-    if (isAltTabShortcut) {
-      if (event.repeat) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
-      let handled = true;
-      switch (event.code) {
-        case 'KeyN':
-          handleTabNew();
-          break;
-        case 'KeyU':
-          handleTabClose();
-          break;
-        case 'KeyR':
-          showToast('Double-click tab name to rename');
-          break;
-        case 'KeyM':
-          startSwitcher('mru');
-          break;
-        case 'KeyL':
-          startSwitcher('physical');
-          break;
-        case 'KeyH':
-          startSwitcher('physical', -1);
-          break;
-        case 'Comma':
-          tabs.swapTab(-1);
-          break;
-        case 'Period':
-          tabs.swapTab(1);
-          break;
-        case 'KeyD':
-          layout.toggleDetach();
-          showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
-          break;
-        default:
-          if (/^Digit[1-9]$/.test(event.code)) {
-            handleTabSwitchByIndex(parseInt(event.code.substring(5)) - 1);
-          } else {
-            handled = false;
-          }
-      }
-
-      if (!handled) return;
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-
-    // P key for force paste (skip conflict confirmation)
-    if (event.key === 'P' && event.shiftKey && !event.ctrlKey && !event.altKey && canUseGlobalFileOperations) {
-      event.preventDefault();
-      handlePaste(true);
-      return;
-    }
-
-    // p key for paste (works in directory panels, not in terminal insert or editor)
-    if (event.code === 'KeyP' && !event.ctrlKey && !event.altKey && !event.shiftKey && canUseGlobalFileOperations) {
-      event.preventDefault();
-      handlePaste();
-      return;
-    }
-
-    if (event.key === ':' && !showCommandPalette && !showFileSearch && canOpenCommandPalette) {
-      event.preventDefault();
-      showCommandPalette = true;
-      commandQuery = '';
-      setTimeout(() => commandInput?.focus(), 0);
-    }
-    if (event.ctrlKey && event.key === 'p') {
-      event.preventDefault();
-      const homeDir = await invoke<string>('get_home_dir');
-      fileSearchHomeDir = homeDir;
-      showFileSearch = true;
-    }
-  }
-
-  function handleGlobalKeyup(event: KeyboardEvent) {
-    if (event.code === 'AltLeft' || event.code === 'AltRight') {
-      altHeld = event.getModifierState('Alt');
-      if (!altHeld && switcherActive) commitSwitcher();
-    }
-  }
-
-  function handleGlobalWheel(event: WheelEvent) {
-    if (!event.ctrlKey) return;
-    // Skip Ctrl+wheel zoom when inside PdfPreviewPanel (let the component handle it)
-    const target = event.target as HTMLElement | null;
-    if (target instanceof Element && target.closest('.pdf-preview-panel')) return;
-    event.preventDefault();
-    applyZoom(zoomLevel + (event.deltaY < 0 ? 0.1 : -0.1));
-  }
-
-  function executeCommand(cmd: typeof commands[0]) {
-    cmd.action();
-    showCommandPalette = false;
-    focusPanel($layout.activeColumn);
-  }
-
-  function handleCommandKeydown(event: KeyboardEvent) {
-    // Tab completion
-    if (event.key === 'Tab') {
-      event.preventDefault();
-      triggerCompletion();
-      return;
-    }
-
-    // Reset completion state on any non-Tab key
-    if (event.key !== 'Tab') {
-      resetCompletion();
-    }
-
-    if (event.key === 'Escape') {
-      showCommandPalette = false;
-      focusPanel($layout.activeColumn);
-      return;
-    }
-    if (event.key === 'Enter') {
-      const q = commandQuery.trim();
-
-      // detach / attach commands
-      if (q === 'detach') {
-        layout.detach();
-        showToast('Panel detached');
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-      if (q === 'attach') {
-        layout.attach();
-        showToast('Panel attached');
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-      if (q === 'td') {
-        layout.toggleDetach();
-        showToast($layout.leftMode === 'manual' ? 'Panel detached' : 'Panel attached');
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      // cd command
-      if (q === 'cd' || q.startsWith('cd ')) {
-        layout.recycleBinExit();
-        const arg = q.substring(2).trim();
-        const isLeftManual = $layout.activeColumn === 'parent' && $layout.leftMode === 'manual';
-        const keepProjectTree = !isLeftManual && currentDirectoryPanel?.getProjectTreeState().enabled;
-
-        if (!arg) {
-          invoke<string>('get_home_dir').then(homeDir => {
-            if (isLeftManual) {
-              handleLeftNavigate(homeDir);
-            } else {
-              handleNavigate(homeDir);
-              if (keepProjectTree) void setProjectTreeRoot(homeDir);
-            }
-          });
-        } else {
-          // Handle ftp:// paths directly (no resolvePath needed)
-          if (arg.startsWith('ftp://')) {
-            const normalized = arg.replace(/\\/g, '/');
-            invoke('read_directory', { path: normalized }).then(() => {
-              if (isLeftManual) {
-                handleLeftNavigate(normalized);
-              } else {
-                handleNavigate(normalized);
-              }
-            }).catch((e: any) => {
-              showToast(`Failed to open FTP: ${e}`);
-            });
-          } else {
-            const resolved = resolvePath(arg);
-            invoke('read_directory', { path: resolved }).then(() => {
-              if (isLeftManual) {
-                handleLeftNavigate(resolved);
-              } else {
-                handleNavigate(resolved);
-                if (keepProjectTree) void setProjectTreeRoot(resolved);
-              }
-            }).catch(() => {
-              showToast(`E344: Can't find directory: ${arg}`);
-            });
-          }
-        }
-        showCommandPalette = false;
-        if (isLeftManual) {
-          focusPanel('parent');
-        } else {
-          focusPanel('current');
-        }
-        return;
-      }
-
-      // ftp commands
-      if (q === 'ftp list' || q === 'ftp connections') {
-        invoke<{name: string; host: string; port: number; user: string}[]>('list_ftp_connections').then(configs => {
-          if (configs.length === 0) {
-            showToast('No FTP connections');
-          } else {
-            const lines = configs.map(c => `  ${c.name}: ${c.user}@${c.host}:${c.port}`).join('\n');
-            showToast(`FTP connections:\n${lines}`);
-          }
-        });
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      if (q === 'ftp disconnect') {
-        showToast('Usage: :ftp disconnect <name>');
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      if (q.startsWith('ftp disconnect ')) {
-        const name = q.substring(15).trim();
-        invoke('ftp_disconnect', { name }).then((msg: any) => {
-          showToast(msg);
-        }).catch((e: any) => showToast(`Error: ${e}`));
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      if (q === 'ftp connect') {
-        showToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      if (q.startsWith('ftp connect ')) {
-        const rest = q.substring(12).trim();
-
-        // Shorthand: :ftp connect <name>  (reconnect via stored config)
-        const simpleRe = /^(\S+)$/;
-        const simpleMatch = rest.match(simpleRe);
-        if (simpleMatch) {
-          const name = simpleMatch[1];
-          // Try to ensure connection + navigate
-          invoke('check_ftp_connection', { name }).then(() => {
-            showToast(`Reconnected to ${name}`);
-            const ftpPath = `ftp://${name}/`;
-            handleNavigate(ftpPath);
-          }).catch(() => {
-            showToast(`No stored connection '${name}'. Use: :ftp connect ${name} <host> [--port N]`);
-          });
-          showCommandPalette = false;
-          focusPanel('current');
-          return;
-        }
-
-        // Full form: <name> <host[:port]> [--port X] [--user X] [--pass X]
-        const argRe = /^(\S+)\s+(\S+?)(?::(\d+))?(?:\s+--port[=:\s]+(\d+))?(?:\s+--user[=:\s]+(\S+))?(?:\s+--pass[=:\s]+(\S+))?$/;
-        const match = rest.match(argRe);
-        if (!match) {
-          showToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
-        } else {
-          const [, name, host, colonPort, optPort, user, pass] = match;
-          const port = optPort || colonPort || null;
-          invoke('ftp_connect', {
-            name,
-            host,
-            port: port ? parseInt(port) : null,
-            user: user || null,
-            password: pass || null,
-          }).then((msg: any) => {
-            showToast(msg);
-            const ftpPath = `ftp://${name}/`;
-            invoke('read_directory', { path: ftpPath }).then(() => {
-              handleNavigate(ftpPath);
-            }).catch((e: any) => {
-              showToast(`FTP connected but failed to list: ${e}`);
-            });
-          }).catch((e: any) => showToast(`Error: ${e}`));
-        }
-        showCommandPalette = false;
-        focusPanel('current');
-        return;
-      }
-
-      // e command
-      if (q === 'e' || q.startsWith('e ') && !q.startsWith('e!')) {
-        const arg = q.substring(1).trim();
-        if (!arg) {
-          currentDirectoryPanel?.refresh();
-          showCommandPalette = false;
-          focusPanel('current');
-        } else if (arg.startsWith('ftp://')) {
-          // FTP path: no resolvePath, keep forward slashes
-          const normalized = arg.replace(/\\/g, '/');
-          invoke('read_directory', { path: normalized }).then(() => {
-            handleNavigate(normalized);
-            showCommandPalette = false;
-            focusPanel('current');
-          }).catch((e: any) => {
-            showToast(`Failed to open FTP: ${e}`);
-            showCommandPalette = false;
-            focusPanel('current');
-          });
-        } else {
-          const resolved = resolvePath(arg);
-          invoke('read_directory', { path: resolved }).then(() => {
-            if (resolved.replace(/\//g, '\\') === currentPath) {
-              currentDirectoryPanel?.refresh();
-            } else {
-              handleNavigate(resolved);
-            }
-            showCommandPalette = false;
-            focusPanel('current');
-          }).catch(() => {
-            invoke('file_exists', { path: resolved }).then((exists: any) => {
-              if (exists) {
-                handleSelect(resolved);
-                showCommandPalette = false;
-                focusPanel('preview');
-              } else {
-                showToast(`E344: Can't find: ${arg}`);
-                showCommandPalette = false;
-                focusPanel('current');
-              }
-            }).catch(() => {
-              showToast(`E344: Can't find: ${arg}`);
-              showCommandPalette = false;
-              focusPanel('current');
-            });
-          });
-          return;
-        }
-        return;
-      }
-
-      // Tab commands
-      if (q === 'tab new' || q === 'tabn') {
-        handleTabNew();
-        showCommandPalette = false;
-        return;
-      } else if (q === 'tab close' || q === 'tabc') {
-        handleTabClose();
-        showCommandPalette = false;
-        return;
-      } else if (q.startsWith('tab rename ') || q.startsWith('tabr ')) {
-        const name = q.startsWith('tab rename ') ? q.substring(11).trim() : q.substring(5).trim();
-        if (name) {
-          tabs.renameTab(getTabsState().activeTabId, name);
-        }
-        showCommandPalette = false;
-        return;
-      } else if (q === 'tab swap' || q === 'tabs') {
-        tabs.swapTab(1);
-        showCommandPalette = false;
-        return;
-      }
-      // Help command
-      if (commandQuery === 'help') {
-        showCommandPalette = false;
-        showHelp = true;
-        return;
-      }
-      // PDF toc command
-      if (q === 'toc') {
-        previewEditor?.togglePdfToc();
-        showCommandPalette = false;
-        focusPanel('preview');
-        return;
-      }
-
-      // PDF page jump: :number
-      if (/^\d+$/.test(q)) {
-        const pageNum = parseInt(q);
-        if (pageNum >= 1) {
-          previewEditor?.jumpToPdfPage(pageNum - 1);
-          showCommandPalette = false;
-          focusPanel('preview');
-          return;
-        }
-      }
-
-      // Ratio command
-      if (q === 'ratio') {
-        layout.setRatios([1, 1, 3]);
-        showCommandPalette = false;
-        return;
-      }
-      if (q === 'ratio dual') {
-        layout.setRatios([1, 1, 1]);
-        showCommandPalette = false;
-        return;
-      }
-      if (commandQuery.startsWith('ratio ')) {
-        const ratioStr = commandQuery.substring(6).trim();
-        const parts = ratioStr.split(':').map(Number);
-        if (parts.length === 3 && parts.every(p => !isNaN(p) && p > 0)) {
-          layout.setRatios([parts[0], parts[1], parts[2]]);
-          showCommandPalette = false;
-          return;
-        }
-      }
-      // transfer slots command
-      if (q === 'transfer slots') {
-        invoke<[number, number]>('transfer_get_slots').then(([ftp, local]) => {
-          showToast(`Transfer slots: FTP=${ftp}, Local=${local}`);
-        });
-        showCommandPalette = false;
-        return;
-      }
-      if (q.startsWith('transfer slots ftp ')) {
-        const n = parseInt(q.substring(19).trim());
-        if (n >= 1 && n <= 8) {
-          invoke('transfer_set_ftp_slots', { n });
-          showToast(`FTP slots set to ${n}`);
-        } else {
-          showToast('FTP slots: 1–8');
-        }
-        showCommandPalette = false;
-        return;
-      }
-      if (q.startsWith('transfer slots local ')) {
-        const n = parseInt(q.substring(21).trim());
-        if (n >= 1 && n <= 8) {
-          invoke('transfer_set_local_slots', { n });
-          showToast(`Local slots set to ${n}`);
-        } else {
-          showToast('Local slots: 1–8');
-        }
-        showCommandPalette = false;
-        return;
-      }
-
-      // Clip command - show clipboard contents
-      if (q === 'clip') {
-        let clipState: any;
-        const unsub = clipboard.subscribe(v => clipState = v)();
-        if (clipState.entries.length === 0) {
-          showToast('Clipboard empty');
-        } else {
-          const op = clipState.operation === 'copy' ? 'yanked' : 'cut';
-          const lines = clipState.entries.map((e: any) => `  ${e.name}`).join('\n');
-          showToast(`${clipState.entries.length} files ${op}:\n${lines}`);
-        }
-        showCommandPalette = false;
-        return;
-      }
-      // Clear command - clear clipboard
-      if (q === 'clear') {
-        clipboard.clear();
-        showToast('Clipboard cleared');
-        showCommandPalette = false;
-        return;
-      }
-      // Otherwise execute filtered command
-      if (filteredCommands.length > 0) {
-        executeCommand(filteredCommands[0]);
-      }
-    }
+    doImageViewerNavigate(index);
   }
 
   function handleFileSearchSelect(path: string, isDir: boolean) {
@@ -2384,8 +813,7 @@
   function handleWindowFocusChanged(focused: boolean) {
     if (!focused) {
       // Window lost focus mid-switcher — commit to avoid a stuck preview state
-      if (switcherActive) commitSwitcher();
-      altHeld = false;
+      notifyWindowFocusLost();
       return;
     }
     if (!windowReady) return;
@@ -2437,7 +865,7 @@
 <div class="app-layout" role="application" aria-label="Wind Panel Layout" onfocusin={handleAppFocusIn}>
 
   <WindowTitlebar />
-  <TabBar onSwitchTab={handleTabSwitch} switcherActive={switcherActive} switcherSelectionId={switcherSelectionId} />
+  <TabBar onSwitchTab={handleTabSwitch} switcherActive={getSwitcherActive()} switcherSelectionId={getSwitcherSelectionId()} />
 
   <div class="content-area">
     <div class="panel-layout" style="
@@ -2601,7 +1029,7 @@
         filePath={selectedFile}
         selectedEntryIsDir={selectedFileIsDir}
         currentTabId={$activeTab.id}
-        previewTabId={switcherActive ? switcherSelectionId : $activeTab.id}
+        previewTabId={getSwitcherActive() ? getSwitcherSelectionId() : $activeTab.id}
         activeColumn={$layout.activeColumn}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
@@ -2620,38 +1048,38 @@
         bind:this={fullscreenEditor}
         filePath={selectedFile}
         content={previewEditor?.getContent() || ''}
-        initialLine={editorInitialLine}
+        initialLine={getEditorInitialLine()}
         onClose={handleCloseFullscreen}
         onSave={handleSaveFullscreen}
       />
     {/if}
 
     <!-- Fullscreen Image Viewer Overlay -->
-    {#if $layout.fullscreenImageViewerOpen && fullscreenImageList.length > 0}
+    {#if $layout.fullscreenImageViewerOpen && getFullscreenImageList().length > 0}
       <FullscreenImageViewer
-        imageList={fullscreenImageList}
-        currentIndex={fullscreenImageIndex}
+        imageList={getFullscreenImageList()}
+        currentIndex={getFullscreenImageIndex()}
         onClose={handleCloseImageViewer}
         onNavigate={handleImageViewerNavigate}
       />
     {/if}
 
     <!-- Fullscreen PDF Viewer Overlay -->
-    {#if $layout.fullscreenPdfViewerOpen && fullscreenPdfPath}
+    {#if $layout.fullscreenPdfViewerOpen && getFullscreenPdfPath()}
       <FullscreenPdfViewer
-        pdfPath={fullscreenPdfPath}
-        initialPage={fullscreenPdfPage}
-        pageCount={fullscreenPdfPageCount}
-        fileSize={fullscreenPdfFileSize}
+        pdfPath={getFullscreenPdfPath()}
+        initialPage={getFullscreenPdfPage()}
+        pageCount={getFullscreenPdfPageCount()}
+        fileSize={getFullscreenPdfFileSize()}
         onClose={handleClosePdfViewer}
       />
     {/if}
 
     <!-- Fullscreen Video Player Overlay -->
-    {#if $layout.fullscreenVideoPlayerOpen && fullscreenVideoPlayerPath}
+    {#if $layout.fullscreenVideoPlayerOpen && getFullscreenVideoPlayerPath()}
       <FullscreenVideoPlayer
-        filePath={fullscreenVideoPlayerPath}
-        fileSize={fullscreenVideoPlayerFileSize}
+        filePath={getFullscreenVideoPlayerPath()}
+        fileSize={getFullscreenVideoPlayerFileSize()}
         onClose={handleCloseVideoPlayer}
       />
     {/if}
@@ -2698,30 +1126,33 @@
   </div>
 
   <!-- Command Palette -->
-  {#if showCommandPalette}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="command-palette-overlay" onclick={() => { showCommandPalette = false; resetCompletion(); focusPanel($layout.activeColumn); }} onkeydown={(e) => { if (e.key === 'Escape') { showCommandPalette = false; resetCompletion(); focusPanel($layout.activeColumn); } }}>
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div class="command-palette" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-        <input
-          type="text"
-          class="command-input"
-          placeholder="Type a command..."
-          bind:value={commandQuery}
-          bind:this={commandInput}
-          onkeydown={handleCommandKeydown}
-        />
-        <div class="command-list">
-          {#each filteredCommands as cmd}
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <div class="command-item" onclick={() => executeCommand(cmd)} onkeydown={() => {}}>
-              {cmd.name}
-            </div>
-          {/each}
-        </div>
-      </div>
-    </div>
-  {/if}
+  <CommandPalette
+    bind:visible={commandPaletteVisible}
+    currentPath={currentPath}
+    activeColumn={$layout.activeColumn}
+    previewMode={previewEditor?.getMode?.() || 'global-normal'}
+    leftMode={$layout.leftMode}
+    actions={{
+      onNavigate: handleNavigate,
+      onLeftNavigate: handleLeftNavigate,
+      onSelect: handleSelect,
+      onShowToast: showToast,
+      onToggleTerminal: () => layout.toggleTerminal(),
+      onToggleHelp: () => { showHelp = true; },
+      onToggleDetach: () => layout.toggleDetach(),
+      onToggleProjectTree: async () => { await currentDirectoryPanel?.setProjectMode(!currentDirectoryPanel?.getProjectTreeState().enabled); },
+      onRefreshDirectory: () => currentDirectoryPanel?.refresh(),
+      onTogglePdfToc: () => previewEditor?.togglePdfToc(),
+      onJumpToPdfPage: (p) => previewEditor?.jumpToPdfPage(p),
+      onTabNew: handleTabNew,
+      onTabClose: handleTabClose,
+      onSetProjectTreeRoot: setProjectTreeRoot,
+      getPreviewEditor: () => previewEditor,
+      getCurrentDirectoryPanel: () => currentDirectoryPanel,
+      getTabsState,
+      focusPanel,
+    }}
+  />
 
   <!-- File Search -->
   <SearchModal
@@ -2737,7 +1168,7 @@
 
   <!-- Unsaved Changes Confirm Modal -->
   <ConfirmModal
-    visible={showUnsavedConfirm}
+    visible={getShowUnsavedConfirm()}
     title="Unsaved changes"
     fileName={selectedFile?.split(/[/\\]/).pop() || ''}
     buttons={[
@@ -2749,8 +1180,8 @@
 
   <!-- Paste Conflict Confirm Modal -->
   <ConfirmModal
-    visible={showConfirmModal}
-    fileName={confirmFileName}
+    visible={getShowConfirmModal()}
+    fileName={getConfirmFileName()}
     onOverwrite={handleConfirmOverwrite}
     onSkip={handleConfirmSkip}
     onAbort={handleConfirmAbort}
@@ -2758,9 +1189,9 @@
 
   <!-- Streaming Conflict Confirm Modal (per-file + apply-to-all) -->
   <ConfirmModal
-    visible={streamConflictVisible}
+    visible={getStreamConflictVisible()}
     title="Conflict"
-    fileName={streamConflictName}
+    fileName={getStreamConflictName()}
     buttons={[
       { key: 'o', label: 'verwrite', action: () => resolveStreamConflict('overwrite'), style: 'danger' },
       { key: 's', label: 'kip', action: () => resolveStreamConflict('skip') },
@@ -2772,8 +1203,8 @@
 
   <!-- Compress Mark Dialog -->
   <InputDialog
-    visible={compressDialogVisible}
-    value={compressDialogValue}
+    visible={getCompressDialogVisible()}
+    value={getCompressDialogValue()}
     placeholder="Archive name"
     prompt="Archive name:"
     onConfirm={handleCompressDialogConfirm}
@@ -2781,7 +1212,7 @@
   />
 
   <!-- Conflict scanning loading indicator -->
-  {#if scanningConflicts}
+  {#if getScanningConflicts()}
     <div class="scanning-toast" role="status">
       正在检查冲突…
     </div>
@@ -2913,58 +1344,6 @@
     color: var(--text-primary);
     background-color: var(--bg-tertiary);
     border-color: var(--text-muted);
-  }
-
-  .command-palette-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 20%;
-    z-index: 1000;
-  }
-
-  .command-palette {
-    width: 400px;
-    background-color: var(--bg-secondary);
-    border: 1px solid var(--border);
-    overflow: hidden;
-    font-family: var(--font-mono);
-  }
-
-  .command-input {
-    width: 100%;
-    padding: 10px 16px;
-    background-color: var(--bg-primary);
-    border: none;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-primary);
-    font-size: 13px;
-    font-family: var(--font-mono);
-    outline: none;
-    box-sizing: border-box;
-  }
-
-  .command-list {
-    max-height: 300px;
-    overflow-y: auto;
-  }
-
-  .command-item {
-    padding: 6px 16px;
-    cursor: pointer;
-    color: var(--text-primary);
-    font-size: 13px;
-    transition: background-color 0.1s ease;
-  }
-
-  .command-item:hover {
-    background-color: var(--bg-hover);
   }
 
   .toast {
