@@ -1,13 +1,7 @@
 import type { Previewer } from './types';
 import { invoke } from '@tauri-apps/api/core';
 import { directoryCache, type DirCacheEntry } from '$lib/utils/directory-cache';
-
-interface FileEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  size: number | null;
-}
+import type { FileEntry } from '$lib/types/file-explorer';
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

@@ -26,13 +26,7 @@
   import TextEditorHost from './TextEditorHost.svelte';
   import VimOverlay from './VimOverlay.svelte';
   import PreviewPane from './PreviewPane.svelte';
-
-  interface FileEntry {
-    name: string;
-    path: string;
-    is_dir: boolean;
-    size: number | null;
-  }
+  import type { FileEntry } from '$lib/types/file-explorer';
 
   let {
     filePath = null,

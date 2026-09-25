@@ -1,11 +1,5 @@
 <script lang="ts">
-  interface FileEntry {
-    name: string;
-    path: string;
-    is_dir: boolean;
-    size: number | null;
-    is_hidden?: boolean;
-  }
+  import type { FileEntry } from '$lib/types/file-explorer';
 
   interface SelectionState {
     selectedPaths: Set<string>;

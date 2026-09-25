@@ -53,43 +53,10 @@
     enterArchive,
   } from '$lib/utils/archive-browser';
   import ProjectTreePanel from './ProjectTreePanel.svelte';
-
-  interface FileEntry {
-    name: string;
-    path: string;
-    is_dir: boolean;
-    size: number | null;
-    is_hidden?: boolean;
-    modified?: number | null;
-    created?: number | null;
-  }
-
-  interface TreeNode {
-    entry: FileEntry;
-    depth: number;
-    parentPath: string | null;
-    expanded: boolean;
-    loaded: boolean;
-    loading: boolean;
-    loadPromise: Promise<void> | null;
-    error: string;
-    children: TreeNode[];
-  }
-
-  type SelectNotifyMode = 'debounced' | 'immediate' | 'silent';
-
-  interface SelectOptions {
-    notify?: SelectNotifyMode;
-  }
-
-  export interface ProjectTreeState {
-    enabled: boolean;
-    rootPath: string | null;
-    expandedPaths: string[];
-    selectedPath: string | null;
-    scrollOffset: number;
-    skipAutoSelect?: boolean;
-  }
+  import { createDirectorySortFilter } from '$lib/composables/directory-sort-filter.svelte';
+  import { createProjectTree } from '$lib/composables/project-tree.svelte';
+  import { createDirectoryDialogs } from '$lib/composables/directory-dialogs.svelte';
+  import type { FileEntry, TreeNode, SelectOptions, ProjectTreeState } from '$lib/types/file-explorer';
 
   let {
     type = 'current',
@@ -148,90 +115,52 @@
   // Hidden files toggle
   let showHidden: boolean = $state(false);
 
-  // Sort state
-  let sortBy: 'name' | 'size' | 'ext' | 'modified' | 'created' = $state('name');
-  let sortReverse: boolean = $state(false);
-  let dirFirst: boolean = $state(true);
-  let sortPrefixPending: boolean = $state(false);
-  let sortPrefixTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  // Filter state
-  let filterPattern: string = $state('');
-  let filterMode: 'prefix' | 'wildcard' = $state('prefix');
-  let projectMode: boolean = $state(false);
-  let projectRoot: TreeNode | null = $state(null);
-  let projectRestoreGeneration = 0;
-
-  // Derived values that depend on state declared above
-  let normalDisplayFiles: FileEntry[] = $derived.by(() => {
-    let result = showHidden ? files : files.filter(f => f.name === '..' || !f.is_hidden);
-
-    // Add .. for parent directory navigation (computed here, not stored in files)
-    if (isArchiveMode && archiveState && archiveState.internalPath !== '') {
-      const parentPath = archiveState.internalPath.split('/').slice(0, -1).join('/');
-      if (!result.some(f => f.name === '..')) {
-        result = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...result];
-      }
-    } else if (!isArchiveMode && !isVirtualRoot(path)) {
-      const parentPath = getParentPath(path);
-      if (!result.some(f => f.name === '..')) {
-        result = [{ name: '..', path: parentPath, is_dir: true, size: null }, ...result];
-      }
-    }
-
-    // Apply filter
-    if (filterPattern) {
-      if (filterMode === 'prefix') {
-        const lower = filterPattern.toLowerCase();
-        result = result.filter(f => f.name === '..' || f.name.toLowerCase().startsWith(lower));
-      } else {
-        const pattern = filterPattern.replace(/\*/g, '.*').replace(/\?/g, '.');
-        const regex = new RegExp(`^${pattern}$`, 'i');
-        result = result.filter(f => f.name === '..' || regex.test(f.name));
-      }
-    }
-
-    // Apply sort (.. always stays first)
-    const dotdot = result.filter(f => f.name === '..');
-    const rest = result.filter(f => f.name !== '..');
-
-    rest.sort((a, b) => {
-      // dirFirst: directories before files
-      if (dirFirst && a.is_dir !== b.is_dir) {
-        return a.is_dir ? -1 : 1;
-      }
-
-      let cmp = 0;
-      if (sortBy === 'name') {
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
-      } else if (sortBy === 'size') {
-        cmp = (a.size ?? 0) - (b.size ?? 0);
-      } else if (sortBy === 'ext') {
-        const extA = a.name.split('.').pop()?.toLowerCase() || '';
-        const extB = b.name.split('.').pop()?.toLowerCase() || '';
-        cmp = extA.localeCompare(extB);
-      } else if (sortBy === 'modified') {
-        cmp = (a.modified ?? 0) - (b.modified ?? 0);
-      } else if (sortBy === 'created') {
-        cmp = (a.created ?? 0) - (b.created ?? 0);
-      }
-
-      return sortReverse ? -cmp : cmp;
-    });
-
-    return [...dotdot, ...rest];
+  const sortFilter = createDirectorySortFilter({
+    getFiles: () => files,
+    getShowHidden: () => showHidden,
+    getIsArchiveMode: () => isArchiveMode,
+    getArchiveState: () => archiveState,
+    getPath: () => path,
+    isVirtualRoot,
+    getParentPath,
+    onToast,
   });
-  let treeVisibleNodes: TreeNode[] = $derived.by(() => {
-    if (!projectMode || !projectRoot) return [];
-    const result: TreeNode[] = [];
-    const visit = (node: TreeNode) => {
-      result.push(node);
-      if (node.expanded) node.children.forEach(visit);
-    };
-    visit(projectRoot);
-    return result;
+
+  const projectTree = createProjectTree({
+    getPath: () => path,
+    getSelectedFile: () => selectedFile,
+    getSelectedIndex: () => selectedIndex,
+    getShowHidden: () => showHidden,
+    selectByIndex,
+    clearSelection: () => { selectionState = clearSelectionState(); },
+    onToast,
+    onDirectorySynchronized: (dir, ver) => onDirectorySynchronized(dir, ver),
+    getDirectoryVersion: (dir) => getDirectoryVersion(dir),
+    getScrollOffset,
+    setScrollOffset,
+    getParentPath,
   });
-  let displayFiles: FileEntry[] = $derived(projectMode ? treeVisibleNodes.map(node => node.entry) : normalDisplayFiles);
+
+  const dialogs = createDirectoryDialogs({
+    getSelectedIndex: () => selectedIndex,
+    getDisplayFiles: () => displayFiles,
+    isArchiveMode: () => isArchiveMode,
+    getArchiveState: () => archiveState,
+    getPath: () => path,
+    getOperationDirectory: () => getOperationDirectory(),
+    refresh: () => { refresh(); },
+    loadDirectory: async (p, f) => { await loadDirectory(p, f); },
+    onSelect: (p, d) => onSelect(p, d),
+    onToast,
+    onBatchRenameStart,
+    refocusPanel,
+    collectEntriesToOperate,
+    setFilterPattern: sortFilter.setFilterPattern,
+    setFilterMode: sortFilter.setFilterMode,
+  });
+
+  let normalDisplayFiles: FileEntry[] = $derived.by(() => sortFilter.getNormalDisplayFiles());
+  let displayFiles: FileEntry[] = $derived(projectTree.getProjectMode() ? projectTree.getTreeVisibleNodes().map(node => node.entry) : normalDisplayFiles);
   let selectedFile: FileEntry | null = $derived(
     selectedIndex >= 0 && selectedIndex < displayFiles.length ? displayFiles[selectedIndex] : null
   );
@@ -244,22 +173,6 @@
       selectedPathInternal = displayFiles[selectedIndex].path;
     }
   });
-
-  // InputDialog state
-  let inputVisible: boolean = $state(false);
-  let inputValue: string = $state('');
-  let inputPlaceholder: string = $state('');
-  let inputPrompt: string = $state('');
-  let inputMode: 'rename' | 'create-file' | 'create-dir' | 'filter' | 'compress' = $state('rename');
-
-  // Delete confirmation state
-  let showDeleteConfirm: boolean = $state(false);
-  let deleteIsPermanent: boolean = $state(false);
-  let deleteResolve: ((confirm: boolean) => void) | null = null;
-
-  // File info state
-  let showFileInfo: boolean = $state(false);
-  let fileInfo: any = $state(null);
 
   // Cut file paths from clipboard (for visual indicator)
   let cutPaths: Set<string> = $state(new Set());
@@ -372,7 +285,7 @@
   }
 
   export function refresh() {
-    if (projectMode) return refreshProjectTree();
+    if (projectTree.getProjectMode()) return projectTree.refreshProjectTree();
     if (isArchiveMode && archiveState) {
       const key = `${archiveState.archivePath}::${archiveState.internalPath}`;
       return loadDirectory(key, true);
@@ -381,53 +294,20 @@
   }
 
   export function synchronize(version: number) {
-    if (projectMode) return refreshProjectTree(version);
+    if (projectTree.getProjectMode()) return projectTree.refreshProjectTree(version);
     return loadDirectory(path, false, version);
   }
 
   export function getProjectTreeState(): ProjectTreeState {
-    return {
-      enabled: projectMode,
-      rootPath: projectRoot?.entry.path ?? null,
-      expandedPaths: treeVisibleNodes.filter(node => node.expanded && node !== projectRoot).map(node => node.entry.path),
-      selectedPath: selectedFile?.path ?? null,
-      scrollOffset: getScrollOffset(),
-    };
+    return projectTree.getProjectTreeState();
   }
 
   export function getOperationDirectory(): string {
-    if (!projectMode) return path;
-    const node = treeVisibleNodes[selectedIndex];
-    if (!node) return projectRoot?.entry.path ?? path;
-    return node.entry.is_dir ? node.entry.path : (node.parentPath ?? projectRoot?.entry.path ?? path);
+    return projectTree.getOperationDirectory();
   }
 
   export async function setProjectMode(enabled: boolean, state?: ProjectTreeState): Promise<boolean> {
-    if (!enabled) {
-      projectMode = false;
-      projectRoot = null;
-      clearSelection();
-      return true;
-    }
-    const rootPath = state?.rootPath ?? path;
-    if (!rootPath || rootPath === '/' || rootPath === '\\' || rootPath.startsWith('ftp://')) {
-      onToast('Project mode requires a local directory');
-      return false;
-    }
-    const generation = ++projectRestoreGeneration;
-    projectMode = true;
-    clearSelection();
-    projectRoot = { entry: { name: rootPath.split(/[/\\]/).filter(Boolean).pop() || rootPath, path: rootPath, is_dir: true, size: null }, depth: 0, parentPath: null, expanded: true, loaded: false, loading: false, loadPromise: null, error: '', children: [] };
-    await loadTreeChildren(projectRoot, generation);
-    if (generation !== projectRestoreGeneration) return false;
-    for (const expandedPath of state?.expandedPaths ?? []) {
-      const node = findTreeNode(expandedPath);
-      if (node?.entry.is_dir) await expandTreeNode(node, generation);
-    }
-    if (state?.selectedPath) selectTreePathOrAncestor(state.selectedPath);
-    else if (!state?.skipAutoSelect) selectByIndex(0);
-    if (state?.scrollOffset) setScrollOffset(state.scrollOffset);
-    return true;
+    return projectTree.setProjectMode(enabled, state);
   }
 
   function handleFocus() {
@@ -663,129 +543,9 @@
     }
   }
 
-  function findTreeNode(nodePath: string, node: TreeNode | null = projectRoot): TreeNode | null {
-    if (!node) return null;
-    if (directoryKeyId(node.entry.path) === directoryKeyId(nodePath)) return node;
-    for (const child of node.children) {
-      const found = findTreeNode(nodePath, child);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  async function loadTreeChildren(node: TreeNode, generation: number, forceRefresh: boolean = false, includeHidden: boolean = false): Promise<void> {
-    if (!node.entry.is_dir) return;
-    if (node.loading) {
-      await node.loadPromise;
-      if (forceRefresh) await loadTreeChildren(node, generation, true, includeHidden);
-      return;
-    }
-    if (node.loaded && !forceRefresh) return;
-    node.loading = true;
-    node.error = '';
-    node.loadPromise = (async () => {
-      try {
-        const entries = !forceRefresh && directoryCache.has(node.entry.path)
-          ? directoryCache.get(node.entry.path)!
-          : await invoke<FileEntry[]>('read_directory', { path: node.entry.path });
-        if (generation !== projectRestoreGeneration) return;
-        directoryCache.set(node.entry.path, entries);
-        const existingChildren = new Map(node.children.map(child => [child.entry.path, child]));
-        node.children = entries
-          .filter(entry => showHidden || includeHidden || !entry.is_hidden)
-          .sort((a, b) => a.is_dir === b.is_dir ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.is_dir ? -1 : 1)
-          .map(entry => {
-            const existing = existingChildren.get(entry.path);
-            return existing
-              ? { ...existing, entry, depth: node.depth + 1, parentPath: node.entry.path }
-              : { entry, depth: node.depth + 1, parentPath: node.entry.path, expanded: false, loaded: false, loading: false, loadPromise: null, error: '', children: [] };
-          });
-        node.loaded = true;
-      } catch (error) {
-        node.error = String(error);
-      } finally {
-        node.loading = false;
-        node.loadPromise = null;
-        projectRoot = projectRoot ? { ...projectRoot } : null;
-      }
-    })();
-    await node.loadPromise;
-  }
-
-  async function expandTreeNode(node: TreeNode, generation: number = projectRestoreGeneration, includeHidden: boolean = false): Promise<void> {
-    if (!node.entry.is_dir) return;
-    await loadTreeChildren(node, generation, includeHidden, includeHidden);
-    if (generation === projectRestoreGeneration) {
-      node.expanded = true;
-      projectRoot = projectRoot ? { ...projectRoot } : null;
-    }
-  }
-
-  function selectTreePathOrAncestor(nodePath: string, options: SelectOptions = {}): void {
-    let candidate: string | null = nodePath;
-    while (candidate) {
-      const candidatePath = candidate;
-      const index = treeVisibleNodes.findIndex(node => directoryKeyId(node.entry.path) === directoryKeyId(candidatePath));
-      if (index >= 0) { selectByIndex(index, options); return; }
-      const node = findTreeNode(candidate);
-      const parent: string | null = node?.parentPath ?? getParentPath(candidate);
-      candidate = parent === candidate ? null : parent;
-    }
-    selectByIndex(0, options);
-  }
-
-  async function refreshProjectTree(version?: number): Promise<boolean> {
-    if (!projectRoot) return false;
-    const selectedPath = selectedFile?.path ?? null;
-    await refreshLoadedTreeNode(projectRoot);
-    if (selectedPath) selectTreePathOrAncestor(selectedPath);
-    markDirectorySynchronized(projectRoot.entry.path, version);
-    return true;
-  }
-
-  async function refreshLoadedTreeNode(node: TreeNode): Promise<void> {
-    const loadedChildPaths = node.children.filter(child => child.loaded).map(child => child.entry.path);
-    directoryCache.invalidate(normalizeDirectoryKey(node.entry.path));
-    await loadTreeChildren(node, projectRestoreGeneration, true);
-    for (const childPath of loadedChildPaths) {
-      const child = node.children.find(item => item.entry.path === childPath);
-      if (child?.loaded) await refreshLoadedTreeNode(child);
-    }
-  }
 
   export async function refreshProjectDirectories(paths: string[]): Promise<void> {
-    if (!projectMode || !projectRoot) return;
-    const selectedPath = selectedFile?.path ?? null;
-    const directories = new Set<string>();
-    for (const changedPath of paths) {
-      directories.add(getParentPath(changedPath));
-      if (findTreeNode(changedPath)?.entry.is_dir) directories.add(changedPath);
-    }
-    for (const directory of directories) {
-      directoryCache.invalidate(normalizeDirectoryKey(directory));
-      const node = findTreeNode(directory);
-      if (node?.loaded) await loadTreeChildren(node, projectRestoreGeneration, true);
-    }
-    if (selectedPath) selectTreePathOrAncestor(selectedPath);
-  }
-
-  async function expandRecursively(node: TreeNode): Promise<void> {
-    const queue: TreeNode[] = [node];
-    let visited = 0;
-    const limit = 500;
-    while (queue.length > 0 && visited < limit) {
-      const current = queue.shift()!;
-      await expandTreeNode(current);
-      visited += 1;
-      queue.push(...current.children.filter(child => child.entry.is_dir));
-    }
-    if (queue.length > 0) onToast(`Project tree expansion stopped after ${limit} directories`);
-  }
-
-  function collapseDeepestTreeLevel(): void {
-    const deepest = treeVisibleNodes.filter(node => node !== projectRoot && node.expanded)
-      .sort((a, b) => b.depth - a.depth)[0];
-    if (deepest) collapseTreeNode(deepest);
+    return projectTree.refreshProjectDirectories(paths);
   }
 
   function selectByIndex(index: number, options: SelectOptions = {}) {
@@ -831,8 +591,8 @@
   }
 
   function handleSearchSelect(filePath: string, isDir: boolean, isHidden: boolean) {
-    if (projectMode) {
-      void revealTreePath(filePath, isHidden).then(() => {
+    if (projectTree.getProjectMode()) {
+      void projectTree.revealTreePath(filePath, isHidden).then(() => {
         if (!isDir) onSelect(filePath, false);
       });
       return;
@@ -844,76 +604,16 @@
     }
   }
 
-  async function revealTreePath(targetPath: string, includeHidden: boolean): Promise<void> {
-    if (!projectRoot) return;
-    const rootPath = projectRoot.entry.path.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
-    const normalizedTarget = targetPath.replace(/\//g, '\\').toLowerCase();
-    if (!normalizedTarget.startsWith(`${rootPath}\\`)) return;
-    const segments = normalizedTarget.slice(rootPath.length + 1).split('\\').filter(Boolean);
-    let node = projectRoot;
-    for (const segment of segments.slice(0, -1)) {
-      await expandTreeNode(node, projectRestoreGeneration, includeHidden);
-      await tick();
-      const child = node.children.find(item => item.entry.is_dir && item.entry.name.toLowerCase() === segment);
-      if (!child) return;
-      node = child;
-    }
-    await expandTreeNode(node, projectRestoreGeneration, includeHidden);
-    await tick();
-    // Use path-based lookup instead of object reference identity
-    const normalizedKey = directoryKeyId(targetPath);
-    const index = treeVisibleNodes.findIndex(n => directoryKeyId(n.entry.path) === normalizedKey);
-    if (index >= 0) {
-      selectByIndex(index);
-    } else {
-      // Target not visible yet — try selecting nearest ancestor
-      selectTreePathOrAncestor(targetPath);
-    }
-  }
-
-  function startRename() {
-    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
-    const entry = displayFiles[selectedIndex];
-    if (entry.name === '..') return;
-    inputMode = 'rename';
-    inputValue = entry.name;
-    inputPlaceholder = '';
-    inputPrompt = 'Rename:';
-    inputVisible = true;
-  }
-
-  function startCreateFile() {
-    inputMode = 'create-file';
-    inputValue = '';
-    inputPlaceholder = 'New file name';
-    inputPrompt = 'New file:';
-    inputVisible = true;
-  }
-
-  function startCreateDir() {
-    inputMode = 'create-dir';
-    inputValue = '';
-    inputPlaceholder = 'New directory name';
-    inputPrompt = 'New dir:';
-    inputVisible = true;
-  }
-
-  function startCompress(defaultName: string) {
-    inputMode = 'compress';
-    inputValue = defaultName;
-    inputPlaceholder = 'Archive name';
-    inputPrompt = 'Archive name:';
-    inputVisible = true;
-  }
 
   function getSelectedProjectNodes(): TreeNode[] {
-    if (!projectRoot) return [];
+    const root = projectTree.getProjectRoot();
+    if (!root) return [];
     const nodes: TreeNode[] = [];
     const visit = (node: TreeNode) => {
       if (selectionState.selectedPaths.has(node.entry.path)) nodes.push(node);
       node.children.forEach(visit);
     };
-    visit(projectRoot);
+    visit(root);
     return nodes;
   }
 
@@ -925,9 +625,12 @@
     selectionState = clearSelectionState();
   }
 
+  function collectEntriesToOperate(): ClipboardEntry[] {
+    return getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectTree.getProjectMode(), projectTree.findTreeNode);
+  }
 
   function startBatchRename() {
-    const entries = projectMode
+    const entries = projectTree.getProjectMode()
       ? getSelectedProjectNodes().filter(node => !node.entry.is_dir && isTreeNodeSelected(selectionState, node.entry.path)).map(node => node.entry)
       : files.filter(entry => selectionState.selectedPaths.has(entry.path));
     if (entries.length < 2) return;
@@ -935,178 +638,6 @@
     onBatchRenameStart(renameFiles);
   }
 
-  async function handleInputConfirm(value: string) {
-    inputVisible = false;
-    try {
-      if (inputMode === 'rename') {
-        const entry = displayFiles[selectedIndex];
-        if (isArchiveMode && archiveState) {
-          // Rename within ZIP archive
-          const oldInternalPath = entry.path;
-          const parentParts = oldInternalPath.split('/');
-          parentParts.pop();
-          const newInternalPath = parentParts.length > 0 ? parentParts.join('/') + '/' + value : value;
-          await invoke('archive_rename_entry', {
-            archivePath: archiveState.archivePath,
-            oldPath: oldInternalPath,
-            newPath: newInternalPath,
-          });
-          refresh();
-          onToast(`Renamed to ${value}`);
-        } else if (entry.path.startsWith('ftp://')) {
-          const parentBase = path.replace(/\/+$/, '');
-          const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value });
-          loadDirectory(path, true);
-          onSelect(newPath, false);
-          onToast(`Renamed to ${value}`);
-        } else {
-          const parentPath = path.replace(/[\\\/]+$/, '');
-          const newPath = parentPath + '\\' + value;
-          await invoke('rename_file', { oldPath: entry.path, newName: value });
-          await currentDirectoryPanel_refresh();
-          onSelect(newPath, false);
-          onToast(`Renamed to ${value}`);
-        }
-      } else if (inputMode === 'create-file') {
-        if (isArchiveMode && archiveState) {
-          if (archiveState.format !== 'zip') {
-            onToast('Create file is only supported for ZIP archives');
-            return;
-          }
-          const parentPath = archiveState.internalPath;
-          const newInternalPath = parentPath ? parentPath + '/' + value : value;
-          await invoke('archive_create_entry', {
-            archivePath: archiveState.archivePath,
-            internalPath: newInternalPath,
-            isDir: false,
-          });
-          refresh();
-          onToast(`Created ${value}`);
-        } else if (path.startsWith('ftp://')) {
-          const remotePath = path.replace(/\/+$/, '') + '/' + value;
-          await invoke('ftp_create_file', { path: remotePath });
-          loadDirectory(path, true);
-          onToast(`Created ${value}`);
-        } else {
-          const parentPath = getOperationDirectory().replace(/[\\\/]+$/, '');
-          const newPath = parentPath + '\\' + value;
-          await invoke('create_file', { path: newPath, isDir: false });
-          await currentDirectoryPanel_refresh();
-          onSelect(newPath, false);
-          onToast(`Created ${value}`);
-        }
-      } else if (inputMode === 'create-dir') {
-        if (isArchiveMode && archiveState) {
-          if (archiveState.format !== 'zip') {
-            onToast('Create directory is only supported for ZIP archives');
-            return;
-          }
-          const parentPath = archiveState.internalPath;
-          const newInternalPath = parentPath ? parentPath + '/' + value : value;
-          await invoke('archive_create_entry', {
-            archivePath: archiveState.archivePath,
-            internalPath: newInternalPath,
-            isDir: true,
-          });
-          refresh();
-          onToast(`Created ${value}/`);
-        } else if (path.startsWith('ftp://')) {
-          const remotePath = path.replace(/\/+$/, '') + '/' + value;
-          await invoke('ftp_mkdir', { path: remotePath });
-          loadDirectory(path, true);
-          onToast(`Created ${value}/`);
-        } else {
-          const parentPath = getOperationDirectory().replace(/[\\\/]+$/, '');
-          const newPath = parentPath + '\\' + value;
-          await invoke('create_file', { path: newPath, isDir: true });
-          await currentDirectoryPanel_refresh();
-          onSelect(newPath, true);
-          onToast(`Created ${value}/`);
-        }
-      } else if (inputMode === 'filter') {
-        filterPattern = value;
-        if (value) {
-          onToast(`Filter: ${value}`);
-        } else {
-          onToast('Filter cleared');
-        }
-      } else if (inputMode === 'compress') {
-        const entries = collectEntriesToOperate();
-        if (entries.length === 0) return;
-        const destPath = path.replace(/[\\\/]+$/, '') + '\\' + value;
-        try {
-          await invoke('compress_files', { sources: entries.map(e => e.path), destPath });
-          onToast(`Archive created: ${value}`);
-          refresh();
-        } catch (e) {
-          onToast(`Compress failed: ${e}`);
-        }
-      }
-    } catch (e) {
-      onToast(`Error: ${e}`);
-    }
-    // Restore focus
-    setTimeout(() => panelElement?.focus(), 0);
-  }
-
-  function handleInputCancel() {
-    inputVisible = false;
-    setTimeout(() => panelElement?.focus(), 0);
-  }
-
-  async function toggleFileInfo() {
-    if (showFileInfo) {
-      showFileInfo = false;
-      fileInfo = null;
-      return;
-    }
-    if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
-    const entry = displayFiles[selectedIndex];
-    if (entry.name === '..') return;
-    try {
-      fileInfo = await invoke('get_file_info', { path: entry.path });
-      showFileInfo = true;
-    } catch (e) {
-      onToast(`Failed to get file info: ${e}`);
-    }
-  }
-
-  function closeFileInfo() {
-    showFileInfo = false;
-    fileInfo = null;
-    setTimeout(() => panelElement?.focus(), 0);
-  }
-
-  function setSort(mode: 'name' | 'size' | 'ext' | 'modified' | 'created', reverse: boolean = false) {
-    sortBy = mode;
-    sortReverse = reverse;
-    const labels: Record<string, string> = { name: 'name', size: 'size', ext: 'extension', modified: 'modified time', created: 'created time' };
-    onToast(`Sorted by ${labels[mode] || mode}${reverse ? ' (reversed)' : ''}`);
-  }
-
-  function toggleDirFirst() {
-    dirFirst = !dirFirst;
-    onToast(dirFirst ? 'Directories first' : 'Mixed order');
-  }
-
-  function startFilter(mode: 'prefix' | 'wildcard' = 'wildcard') {
-    filterMode = mode;
-    inputMode = 'filter';
-    inputValue = filterPattern;
-    if (mode === 'prefix') {
-      inputPlaceholder = 'Enter prefix to filter...';
-      inputPrompt = 'Prefix:';
-    } else {
-      inputPlaceholder = '*.txt, *.rs, *.{js,ts}';
-      inputPrompt = 'Filter:';
-    }
-    inputVisible = true;
-  }
-
-  function clearFilter() {
-    filterPattern = '';
-    onToast('Filter cleared');
-  }
 
   async function openSelectedFile() {
     if (selectedIndex < 0 || selectedIndex >= displayFiles.length) return;
@@ -1142,27 +673,6 @@
     });
   }
 
-  function promptDelete(permanent: boolean): Promise<boolean> {
-    return new Promise(resolve => {
-      deleteIsPermanent = permanent;
-      showDeleteConfirm = true;
-      deleteResolve = resolve;
-    });
-  }
-
-  function handleDeleteConfirm() {
-    showDeleteConfirm = false;
-    deleteResolve?.(true);
-    deleteResolve = null;
-    refocusPanel();
-  }
-
-  function handleDeleteCancel() {
-    showDeleteConfirm = false;
-    deleteResolve?.(false);
-    deleteResolve = null;
-    refocusPanel();
-  }
 
   function refocusPanel() {
     setTimeout(() => {
@@ -1176,12 +686,12 @@
       files,
       displayFiles,
       selectedIndex,
-      projectMode,
-      (path: string) => findTreeNode(path)
+      projectTree.getProjectMode(),
+      projectTree.findTreeNode
     );
     if (entries.length === 0) return;
 
-    const confirmed = await promptDelete(permanent);
+    const confirmed = await dialogs.promptDelete(permanent);
     if (!confirmed) return;
 
     if (permanent) {
@@ -1232,17 +742,6 @@
     refocusPanel();
   }
 
-  function collectEntriesToOperate(): ClipboardEntry[] {
-    return getEntriesToOperate(
-      selectionState,
-      files,
-      displayFiles,
-      selectedIndex,
-      projectMode,
-      (path: string) => findTreeNode(path)
-    );
-  }
-
   function handleArchiveUp() {
     if (!archiveState) return;
     if (archiveState.internalPath === '') {
@@ -1263,8 +762,8 @@
       files,
       displayFiles,
       selectedIndex,
-      projectMode,
-      (path) => findTreeNode(path)
+      projectTree.getProjectMode(),
+      projectTree.findTreeNode
     );
     if (entries.length === 0) return;
     const internalPaths = entries.map(e => e.path);
@@ -1293,8 +792,8 @@
       files,
       displayFiles,
       selectedIndex,
-      projectMode,
-      (path) => findTreeNode(path)
+      projectTree.getProjectMode(),
+      projectTree.findTreeNode
     );
     if (entries.length === 0) return;
     const internalPaths = entries.map(e => e.path);
@@ -1316,7 +815,7 @@
       onToast('Rename is only supported for ZIP archives');
       return;
     }
-    startRename();
+    dialogs.startRename();
   }
 
   async function handleExtractHere(archivePath: string) {
@@ -1341,19 +840,19 @@
       files,
       displayFiles,
       selectedIndex,
-      projectMode,
-      (path) => findTreeNode(path)
+      projectTree.getProjectMode(),
+      projectTree.findTreeNode
     );
     if (entries.length === 0) return;
     const defaultName = entries.length === 1
       ? entries[0].name.replace(/\.\w+$/, '') + '.zip'
       : 'archive.zip';
-    startCompress(defaultName);
+    dialogs.startCompress(defaultName);
   }
 
   function handleKeydown(event: KeyboardEvent) {
     if (!isFocused) return;
-    if (showDeleteConfirm || inputVisible || isSearchModalOpen || showFileInfo) {
+    if (dialogs.getShowDeleteConfirm() || dialogs.getInputVisible() || isSearchModalOpen || dialogs.getShowFileInfo()) {
       event.stopPropagation();
       return;
     }
@@ -1364,9 +863,9 @@
     const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
     const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
 
-    if (handleSortPrefix(event)) return;
+    if (sortFilter.handleSortPrefix(event)) return;
     if (isArchiveMode) { handleArchiveKey(event, now); updateLastKey(event, now); return; }
-    if (projectMode && handleTreeKey(event, isDoubleG, now)) { updateLastKey(event, now); return; }
+    if (projectTree.getProjectMode() && handleTreeKey(event, isDoubleG, now)) { updateLastKey(event, now); return; }
     if (handleOperationKey(event, now, isGSlash)) { updateLastKey(event, now); return; }
     handleNavigationKey(event, isDoubleG);
     updateLastKey(event, now);
@@ -1379,38 +878,11 @@
     }
   }
 
-  function handleSortPrefix(event: KeyboardEvent): boolean {
-    const codeMap: Record<string, string> = {
-      KeyN: 'name', KeyS: 'size', KeyE: 'ext',
-      KeyM: 'modified', KeyC: 'created', KeyT: 'dirfirst',
-    };
-    if (sortPrefixPending && codeMap[event.code]) {
-      event.preventDefault();
-      sortPrefixPending = false;
-      if (sortPrefixTimeout) { clearTimeout(sortPrefixTimeout); sortPrefixTimeout = null; }
-      const mode = codeMap[event.code];
-      if (mode === 'dirfirst') toggleDirFirst();
-      else setSort(mode as any, event.shiftKey);
-      return true;
-    }
-    if (sortPrefixPending) {
-      sortPrefixPending = false;
-      if (sortPrefixTimeout) { clearTimeout(sortPrefixTimeout); sortPrefixTimeout = null; }
-    }
-    if (event.code === 'KeyS' && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      sortPrefixPending = true;
-      if (sortPrefixTimeout) clearTimeout(sortPrefixTimeout);
-      sortPrefixTimeout = setTimeout(() => { sortPrefixPending = false; }, 1000);
-      return true;
-    }
-    return false;
-  }
 
   function handleArchiveKey(event: KeyboardEvent, _now: number) {
     switch (event.key) {
       case 'Escape':
-        if (filterPattern) { event.preventDefault(); clearFilter(); }
+        if (sortFilter.getFilterPattern()) { event.preventDefault(); sortFilter.clearFilter(); }
         break;
       case 'Enter':
         event.preventDefault();
@@ -1427,18 +899,18 @@
       case 'D': event.preventDefault(); handleDelete(true); break;
       case 'd': event.preventDefault(); handleArchiveDelete(); break;
       case 'x': event.preventDefault(); handleArchiveExtract(); break;
-      case 'i': event.preventDefault(); toggleFileInfo(); break;
-      case 'f': event.preventDefault(); startFilter('wildcard'); break;
+      case 'i': event.preventDefault(); dialogs.toggleFileInfo(); break;
+      case 'f': event.preventDefault(); dialogs.startFilter('wildcard'); break;
       case 'o': event.preventDefault(); openSelectedFile(); break;
       case 'O': event.preventDefault(); openSelectedFileWith(); break;
       case 'a':
         event.preventDefault();
-        setTimeout(() => { if (lastKey === 'KeyA') startCreateFile(); }, 300);
+        setTimeout(() => { if (lastKey === 'KeyA') dialogs.startCreateFile(); }, 300);
         break;
       case '/':
-        if (lastKey === 'KeyA' && Date.now() - lastKeyTime < 500) { event.preventDefault(); lastKey = ''; startCreateDir(); }
+        if (lastKey === 'KeyA' && Date.now() - lastKeyTime < 500) { event.preventDefault(); lastKey = ''; dialogs.startCreateDir(); }
         break;
-      case 'A': event.preventDefault(); startCreateDir(); break;
+      case 'A': event.preventDefault(); dialogs.startCreateDir(); break;
       default:
         switch (event.code) {
           case 'KeyJ': event.preventDefault(); selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1)); break;
@@ -1481,7 +953,7 @@
           case 'KeyY':
             event.preventDefault();
             {
-              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectTree.getProjectMode(), projectTree.findTreeNode);
               if (entries.length > 0 && archiveState) {
                 clipboard.yankFromArchive(archiveState.archivePath, entries);
                 layout.setMark('copy', entries.map(e => e.path));
@@ -1500,6 +972,7 @@
   }
 
   function handleTreeKey(event: KeyboardEvent, isDoubleG: boolean, _now: number): boolean {
+    const tvn = projectTree.getTreeVisibleNodes();
     switch (event.code) {
       case 'KeyJ':
         event.preventDefault();
@@ -1508,8 +981,8 @@
       case 'KeyK':
         event.preventDefault();
         if (event.shiftKey) {
-          const parentPath = treeVisibleNodes[selectedIndex]?.parentPath;
-          if (parentPath) selectTreePathOrAncestor(parentPath);
+          const parentPath = tvn[selectedIndex]?.parentPath;
+          if (parentPath) projectTree.selectTreePathOrAncestor(parentPath);
         } else selectByIndex(Math.max(selectedIndex - 1, 0));
         return true;
       case 'KeyG':
@@ -1518,45 +991,50 @@
         return false;
       case 'KeyH':
         event.preventDefault();
-        if (event.shiftKey) { collapseDeepestTreeLevel(); }
+        if (event.shiftKey) { projectTree.collapseDeepestTreeLevel(); }
         else {
-          const node = treeVisibleNodes[selectedIndex];
-          if (node?.expanded) collapseTreeNode(node);
-          else if (node?.parentPath) { const parent = findTreeNode(node.parentPath); if (parent?.expanded) collapseTreeNode(parent); }
+          const node = tvn[selectedIndex];
+          if (node?.expanded) projectTree.collapseTreeNode(node);
+          else if (node?.parentPath) { const parent = projectTree.findTreeNode(node.parentPath); if (parent?.expanded) projectTree.collapseTreeNode(parent); }
         }
         return true;
       case 'KeyL':
         event.preventDefault();
         {
-          const node = treeVisibleNodes[selectedIndex];
+          const node = tvn[selectedIndex];
           if (node?.entry.is_dir) {
-            if (event.shiftKey) void expandRecursively(node);
+            if (event.shiftKey) void projectTree.expandRecursively(node);
             else if (node.expanded && node.children.length > 0) selectByIndex(selectedIndex + 1);
-            else void expandTreeNode(node);
+            else void projectTree.expandTreeNode(node);
           } else if (node) onActivate(node.entry.path);
         }
         return true;
       case 'KeyV':
         event.preventDefault();
         if (checkHasSelection()) clearSelection();
-        else if (projectRoot) selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
-        else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+        else {
+          const root = projectTree.getProjectRoot();
+          if (root) selectionState = selectTreeSubtree(selectionState, root.entry.path);
+          else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+        }
         return true;
     }
     return false;
   }
 
   function handleOperationKey(event: KeyboardEvent, now: number, isGSlash: boolean): boolean {
+    const isProjectMode = projectTree.getProjectMode();
+    const tvn = projectTree.getTreeVisibleNodes();
     switch (event.key) {
       case 'Escape':
-        if (filterPattern) { event.preventDefault(); clearFilter(); return true; }
+        if (sortFilter.getFilterPattern()) { event.preventDefault(); sortFilter.clearFilter(); return true; }
         return false;
       case 'Enter':
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
-            if (projectMode) toggleTreeNode(treeVisibleNodes[selectedIndex]);
+            if (isProjectMode) projectTree.toggleTreeNode(tvn[selectedIndex]);
             else onNavigate(entry.path);
           } else onActivate(entry.path);
         }
@@ -1565,11 +1043,11 @@
       case 'r':
         event.preventDefault();
         {
-          const selectedNonDirCount = projectMode
+          const selectedNonDirCount = isProjectMode
             ? getSelectedProjectNodes().filter(node => !node.entry.is_dir).length
             : files.filter(entry => !entry.is_dir && selectionState.selectedPaths.has(entry.path)).length;
           if (selectedNonDirCount > 1) startBatchRename();
-          else startRename();
+          else dialogs.startRename();
         }
         return true;
       case 'D': event.preventDefault(); handleDelete(true); return true;
@@ -1593,7 +1071,7 @@
       case 'C':
         event.preventDefault();
         {
-          const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
+          const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, isProjectMode, projectTree.findTreeNode);
           if (entries.length > 0) {
             layout.setMark('compress', entries.map(e => e.path));
             clearSelection();
@@ -1601,15 +1079,15 @@
           }
         }
         return true;
-      case 'i': event.preventDefault(); toggleFileInfo(); return true;
-      case 'f': event.preventDefault(); startFilter('wildcard'); return true;
+      case 'i': event.preventDefault(); dialogs.toggleFileInfo(); return true;
+      case 'f': event.preventDefault(); dialogs.startFilter('wildcard'); return true;
       case 'o': event.preventDefault(); openSelectedFile(); return true;
       case 'O': event.preventDefault(); openSelectedFileWith(); return true;
       default:
         switch (event.code) {
           case 'Slash':
             event.preventDefault();
-            if (lastKey === 'KeyA' && now - lastKeyTime < 500) { lastKey = ''; startCreateDir(); }
+            if (lastKey === 'KeyA' && now - lastKeyTime < 500) { lastKey = ''; dialogs.startCreateDir(); }
             else if (isGSlash) { searchMode = 'recursive'; lastKey = ''; openSearchModal(); }
             else { searchMode = 'current'; openSearchModal(); }
             return true;
@@ -1618,7 +1096,7 @@
             if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
               const entry = displayFiles[selectedIndex];
               if (entry.name !== '..') {
-                const node = projectMode ? treeVisibleNodes[selectedIndex] : null;
+                const node = isProjectMode ? tvn[selectedIndex] : null;
                 if (node) selectionState = toggleTreeSelection(selectionState, node.entry.path, node.entry.is_dir);
                 else selectionState = togglePathSelection(selectionState, entry.path);
               }
@@ -1628,13 +1106,16 @@
           case 'KeyV':
             event.preventDefault();
             if (checkHasSelection()) clearSelection();
-            else if (projectMode && projectRoot) selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
-            else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+            else {
+              const root = projectTree.getProjectRoot();
+              if (isProjectMode && root) selectionState = selectTreeSubtree(selectionState, root.entry.path);
+              else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+            }
             return true;
           case 'KeyY':
             event.preventDefault();
             {
-              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, isProjectMode, projectTree.findTreeNode);
               if (entries.length > 0) {
                 clipboard.yank(entries);
                 layout.setMark('copy', entries.map(e => e.path));
@@ -1646,7 +1127,7 @@
           case 'KeyX':
             event.preventDefault();
             {
-              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, isProjectMode, projectTree.findTreeNode);
               if (entries.length > 0) {
                 clipboard.cut(entries);
                 layout.setMark('cut', entries.map(e => e.path));
@@ -1658,12 +1139,12 @@
           case 'Period':
             event.preventDefault();
             showHidden = !showHidden;
-            if (projectMode) void refreshProjectTree();
+            if (isProjectMode) void projectTree.refreshProjectTree();
             onToast(showHidden ? 'Showing hidden files' : 'Hiding hidden files');
             return true;
           case 'KeyA':
             event.preventDefault();
-            setTimeout(() => { if (lastKey === 'KeyA') startCreateFile(); }, 300);
+            setTimeout(() => { if (lastKey === 'KeyA') dialogs.startCreateFile(); }, 300);
             return true;
           case 'KeyD':
             event.preventDefault();
@@ -1715,8 +1196,8 @@
   }
 
   function isTreeToggleHit(event: MouseEvent, index: number): boolean {
-    const node = treeVisibleNodes[index];
-    if (!projectMode || !node?.entry.is_dir) return false;
+    const node = projectTree.getTreeVisibleNodes()[index];
+    if (!projectTree.getProjectMode() || !node?.entry.is_dir) return false;
     const row = event.currentTarget as HTMLElement;
     const toggle = row.querySelector<HTMLButtonElement>('.tree-toggle');
     if (!toggle) return false;
@@ -1729,10 +1210,10 @@
   }
 
   function handleItemClick(index: number, event: MouseEvent) {
-    const node = treeVisibleNodes[index];
+    const node = projectTree.getTreeVisibleNodes()[index];
     if (node && isTreeToggleHit(event, index)) {
       panelElement?.focus();
-      toggleTreeNode(node);
+      projectTree.toggleTreeNode(node);
       return;
     }
     selectByIndex(index);
@@ -1741,42 +1222,13 @@
   function handleItemDblClick(entry: FileEntry, event: MouseEvent, index: number) {
     if (isTreeToggleHit(event, index)) return;
     if (entry.is_dir) {
-      if (projectMode) {
-        const node = findTreeNode(entry.path);
-        if (node) toggleTreeNode(node);
+      if (projectTree.getProjectMode()) {
+        const node = projectTree.findTreeNode(entry.path);
+        if (node) projectTree.toggleTreeNode(node);
       } else onNavigate(entry.path);
     } else {
       onActivate(entry.path);
     }
-  }
-
-  function toggleTreeNode(node: TreeNode): void {
-    if (node.expanded) {
-      collapseTreeNode(node);
-    } else void expandTreeNode(node);
-  }
-
-  function collapseTreeNode(node: TreeNode): void {
-    const previousSelectedPath = selectedFile?.path ?? selectedPathInternal;
-    node.expanded = false;
-    projectRoot = projectRoot ? { ...projectRoot } : null;
-    ensureSelectionVisibleAfterCollapse(node.entry.path, previousSelectedPath);
-  }
-
-  function ensureSelectionVisibleAfterCollapse(collapsedDirPath: string, previousSelectedPath: string | null = selectedPathInternal): void {
-    const targetPath = getCollapseSelectionTarget(previousSelectedPath, collapsedDirPath);
-    if (!targetPath) return;
-    const selectedChanged = !previousSelectedPath || treePathKey(previousSelectedPath) !== treePathKey(targetPath);
-    selectTreePathOrAncestor(targetPath, { notify: selectedChanged ? 'immediate' : 'silent' });
-    void restoreSelectedTreeNodeFocusAfterRender();
-  }
-
-  async function restoreSelectedTreeNodeFocusAfterRender(): Promise<void> {
-    await tick();
-    if (!projectMode || selectedIndex < 0) return;
-    const focusedItem = panelElement?.querySelector<HTMLElement>(`.file-item[data-index="${selectedIndex}"]`);
-    (focusedItem ?? panelElement)?.focus({ preventScroll: true });
-    isFocused = true;
   }
 </script>
 
@@ -1790,7 +1242,7 @@
   onclick={(e) => (e.currentTarget as HTMLDivElement).focus()}
   role="tree"
   aria-label="{type === 'parent' ? 'Parent Directory' : 'Current Directory'}"
-  aria-activedescendant={projectMode && selectedIndex >= 0 ? `project-tree-${type}-${selectedIndex}` : undefined}
+  aria-activedescendant={projectTree.getProjectMode() && selectedIndex >= 0 ? `project-tree-${type}-${selectedIndex}` : undefined}
   tabindex="0"
 >
   <div class="panel-header">
@@ -1810,19 +1262,19 @@
       {/if}
       <span class="panel-path" title={path}>{path === '/' ? '/' : path.split('\\').pop() || path.split('/').pop() || path}</span>
     {/if}
-    {#if filterPattern}
-      <span class="filter-badge" title={filterPattern}>{filterPattern}</span>
+    {#if sortFilter.getFilterPattern()}
+      <span class="filter-badge" title={sortFilter.getFilterPattern()}>{sortFilter.getFilterPattern()}</span>
     {/if}
   </div>
 
   <div class="panel-content">
     <InputDialog
-      visible={inputVisible}
-      value={inputValue}
-      placeholder={inputPlaceholder}
-      prompt={inputPrompt}
-      onConfirm={handleInputConfirm}
-      onCancel={handleInputCancel}
+      visible={dialogs.getInputVisible()}
+      value={dialogs.getInputValue()}
+      placeholder={dialogs.getInputPlaceholder()}
+      prompt={dialogs.getInputPrompt()}
+      onConfirm={dialogs.handleInputConfirm}
+      onCancel={dialogs.handleInputCancel}
     />
     {#if isLoading}
       <p class="placeholder">Loading...</p>
@@ -1831,14 +1283,14 @@
     {:else if displayFiles.length === 0}
       <p class="placeholder">Empty directory</p>
     {:else}
-      {#if projectMode}
+      {#if projectTree.getProjectMode()}
         <ProjectTreePanel
-          visibleNodes={treeVisibleNodes}
+          visibleNodes={projectTree.getTreeVisibleNodes()}
           selectedIndex={selectedIndex}
           showHidden={showHidden}
           onSelect={selectByIndex}
-          onToggle={toggleTreeNode}
-          onDblClick={(node, event) => handleItemDblClick(node.entry, event, treeVisibleNodes.indexOf(node))}
+          onToggle={projectTree.toggleTreeNode}
+          onDblClick={(node, event) => handleItemDblClick(node.entry, event, projectTree.getTreeVisibleNodes().indexOf(node))}
           cutPaths={cutPaths}
           isTreeNodeSelected={(node) => isTreeNodeSelected(selectionState, node.entry.path)}
           type={type}
@@ -1861,7 +1313,7 @@
 
   <SearchModal
     visible={isSearchModalOpen}
-    rootPath={projectMode && projectRoot ? projectRoot.entry.path : path}
+    rootPath={projectTree.getProjectMode() && projectTree.getProjectRoot() ? projectTree.getProjectRoot()!.entry.path : path}
     mode={searchMode}
     allowRecursive={!path.startsWith('ftp://')}
     entries={path.startsWith('ftp://') ? files : null}
@@ -1870,21 +1322,21 @@
   />
 
   <ConfirmModal
-    visible={showDeleteConfirm}
-    title={deleteIsPermanent ? 'Permanent Delete' : 'Move to Trash'}
-    fileName={deleteIsPermanent
-      ? `Permanently delete ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path) => findTreeNode(path)).length} item(s)?`
-      : `Move ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path) => findTreeNode(path)).length} item(s) to trash?`}
+    visible={dialogs.getShowDeleteConfirm()}
+    title={dialogs.getDeleteIsPermanent() ? 'Permanent Delete' : 'Move to Trash'}
+    fileName={dialogs.getDeleteIsPermanent()
+      ? `Permanently delete ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectTree.getProjectMode(), projectTree.findTreeNode).length} item(s)?`
+      : `Move ${getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectTree.getProjectMode(), projectTree.findTreeNode).length} item(s) to trash?`}
     buttons={[
-      { key: 'D', label: 'elete', action: handleDeleteConfirm, style: 'danger' },
-      { key: 'C', label: 'ancel', action: handleDeleteCancel },
+      { key: 'D', label: 'elete', action: dialogs.handleDeleteConfirm, style: 'danger' },
+      { key: 'C', label: 'ancel', action: dialogs.handleDeleteCancel },
     ]}
   />
 
   <FileInfoPanel
-    visible={showFileInfo}
-    info={fileInfo}
-    onClose={closeFileInfo}
+    visible={dialogs.getShowFileInfo()}
+    info={dialogs.getFileInfo()}
+    onClose={dialogs.closeFileInfo}
   />
 
 </div>

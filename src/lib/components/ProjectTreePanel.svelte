@@ -1,25 +1,5 @@
 <script lang="ts">
-  interface FileEntry {
-    name: string;
-    path: string;
-    is_dir: boolean;
-    size: number | null;
-    is_hidden?: boolean;
-    modified?: number | null;
-    created?: number | null;
-  }
-
-  interface TreeNode {
-    entry: FileEntry;
-    depth: number;
-    parentPath: string | null;
-    expanded: boolean;
-    loaded: boolean;
-    loading: boolean;
-    loadPromise: Promise<void> | null;
-    error: string;
-    children: TreeNode[];
-  }
+  import type { TreeNode } from '$lib/types/file-explorer';
 
   let {
     visibleNodes = [],
