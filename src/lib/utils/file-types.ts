@@ -16,6 +16,15 @@ export const VIDEO_EXTENSIONS = new Set([
   'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', 'ts',
 ]);
 
+/**
+ * Code file extensions that share names with binary/media formats.
+ * These take priority over video/binary detection.
+ * e.g. .ts = TypeScript (code), not MPEG Transport Stream (video).
+ */
+export const CODE_EXTENSIONS = new Set([
+  'ts', 'r', 'm',
+]);
+
 export const ARCHIVE_EXTENSIONS = new Set([
   'zip', 'tar', 'gz', 'tgz', '7z',
 ]);
@@ -61,7 +70,7 @@ export function isPdfFile(path: string): boolean {
 }
 
 export function isVideoFile(path: string): boolean {
-  return isVideoFileExt(path);
+  return isVideoFileExt(path) && !CODE_EXTENSIONS.has(getExt(path));
 }
 
 /**
