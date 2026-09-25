@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, tick } from 'svelte';
   import ConfirmModal from './ConfirmModal.svelte';
+  import { formatSize } from '$lib/utils/file-types';
 
   interface TrashItem {
     id: string;
@@ -52,14 +53,6 @@
   // g key prefix for gd (empty recycle bin)
   let waitingForG: boolean = $state(false);
   let gKeyTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  function formatSize(bytes: number | null): string {
-    if (bytes === null || bytes === undefined) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
 
   function formatDate(timestamp: number): string {
     if (timestamp <= 0) return 'Unknown';
@@ -344,7 +337,7 @@
           >
             <span class="file-name">{item.name}</span>
             <span class="file-date">{formatDate(item.date_deleted)}</span>
-            <span class="file-size">{formatSize(item.size)}</span>
+            <span class="file-size">{formatSize(item.size) || '—'}</span>
           </div>
         {/each}
       </div>
@@ -385,7 +378,7 @@
         </div>
         <div class="info-row">
           <span class="info-label">Size:</span>
-          <span class="info-value">{formatSize(infoItem.size)}</span>
+          <span class="info-value">{formatSize(infoItem.size) || '—'}</span>
         </div>
       </div>
       <div class="info-footer">

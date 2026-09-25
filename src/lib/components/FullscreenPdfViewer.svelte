@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
+  import { formatSize } from '$lib/utils/file-types';
   import {
     type PdfPageData,
     type PdfSearchState,
@@ -64,12 +65,6 @@ import { onMount, onDestroy } from 'svelte';
   const PAN_STEP = 100;
   const ZOOM_STEP = 0.25;
   const MIN_SCALE = 0.1;
-
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
 
   // Draw page data onto canvas with search highlights
   async function drawToCanvas(data: PdfPageData) {

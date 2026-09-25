@@ -2,6 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import type { DirectoryMutationOutcome, LegacyTransferTerminalEvent } from '$lib/utils/directory-refresh';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { formatSize } from '$lib/utils/file-types';
 
 export interface TransferEntry {
   id: number;
@@ -36,14 +37,6 @@ function shortPath(path: string): string {
   }
   const parts = path.replace(/\\/g, '/').split('/');
   return parts[parts.length - 1] || path;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const val = bytes / Math.pow(1024, i);
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
 function formatSpeed(bps: number): string {

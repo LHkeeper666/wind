@@ -21,7 +21,7 @@
     collectExpandedLines,
     restoreExpandedLines,
   } from '$lib/utils/tab-cache';
-  import { isDirectEditorFile } from '$lib/utils/file-loader';
+  import { isDirectEditorFile } from '$lib/utils/file-types';
   import {
     loadArchiveDirectory, loadArchiveFile, loadDirectory,
     loadImage, loadVideo, loadTextOrBinary,

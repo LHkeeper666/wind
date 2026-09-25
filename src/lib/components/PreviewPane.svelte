@@ -5,7 +5,7 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { restoreExpandedLines } from '$lib/utils/tab-cache';
-  import { isDirectEditorFile } from '$lib/utils/file-loader';
+  import { isDirectEditorFile } from '$lib/utils/file-types';
 
   let {
     filePath = null,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { formatSize } from '$lib/utils/file-types';
   import {
     type PdfPageDimensions,
     type PdfSearchState,
@@ -129,12 +130,6 @@
     const widestPage = pageDimensions.length > 0 ? Math.max(...pageDimensions.map(d => d.width * scale)) : 0;
     return Math.max(viewportWidth, widestPage);
   });
-
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
 
   // Page slot heights based on dimensions and scale
   let pageOffsets = $derived(cumulativePageOffsets(pageDimensions, scale));

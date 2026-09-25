@@ -79,3 +79,27 @@ export function isArchiveFile(name: string): boolean {
 export function isTextFile(path: string): boolean {
   return !BINARY_EXTENSIONS.has(getExt(path));
 }
+
+/**
+ * Whether a file should open directly in the code editor (vs preview pane).
+ * Markdown, JSON, and notebooks go to preview; binary files go to specialized viewers.
+ */
+export function isDirectEditorFile(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  if (['md', 'markdown', 'json', 'ipynb'].includes(ext)) return false;
+  if (!isTextFile(path)) return false;
+  return true;
+}
+
+/**
+ * Format byte count to human-readable string (B, KB, MB, GB, TB).
+ * Returns '' for null/undefined input.
+ */
+export function formatSize(bytes: number | null | undefined): string {
+  if (bytes == null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(1)} TB`;
+}

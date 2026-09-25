@@ -11,8 +11,8 @@ import type { EditorView } from 'codemirror';
 import {
   isHardTabIndentPolicy,
   isLiteralTabInsertionPolicy,
-} from './editor-indent-policy.js';
-import type { EditorIndentPolicy } from './editor-indent-policy';
+  type EditorIndentPolicy,
+} from './editor-indent-policy';
 
 export const EDITOR_TAB_SIZE = 4;
 export type EditorTextKeyOptions = {
@@ -30,7 +30,7 @@ export const editorAutocompleteKeymap: KeyBinding[] = [
   { key: 'PageUp', run: moveCompletionSelection(false, 'page') },
 ];
 
-export interface MarkdownListPrefix {
+interface MarkdownListPrefix {
   prefixLength: number;
   indent: string;
   marker: string;
@@ -69,12 +69,12 @@ function normalizeTextKeyOptions(options: number | EditorTextKeyOptions = {}): R
   };
 }
 
-export function spacesToNextTabStop(column: number, tabSize: number = EDITOR_TAB_SIZE): number {
+function spacesToNextTabStop(column: number, tabSize: number = EDITOR_TAB_SIZE): number {
   const remainder = column % tabSize;
   return remainder === 0 ? tabSize : tabSize - remainder;
 }
 
-export function parseMarkdownListPrefix(text: string): MarkdownListPrefix | null {
+function parseMarkdownListPrefix(text: string): MarkdownListPrefix | null {
   const match = text.match(/^([ \t]*)(?:([-*+])|(\d+)\.)(\s(?:\[[ x]\]\s)?)/);
   if (!match || !match[0].length) return null;
   const suffix = match[4] ?? ' ';
@@ -88,7 +88,7 @@ export function parseMarkdownListPrefix(text: string): MarkdownListPrefix | null
   };
 }
 
-export function buildMarkdownContinuationPrefix(text: string): string | null {
+function buildMarkdownContinuationPrefix(text: string): string | null {
   const marker = parseMarkdownListPrefix(text);
   if (!marker) return null;
   const nextMarker = marker.ordered && marker.orderedNumber !== null
@@ -97,7 +97,7 @@ export function buildMarkdownContinuationPrefix(text: string): string | null {
   return `${marker.indent}${nextMarker}${marker.suffix}`;
 }
 
-export function buildIndentedMarkdownListPrefix(prefix: MarkdownListPrefix, orderedIndex: number = 1, tabSize: number = EDITOR_TAB_SIZE): string {
+function buildIndentedMarkdownListPrefix(prefix: MarkdownListPrefix, orderedIndex: number = 1, tabSize: number = EDITOR_TAB_SIZE): string {
   const marker = prefix.ordered ? `${orderedIndex}.` : prefix.marker;
   return `${' '.repeat(tabSize)}${prefix.indent}${marker}${prefix.suffix}`;
 }

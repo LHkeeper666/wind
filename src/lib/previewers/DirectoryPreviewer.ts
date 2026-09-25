@@ -2,13 +2,7 @@ import type { Previewer } from './types';
 import { invoke } from '@tauri-apps/api/core';
 import { directoryCache, type DirCacheEntry } from '$lib/utils/directory-cache';
 import type { FileEntry } from '$lib/types/file-explorer';
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
+import { formatSize } from '$lib/utils/file-types';
 
 export class DirectoryPreviewer implements Previewer {
   private container: HTMLElement | null = null;

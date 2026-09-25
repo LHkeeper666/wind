@@ -2,7 +2,7 @@ import type { Previewer } from './types';
 import { codeToTokens } from 'shiki';
 import type { BundledLanguage } from 'shiki';
 import { diffLines } from '$lib/utils/diff';
-import { BINARY_EXTENSIONS } from '$lib/utils/file-types';
+import { BINARY_EXTENSIONS, formatSize } from '$lib/utils/file-types';
 
 const KNOWN_LANG_EXTENSIONS = new Set([
 	'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
@@ -37,12 +37,6 @@ const FILENAME_LANG_MAP: Record<string, string> = {
 
 const MAX_HIGHLIGHT_SIZE = 200 * 1024;
 const MAX_HEX_DUMP_BYTES = 64 * 1024;
-
-function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function isBinaryContent(data: ArrayBuffer): boolean {
 	const bytes = new Uint8Array(data);

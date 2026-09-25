@@ -1,19 +1,12 @@
 import type { Previewer } from './types';
 import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+import { formatSize } from '$lib/utils/file-types';
 
 interface ArchiveEntry {
   name: string;
   path: string;
   is_dir: boolean;
   size: number | null;
-}
-
-function formatSize(bytes: number | null): string {
-  if (bytes === null || bytes === undefined) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 export class ArchivePreviewer implements Previewer {

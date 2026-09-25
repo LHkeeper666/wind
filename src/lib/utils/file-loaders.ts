@@ -3,9 +3,8 @@ import type { VideoMeta } from '$lib/previewers';
 import type { FileEntry } from '$lib/types/file-explorer';
 import type { TextContentSnapshot } from '$lib/utils/tab-cache';
 import type { PdfPageDimensions } from '$lib/utils/pdf-shared';
-import { isTextFile, isImageFile } from '$lib/utils/file-types';
+import { isTextFile, isImageFile, formatSize } from '$lib/utils/file-types';
 import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
-import { formatSize } from '$lib/utils/file-loader';
 
 export interface LoadContext {
   gen: number;

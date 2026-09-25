@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { formatSize } from '$lib/utils/file-types';
 
   interface FileInfo {
     name: string;
@@ -77,14 +78,6 @@
       overlayEl.focus();
     }
   });
-
-  function formatSize(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    const val = bytes / Math.pow(1024, i);
-    return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
-  }
 
   function handleKeydown(event: KeyboardEvent) {
     event.stopPropagation();

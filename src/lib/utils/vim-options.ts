@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Vim } from '@replit/codemirror-vim';
 
-export interface OptionMeta {
+interface OptionMeta {
   name: string;
   shortName?: string;
   type: 'boolean' | 'number' | 'string';
@@ -9,7 +9,7 @@ export interface OptionMeta {
   persist: boolean;
 }
 
-export interface OptionSnapshot {
+interface OptionSnapshot {
   name: string;
   value: unknown;
   defaultValue: unknown;
