@@ -106,9 +106,6 @@
   export function showTabSlot(tabId: number) {
     for (const [id, slot] of tabSlots) {
       const newZ = id === tabId ? '1' : '0';
-      if (slot.style.zIndex !== newZ) {
-        console.log(`[showTabSlot] tab=${id} zIndex ${slot.style.zIndex}→${newZ} scrollTop=${slot.scrollTop}`);
-      }
       slot.style.zIndex = newZ;
     }
   }
@@ -149,7 +146,6 @@
   export function prepareForLoad() {
     const slot = getOrCreateSlot(renderTabId);
     showTabSlot(renderTabId);
-    console.log(`[prepareForLoad] tab=${renderTabId} slot.rendered=${slot.dataset.rendered} slot.path=${slot.dataset.filePath?.split(/[/\\]/).pop()} scrollTop=${slot.scrollTop} children=${tabSlots.size}`);
   }
 
   export function getPreviewArea(): HTMLElement | undefined {
@@ -192,7 +188,6 @@
     const contentFingerprint = content ? `${content.length}:${content.slice(0, 80)}` : '';
     const key = `${renderTrigger}:${mode}:${filePath}:${renderTabId}:${codeFileDirectEdit}:${directEdit}:${isDirectory}:${contentFingerprint}:${!!binaryContent}`;
     if (key === _prevRenderKey) return;
-    console.log(`[renderEffect] FIRED tab=${renderTabId} path=${filePath?.split(/[/\\]/).pop()} mode=${mode} contentLen=${content?.length ?? 0} binary=${!!binaryContent} pendingScroll=${pendingRestoreScrollTop}`);
     _prevRenderKey = key;
 
     // Track which path isDirectory was set for.
@@ -229,7 +224,6 @@
       // binaryContent will be cleared by the load effect and re-rendered when new data arrives.
       if (binaryContent && binaryContent === _lastBinaryContentRef) return;
       _lastBinaryContentRef = binaryContent;
-      console.log(`[renderEffect] → renderPreview() pendingScroll=${pendingRestoreScrollTop}`);
       void renderPreview();
     }
   });
@@ -280,15 +274,13 @@
     const slotRendered = slot.dataset.rendered === 'true';
     const slotPath = slot.dataset.filePath;
     const slotMtime = slot.dataset.fileMtime;
-    console.log(`[renderPreviewOnce] tab=${tabId} path=${path?.split(/[/\\]/).pop()} mtime=${snapMtime} slot.rendered=${slotRendered} slot.path=${slotPath?.split(/[/\\]/).pop()} slot.mtime=${slotMtime} pendingScroll=${pendingRestoreScrollTop} contentLen=${snapContent?.length ?? 0} scrollTop=${slot.scrollTop}`);
 
     // Skip if this tab's slot already holds a fresh render of the same file.
     if (slotRendered && slotPath === path
         && slotMtime === String(snapMtime)) {
       const savedScroll = pendingRestoreScrollTop;
       pendingRestoreScrollTop = -1;
-      console.log(`[renderPreviewOnce] FRESHNESS_PASS savedScroll=${savedScroll} slot.scrollTop=${slot.scrollTop}`);
-      if (savedScroll >= 0) { requestAnimationFrame(() => { console.log(`[renderPreviewOnce] rAF restoring scroll to ${savedScroll}, current=${slot.scrollTop}`); slot.scrollTop = savedScroll; }); }
+      if (savedScroll >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll; }); }
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
       if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
         requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });

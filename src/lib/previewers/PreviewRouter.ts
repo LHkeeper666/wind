@@ -65,7 +65,12 @@ export class PreviewRouter {
       }
     }
     previewer.onHeadings = this.onHeadings;
-    await previewer.render(content, staging);
+    try {
+      await previewer.render(content, staging);
+    } catch (err) {
+      console.error('[PreviewRouter] render failed:', err);
+      staging.innerHTML = '<p class="preview-error">Preview failed</p>';
+    }
 
     // Staleness check: if container.dataset.filePath changed during the async render
     // (e.g. user selected a different file), skip the swap to prevent stale content flash.

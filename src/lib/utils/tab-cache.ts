@@ -23,6 +23,7 @@ export interface TabEditorCache {
   pdfPageDimensions: PdfPageDimensions[];
   pdfOutline: PdfOutlineItem[];
   pdfTocOpen: boolean;
+  pdfScrollTop: number;
   fileMtime: number;
   tocOpen: boolean;
   tocHeadings: TocHeading[];

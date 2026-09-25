@@ -1,6 +1,5 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
   import { onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
@@ -9,12 +8,12 @@
   import { EditorView } from 'codemirror';
   import { closeSearchPanel } from '@codemirror/search';
   import type { ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { createPdfState } from '$lib/composables/pdf-state.svelte';
+  import { createMarkdownTocState } from '$lib/composables/markdown-toc-state.svelte';
+  import { createFileWatcher } from '$lib/composables/file-watcher.svelte';
   import PdfPreviewPanel from './PdfPreviewPanel.svelte';
   import PdfTocSidebar from './PdfTocSidebar.svelte';
-  import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
-  import { fetchPdfOutline } from '$lib/utils/pdf-shared';
   import { getEditorIndentPolicy } from '$lib/utils/editor-indent-policy';
-  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
   import { handleInsertModeShiftTab, handleInsertModeTab } from '$lib/utils/editor-text-keys';
   import {
     type TextContentSnapshot,
@@ -22,7 +21,11 @@
     collectExpandedLines,
     restoreExpandedLines,
   } from '$lib/utils/tab-cache';
-  import { isDirectEditorFile, formatSize } from '$lib/utils/file-loader';
+  import { isDirectEditorFile } from '$lib/utils/file-loader';
+  import {
+    loadArchiveDirectory, loadArchiveFile, loadDirectory,
+    loadImage, loadVideo, loadTextOrBinary,
+  } from '$lib/utils/file-loaders';
   import TextEditorHost from './TextEditorHost.svelte';
   import VimOverlay from './VimOverlay.svelte';
   import PreviewPane from './PreviewPane.svelte';
@@ -59,6 +62,31 @@
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
   // Keep preview state keyed by that target tab instead of the origin tab.
   let renderTabId = $derived(previewTabId ?? currentTabId);
+
+  const pdfState = createPdfState({
+    getFilePath: () => filePath,
+    onToast,
+  });
+
+  const tocState = createMarkdownTocState({
+    getPanelElement: () => panelElement,
+  });
+
+  const fileWatcher = createFileWatcher({
+    getFilePath: () => filePath,
+    getMode: () => mode,
+    getRenderTabId: () => renderTabId,
+    onFileChanged: async (changedPath: string) => {
+      if (!filePath) return;
+      const a = changedPath.replace(/\//g, '\\').toLowerCase();
+      const b = filePath.replace(/\//g, '\\').toLowerCase();
+      if (a !== b) return;
+      if (mode !== 'global-normal') return;
+      tabCache.delete(renderTabId);
+      previewPane?.clearActiveSlot();
+      await loadFile(filePath);
+    },
+  });
 
   let content: string = $state('');
   let savedContent: string = $state('');
@@ -140,12 +168,7 @@
     return true;
   }
 
-  // TOC state
-  let tocHeadings: TocHeading[] = $state([]);
-  let tocActiveLine: number = $state(-1);
-  let pdfPreviewPanel: PdfPreviewPanel | undefined = $state(undefined);
-  let tocFocused: boolean = $state(false);
-  let tocOpen: boolean = $state(true);
+  // TOC state managed by tocState composable
   let pendingTocExpanded: Set<number> | null = null;
   let isMarkdown: boolean = $state(false);
   let isDirectory: boolean = $state(false);
@@ -154,13 +177,12 @@
   let editorTargetLine: number = -1;
   let pendingEditorPos: number = -1;
   let pendingEditorScrollTop: number = -1;
+  let pendingRestoreScrollRatio: number = $state(-1);
 
   // Per-tab editor state cache
   const tabCache = new TabCacheManager();
   let pendingRestoreScrollTop: number = -1;
   let pendingTocSelectedIndex: number = -1;
-  let currentFileMtime: number = 0;
-  let fileChangedUnlisten: (() => void) | null = null;
 
   export function clearTabCache(tabId: number) {
     tabCache.delete(tabId);
@@ -176,10 +198,8 @@
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, pdfCurrentPage, pdfPageCount, pdfPageDimensions: [...pdfPageDimensions], pdfOutline: [...pdfOutline], pdfTocOpen, fileMtime: currentFileMtime,
-      tocOpen, tocHeadings: [...tocHeadings],
-      tocExpandedLines: collectExpandedLines(tocHeadings),
-      tocFocused, tocSelectedIndex: previewPane?.getTocSelectedIndex() ?? -1,
+      isModified, ...pdfState.toCacheSnapshot(), fileMtime: fileWatcher.getFileMtime(),
+      ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
     });
   }
 
@@ -206,19 +226,11 @@
     return {
       mode,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, pdfCurrentPage,
-      tocOpen, tocExpandedLines: collectExpandedLines(tocHeadings),
+      isModified, pdfCurrentPage: pdfState.getPdfCurrentPage(),
+      tocOpen: tocState.getTocOpen(), tocExpandedLines: collectExpandedLines(tocState.getTocHeadings()),
     };
   }
 
-  function startWatching(path: string) {
-    stopWatching();
-    invoke('start_watch_file', { path }).catch(e => console.error('[PreviewEditor] start_watch_file error:', e));
-  }
-
-  function stopWatching() {
-    invoke('stop_watch_file').catch(() => {});
-  }
 
   function isCurrentTextSnapshot(snapshot: TextContentSnapshot): boolean {
     const current = readyTextContent;
@@ -231,17 +243,6 @@
       && snapshot.path === filePath
       && snapshot.generation === loadGeneration
       && binaryContent === null;
-  }
-
-  async function handleFileChanged(eventPath: string) {
-    if (!filePath) return;
-    const a = eventPath.replace(/\//g, '\\').toLowerCase();
-    const b = filePath.replace(/\//g, '\\').toLowerCase();
-    if (a !== b) return;
-    if (mode !== 'global-normal') return;
-    tabCache.delete(renderTabId);
-    previewPane?.clearActiveSlot();
-    await loadFile(filePath);
   }
 
   // Redirect focus when active column switches away from preview
@@ -311,17 +312,13 @@
     }
   });
 
+  fileWatcher.setup();
+
   onDestroy(() => {
     // Editor sessions are destroyed by TextEditorHost's onDestroy
     // Preview resources are destroyed by PreviewPane's onDestroy
-    stopWatching();
-    if (fileChangedUnlisten) { fileChangedUnlisten(); fileChangedUnlisten = null; }
+    fileWatcher.teardown();
   });
-
-  listen('file-changed', (event: any) => {
-    const changedPath = typeof event.payload === 'string' ? event.payload : String(event.payload ?? '');
-    handleFileChanged(changedPath);
-  }).then(unlisten => { fileChangedUnlisten = unlisten; });
 
   let prevMode: string = mode;
   $effect(() => {
@@ -377,21 +374,16 @@
       }
       hideEditorSessions();
       if (editorView) closeSearchPanel(editorView);
-      // Restore preview scroll to match editor's current viewport position
+      // Restore preview scroll position using editor scroll ratio.
+      // For all files (markdown, code, etc.), use the editor's current scroll position
+      // at exit time. PreviewPane applies the ratio after async render completes.
       if (changed && editorScrollRatio >= 0) {
-        const ratio = editorScrollRatio;
-        requestAnimationFrame(() => {
-          const slot = previewPane?.getActiveSlot();
-          if (slot) {
-            const maxScroll = slot.scrollHeight - slot.clientHeight;
-            if (maxScroll > 0) slot.scrollTop = ratio * maxScroll;
-          }
-        });
+        pendingRestoreScrollRatio = editorScrollRatio;
       }
       if (changed && codeFileDirectEdit) {
         previewPane?.clearActiveSlot();
       }
-      if (changed && panelElement && !tocFocused && activeColumn === 'preview') {
+      if (changed && panelElement && !tocState.getTocFocused() && activeColumn === 'preview') {
         panelElement.focus();
       }
     }
@@ -403,7 +395,7 @@
   function handlePanelFocus() {
     if (vimOverlay?.getOutputVisible()) return;
     if (mode === 'global-normal' && filePath && isPdfFile(filePath)) {
-      pdfPreviewPanel?.focusPanel();
+      pdfState.focusPanel();
       return;
     }
     if (mode === 'editor-normal' || mode === 'editor-insert') { focusActiveEditor(); }
@@ -430,45 +422,30 @@
   export function isTocVisible(): boolean {
     return mode === 'global-normal' && (
       previewPane?.isTocVisible() === true
-      || (isPdfFile(filePath || '') && pdfOutline.length > 0 && pdfTocOpen)
+      || (isPdfFile(filePath || '') && pdfState.getPdfOutline().length > 0 && pdfState.getPdfTocOpen())
     );
   }
 
   export function focusToc() {
     if (isPdfFile(filePath || '')) {
-      pdfTocFocused = true;
-      onToast('Focus: TOC');
-      setTimeout(() => pdfTocSidebar?.focus(), 0);
+      pdfState.focusToc();
       return;
     }
-    tocFocused = true;
+    tocState.setTocFocused(true);
     onToast('Focus: TOC');
     previewPane?.focusToc();
   }
   export function focusContent() {
-    tocFocused = false;
-    pdfTocFocused = false;
+    tocState.setTocFocused(false);
+    pdfState.setTocFocused(false);
     onToast('Focus: PREVIEW');
-    if (isPdfFile(filePath || '')) pdfPreviewPanel?.focusPanel();
+    if (isPdfFile(filePath || '')) pdfState.focusPanel();
     else if (panelElement) panelElement.focus({ preventScroll: true });
   }
-  export function isTocFocused(): boolean { return tocFocused || pdfTocFocused; }
+  export function isTocFocused(): boolean { return tocState.getTocFocused() || pdfState.getPdfTocFocused(); }
 
-  function handleTocFocusChange(focused: boolean) {
-    tocFocused = focused;
-    if (!focused && panelElement) { panelElement.focus(); }
-  }
+  // handleTocFocusChange is now tocState.handleTocFocusChange
 
-  // PDF state
-  let pdfPageCount: number = $state(0);
-  let pdfCurrentPage: number = $state(0);
-  let pdfFileSize: number = $state(0);
-  let pdfTitle: string | null = $state(null);
-  let pdfPageDimensions: PdfPageDimensions[] = $state([]);
-  let pdfOutline: PdfOutlineItem[] = $state([]);
-  let pdfTocOpen: boolean = $state(false);
-  let pdfTocFocused: boolean = $state(false);
-  let pdfTocSidebar: PdfTocSidebar | undefined = $state(undefined);
 
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
@@ -495,7 +472,6 @@
       // Bring cached slot to front FIRST to hide old tab's content immediately.
       // Slot retains its rendered content and scroll position from the previous visit.
       previewPane?.prepareForLoad();
-      console.log(`[loadFile-CACHE] tab=${loadTabId} path=${path?.split(/[/\\]/).pop()} cachedScroll=${cached.previewScrollTop} cachedMtime=${cached.fileMtime} cachedContentLen=${cached.content?.length ?? 0}`);
       content = cached.content;
       savedContent = cached.savedContent;
       binaryContent = cached.binaryContent;
@@ -506,25 +482,19 @@
         content: cached.content,
       };
       isModified = cached.isModified;
-      pdfCurrentPage = cached.pdfCurrentPage;
-      pdfPageCount = cached.pdfPageCount;
-      pdfPageDimensions = cached.pdfPageDimensions ?? [];
-      pdfOutline = cached.pdfOutline ?? [];
-      pdfTocOpen = cached.pdfTocOpen ?? false;
-      currentFileMtime = cached.fileMtime;
-      tocOpen = cached.tocOpen;
-      tocFocused = cached.tocFocused;
+      pdfState.fromCacheSnapshot(cached);
+      tocState.fromCacheSnapshot(cached);
+      fileWatcher.setFileMtime(cached.fileMtime);
       pendingTocSelectedIndex = cached.tocSelectedIndex;
       pendingTocExpanded = new Set(cached.tocExpandedLines);
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
       isMarkdown = ext === 'md' || ext === 'markdown';
-      if (!isMarkdown) { tocHeadings = []; tocActiveLine = -1; }
+      if (!isMarkdown) { tocState.reset(); }
       else if (cached.tocHeadings && cached.tocHeadings.length > 0) {
         if (pendingTocExpanded && pendingTocExpanded.size > 0) {
           restoreExpandedLines(cached.tocHeadings, pendingTocExpanded);
         }
-        tocHeadings = cached.tocHeadings;
       }
       mode = cached.mode;
       if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
@@ -534,16 +504,18 @@
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderTrigger++;
       }
-      // Restore preview scroll position directly (slot content is already cached).
-      if (cached.previewScrollTop > 0) {
+      // Restore preview scroll position (slot content is already cached).
+      if (isPdfFile(path)) {
+        // PDF: use double-rAF via applyPendingScroll to wait for PdfPreviewPanel initScale
+        pdfState.applyPendingScroll();
+      } else if (cached.previewScrollTop > 0) {
         const savedScroll = cached.previewScrollTop;
         requestAnimationFrame(() => {
           const slot = previewPane?.getActiveSlot();
-          console.log(`[loadFile-CACHE rAF] tab=${loadTabId} savedScroll=${savedScroll} slot.scrollTop=${slot?.scrollTop} slot.scrollHeight=${slot?.scrollHeight}`);
           slot?.scrollTo(0, savedScroll);
         });
       }
-      startWatching(path);
+      fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
         .catch(() => {});
@@ -560,267 +532,132 @@
     pendingRestoreScrollTop = -1;
     isModified = false;
     isDirectory = false;
-    currentFileMtime = 0;
+    fileWatcher.setFileMtime(0);
     mode = 'global-normal';
     // Clear slot content for fresh load (no cached content to display).
     previewPane?.clearActiveSlot();
 
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
-    if (!isMarkdown) { tocHeadings = []; tocActiveLine = -1; }
+    if (!isMarkdown) { tocState.reset(); }
 
     // Archive file: read from archive
+    const checkGen = () => gen === loadGeneration;
+    const ctx = { gen, loadTabId, path, archivePath: archiveStateVal?.archivePath ?? null, archiveInternalPath: path, selectedEntryIsDir };
+
     if (browsingArchive && archiveStateVal) {
       try {
         if (selectedEntryIsDir) {
-          const dirEntries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
-            'read_archive_directory',
-            {
-              archivePath: archiveStateVal.archivePath,
-              internalPath: path,
-            },
-            'password'
-          );
-          if (dirEntries === null) return;
-          if (gen !== loadGeneration) return;
+          const result = await loadArchiveDirectory(ctx, checkGen);
+          if ('aborted' in result) return;
           content = ''; binaryContent = null;
           destroyEditorSession(loadTabId);
           mode = 'global-normal';
           previewPane?.prepareForLoad();
           const slot = previewPane?.getActiveSlot();
-          if (slot) slot.dataset.filePath = path;
-          const rows = dirEntries.map((entry: any) => {
-            const safeName = entry.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            const name = entry.is_dir ? safeName + '/' : safeName;
-            const nameClass = entry.is_dir ? 'entry-name is-dir' : 'entry-name';
-            const size = entry.is_dir || entry.size == null ? '' : formatSize(entry.size);
-            const sizeClass = entry.is_dir ? 'dir' : 'file';
-            return `<div class="dir-entry"><span class="${nameClass}">${name}</span><span class="entry-size ${sizeClass}">${size}</span></div>`;
-          });
-          if (slot) slot.innerHTML = dirEntries.length === 0
-            ? '<p class="preview-empty">Empty directory</p>'
-            : `<div class="dir-list">${rows.join('')}</div>`;
-          stopWatching();
+          if (slot) { slot.dataset.filePath = path; slot.innerHTML = result.html; }
+          fileWatcher.stopWatching();
           return;
         }
 
-        const bytes = await invokeArchiveWithOptionalPassword<number[]>(
-          'read_archive_file',
-          {
-            archivePath: archiveStateVal.archivePath,
-            internalPath: path,
-          },
-          'password'
-        );
-        if (bytes === null) return;
-        if (gen !== loadGeneration) return;
-        const uint8 = new Uint8Array(bytes);
-        const isBinary = isTextFile(path) ? false : uint8.slice(0, Math.min(uint8.length, 8192)).some(b => b === 0);
-        if (isBinary) {
-          binaryContent = uint8.buffer;
-          content = '';
-          readyTextContent = null;
+        const result = await loadArchiveFile(ctx, checkGen);
+        if ('aborted' in result) return;
+        content = result.content;
+        binaryContent = result.binaryContent;
+        readyTextContent = result.readyTextContent;
+        if (result.isBinary) {
           destroyEditorSession(loadTabId);
           mode = 'global-normal';
           renderTrigger++;
+        } else if (readyTextContent && isDirectEditorFile(path)) {
+          editorInitInFlight = true;
+          if (!activateEditorSession(loadTabId, path)) initEditor(readyTextContent);
+          mode = 'editor-normal';
         } else {
-          const text = new TextDecoder().decode(uint8.slice(0, Math.min(uint8.length, 1024 * 1024)));
-          content = text;
-          binaryContent = null;
-          readyTextContent = { tabId: loadTabId, path, generation: gen, content };
-          if (isDirectEditorFile(path)) {
-            editorInitInFlight = true;
-            if (!activateEditorSession(loadTabId, path)) {
-              initEditor(readyTextContent);
-            }
-            mode = 'editor-normal';
-            // editorInitInFlight is cleared by the mode effect
-          } else {
-            destroyEditorSession(loadTabId);
-            mode = 'global-normal';
-            renderTrigger++;
-          }
+          destroyEditorSession(loadTabId);
+          mode = 'global-normal';
+          renderTrigger++;
         }
-        stopWatching();
+        fileWatcher.stopWatching();
         return;
       } catch (e) {
         content = `[Error reading archive file: ${e}]`;
-        binaryContent = null;
-        readyTextContent = null;
+        binaryContent = null; readyTextContent = null;
         destroyEditorSession(loadTabId);
-        mode = 'global-normal';
-        renderTrigger++;
-        stopWatching();
+        mode = 'global-normal'; renderTrigger++;
+        fileWatcher.stopWatching();
         return;
       }
     }
 
     // Directory
     try {
-      await invoke<FileEntry[]>('read_directory', { path });
-      if (gen !== loadGeneration) return;
-      content = ''; binaryContent = null;
-      destroyEditorSession(loadTabId);
-      mode = 'global-normal';
-      isDirectory = true;
-      renderTrigger++;
-      stopWatching();
-      return;
+      const result = await loadDirectory(ctx, checkGen);
+      if (!('aborted' in result)) {
+        content = ''; binaryContent = null;
+        destroyEditorSession(loadTabId);
+        mode = 'global-normal'; isDirectory = true; renderTrigger++;
+        fileWatcher.stopWatching();
+        return;
+      }
     } catch { /* not a directory */ }
 
     // Binary image
     if (isImageFile(path) && !path.toLowerCase().endsWith('.svg')) {
-      try {
-        if (path.toLowerCase().endsWith('.gif')) {
-          const base64 = await invoke<string>('read_binary_file', { path });
-          if (gen !== loadGeneration) return;
-          const binary = atob(base64); const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          binaryContent = bytes.buffer; thumbnailMeta = null;
-        } else {
-          const result = await invoke<{ data: string; width: number; height: number; original_size: number; is_thumbnail: boolean }>('read_image_thumbnail', { path });
-          if (gen !== loadGeneration) return;
-          if (result.data) {
-            const binary = atob(result.data); const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            binaryContent = bytes.buffer;
-            thumbnailMeta = { width: result.width, height: result.height, originalSize: result.original_size, isThumbnail: result.is_thumbnail };
-          } else {
-            const base64 = await invoke<string>('read_binary_file', { path });
-            if (gen !== loadGeneration) return;
-            const binary = atob(base64); const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            binaryContent = bytes.buffer;
-            thumbnailMeta = { width: result.width, height: result.height, originalSize: result.original_size, isThumbnail: false };
-          }
-        }
-        content = '[Binary Image]';
-      } catch (error) {
-        if (gen !== loadGeneration) return;
-        console.error('Failed to load image:', error);
-        binaryContent = null; thumbnailMeta = null; content = '';
-      }
-      mode = 'global-normal';
-      renderTrigger++;
+      const result = await loadImage(ctx, checkGen);
+      if ('aborted' in result) return;
+      content = result.content; binaryContent = result.binaryContent; thumbnailMeta = result.thumbnailMeta;
+      mode = 'global-normal'; renderTrigger++;
       return;
     }
 
     // PDF
     if (isPdfFile(path)) {
       content = ''; binaryContent = null; mode = 'global-normal';
-      // Clear old preview slot content immediately
       previewPane?.clearActiveSlot();
-      try {
-        const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number; page_dimensions: PdfPageDimensions[] }>('get_pdf_info', { path });
-        if (gen !== loadGeneration) return;
-        pdfPageCount = info.page_count; pdfCurrentPage = 0; pdfFileSize = info.file_size; pdfTitle = info.title; pdfPageDimensions = info.page_dimensions;
-        // Fetch outline (non-blocking, don't fail on outline errors)
-        fetchPdfOutline(path).then(outline => {
-          if (gen === loadGeneration) {
-            pdfOutline = outline;
-            if (outline.length > 0) pdfTocOpen = true;
-          }
-        }).catch((e) => { console.error('[pdf] outline fetch failed:', e); pdfOutline = []; });
-      } catch (error) {
-        if (gen !== loadGeneration) return;
-        console.error('Failed to load PDF:', error);
-        pdfPageCount = 0; pdfCurrentPage = 0; pdfPageDimensions = []; pdfOutline = [];
-      }
+      await pdfState.loadPdfInfo(path, gen);
       return;
     }
 
-    // Archive
+    // Archive (top-level)
     if (isArchiveFile(path)) {
       content = ''; binaryContent = null;
       destroyEditorSession(loadTabId);
-      mode = 'global-normal';
-      renderTrigger++;
+      mode = 'global-normal'; renderTrigger++;
       previewPane?.renderArchivePreview(path);
       return;
     }
 
     // Video
     if (isVideoFile(path)) {
-      try {
-        const result = await invoke<VideoMeta>('get_video_thumbnail', { path });
-        if (gen !== loadGeneration) return;
-        videoMeta = result; binaryContent = null; content = JSON.stringify(result);
-      } catch (error) {
-        if (gen !== loadGeneration) return;
-        videoMeta = null; binaryContent = null; content = String(error);
-      }
+      const result = await loadVideo(ctx, checkGen);
+      if ('aborted' in result) return;
+      videoMeta = result.videoMeta; binaryContent = result.binaryContent; content = result.content;
       mode = 'global-normal'; renderTrigger++;
       return;
     }
 
     // Text / binary
-    const MAX_PREVIEW_SIZE = 1024 * 1024; // 1MB
-    originalFileSize = 0;
-    try {
-      const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path });
-      if (gen !== loadGeneration) return;
-      originalFileSize = meta.size; currentFileMtime = meta.modified;
-    } catch { /* ignore */ }
-
-    const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
-    try {
-      const newContent = usePartial
-        ? await invoke<string>('read_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
-        : await invoke<string>('read_file', { path });
-      if (gen !== loadGeneration) return;
-      // Null bytes indicate binary data misread as text (from_utf8_lossy)
-      if (newContent.includes('\0')) {
-        try {
-          const base64 = usePartial
-            ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
-            : await invoke<string>('read_binary_file', { path });
-          if (gen !== loadGeneration) return;
-          const binary = atob(base64); const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          content = ''; binaryContent = bytes.buffer;
-        } catch {
-          if (gen !== loadGeneration) return;
-          content = ''; binaryContent = null;
-        }
-      } else {
-        content = newContent; binaryContent = null; savedContent = newContent;
-        readyTextContent = { tabId: loadTabId, path, generation: gen, content: newContent };
-      }
-    } catch {
-      if (gen !== loadGeneration) return;
-      destroyEditorSession(loadTabId);
-      try {
-        const base64 = usePartial
-          ? await invoke<string>('read_binary_file_partial', { path, maxBytes: MAX_PREVIEW_SIZE })
-          : await invoke<string>('read_binary_file', { path });
-        if (gen !== loadGeneration) return;
-        const binary = atob(base64); const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        content = ''; binaryContent = bytes.buffer;
-      } catch {
-        if (gen !== loadGeneration) return;
-        content = ''; binaryContent = null;
-      }
+    {
+      const result = await loadTextOrBinary(ctx, checkGen);
+      if ('aborted' in result) return;
+      content = result.content; binaryContent = result.binaryContent;
+      readyTextContent = result.readyTextContent;
+      originalFileSize = result.originalFileSize;
+      savedContent = result.savedContent;
+      fileWatcher.setFileMtime(result.fileMtime);
     }
+
     // Code files go directly to editor mode (no Shiki preview)
     if (readyTextContent && isDirectEditorFile(path)) {
-      // Initialize editor synchronously BEFORE changing mode so that when
-      // the editor container becomes visible (mode → editor-normal), the
-      // CodeMirror view is already attached — no blank frame or focus trap.
-      // editorInitInFlight prevents the mode effect from re-calling
-      // activateEditorSession (which would trigger an infinite update loop).
       editorInitInFlight = true;
-      if (!activateEditorSession(loadTabId, path)) {
-        initEditor(readyTextContent);
-      }
+      if (!activateEditorSession(loadTabId, path)) initEditor(readyTextContent);
       mode = 'editor-normal';
-      // editorInitInFlight is cleared by the mode effect
     } else {
       destroyEditorSession(loadTabId);
-      mode = 'global-normal';
-      renderTrigger++;
+      mode = 'global-normal'; renderTrigger++;
     }
-    startWatching(path);
+    fileWatcher.startWatching(path);
   }
 
   function scrollPreview(deltaY: number, deltaX: number = 0) {
@@ -851,7 +688,7 @@
     if (mode !== 'global-normal') return;
     // PDF mode: let PdfPreviewPanel handle all non-modifier keys
     if (filePath && isPdfFile(filePath) && !event.ctrlKey && !event.altKey && !event.metaKey) return;
-    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocHeadings.length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
+    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocState.getTocHeadings().length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }
@@ -880,7 +717,7 @@
         // Get actual file mtime after save so metadata check doesn't
         // falsely invalidate cached content on tab switch
         const meta = await invoke<{ modified: number }>('get_file_metadata', { path: filePath });
-        currentFileMtime = meta.modified;
+        fileWatcher.setFileMtime(meta.modified);
         const cached = tabCache.get(renderTabId);
         if (cached && cached.filePath === filePath) {
           cached.content = content;
@@ -899,15 +736,9 @@
   export function setContent(newContent: string) { content = newContent; savedContent = newContent; isModified = false; }
   export function getContent(): string { return content; }
   export function getFile(): string | null { return filePath; }
-  export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } { return { currentPage: pdfCurrentPage, pageCount: pdfPageCount, filePath }; }
-  export function togglePdfToc() {
-    if (pdfOutline.length === 0) return;
-    pdfTocOpen = !pdfTocOpen;
-    if (pdfTocOpen) { setTimeout(() => pdfTocSidebar?.focus(), 0); }
-  }
-  export function jumpToPdfPage(page: number) {
-    pdfPreviewPanel?.scrollToPage(page);
-  }
+  export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } { return { currentPage: pdfState.getPdfCurrentPage(), pageCount: pdfState.getPdfPageCount(), filePath }; }
+  export function togglePdfToc() { pdfState.togglePdfToc(); }
+  export function jumpToPdfPage(page: number) { pdfState.jumpToPdfPage(page); }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -930,8 +761,8 @@
         <span class="modified-indicator">●</span>
       {/if}
     {/if}
-      <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'} class:toc={mode === 'global-normal' && (tocFocused || pdfTocFocused)}>
-      {#if mode === 'global-normal' && (tocFocused || pdfTocFocused)}TOC{:else if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
+      <span class="mode-indicator" class:insert={mode === 'editor-insert'} class:normal={mode === 'editor-normal'} class:toc={mode === 'global-normal' && (tocState.getTocFocused() || pdfState.getPdfTocFocused())}>
+      {#if mode === 'global-normal' && (tocState.getTocFocused() || pdfState.getPdfTocFocused())}TOC{:else if mode === 'global-normal'}PREVIEW{:else if mode === 'editor-normal'}NORMAL{:else}INSERT{/if}
     </span>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <button
@@ -953,24 +784,24 @@
         </svg>
       {/if}
     </button>
-    {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal'}
+    {#if isMarkdown && tocState.getTocHeadings().length > 0 && mode === 'global-normal'}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <button
         class="toc-toggle"
-        class:closed={!tocOpen}
-        onclick={() => { tocOpen = !tocOpen; }}
-        title={tocOpen ? 'Hide outline' : 'Show outline'}
+        class:closed={!tocState.getTocOpen()}
+        onclick={() => { tocState.setTocOpen(!tocState.getTocOpen()); }}
+        title={tocState.getTocOpen() ? 'Hide outline' : 'Show outline'}
       >
         ☰
       </button>
     {/if}
-    {#if filePath && isPdfFile(filePath) && pdfOutline.length > 0 && mode === 'global-normal'}
+    {#if filePath && isPdfFile(filePath) && pdfState.getPdfOutline().length > 0 && mode === 'global-normal'}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <button
         class="toc-toggle"
-        class:closed={!pdfTocOpen}
-        onclick={() => togglePdfToc()}
-        title={pdfTocOpen ? 'Hide outline' : 'Show outline'}
+        class:closed={!pdfState.getPdfTocOpen()}
+        onclick={() => pdfState.togglePdfToc()}
+        title={pdfState.getPdfTocOpen() ? 'Hide outline' : 'Show outline'}
       >
         ☰
       </button>
@@ -981,27 +812,23 @@
     {#if filePath && isPdfFile(filePath) && mode === 'global-normal'}
       <div class="pdf-with-toc">
         <PdfPreviewPanel
-          bind:this={pdfPreviewPanel}
+          bind:this={pdfState.pdfPreviewPanel}
           pdfPath={filePath}
-          pageDimensions={pdfPageDimensions}
-          pageCount={pdfPageCount}
-          fileSize={pdfFileSize}
-          title={pdfTitle}
-          onPageChange={(page: number) => { pdfCurrentPage = page; }}
+          pageDimensions={pdfState.getPdfPageDimensions()}
+          pageCount={pdfState.getPdfPageCount()}
+          fileSize={pdfState.getPdfFileSize()}
+          title={pdfState.getPdfTitle()}
+          onPageChange={(page: number) => { pdfState.setPage(page); }}
           onFullscreen={() => onFullscreen()}
         />
-        {#if pdfOutline.length > 0 && pdfTocOpen}
+        {#if pdfState.getPdfOutline().length > 0 && pdfState.getPdfTocOpen()}
           <PdfTocSidebar
-            bind:this={pdfTocSidebar}
-            outline={pdfOutline}
-            currentPage={pdfCurrentPage}
-            pageDimensions={pdfPageDimensions}
-            onJump={(page, y) => {
-              if (page >= 0 && page < pdfPageCount) {
-                pdfPreviewPanel?.scrollToPage(page, y);
-              }
-            }}
-            onFocusChange={(focused) => { pdfTocFocused = focused; }}
+            bind:this={pdfState.pdfTocSidebar}
+            outline={pdfState.getPdfOutline()}
+            currentPage={pdfState.getPdfCurrentPage()}
+            pageDimensions={pdfState.getPdfPageDimensions()}
+            onJump={(page, y) => pdfState.jumpToPage(page, y)}
+            onFocusChange={(focused) => { pdfState.setTocFocused(focused); }}
             onExit={() => focusContent()}
           />
         {/if}
@@ -1015,12 +842,12 @@
       binaryContent={binaryContent}
       originalFileSize={originalFileSize}
       thumbnailMeta={thumbnailMeta}
-      currentFileMtime={currentFileMtime}
+      currentFileMtime={fileWatcher.getFileMtime()}
       isMarkdown={isMarkdown}
-      tocHeadings={tocHeadings}
-      tocActiveLine={tocActiveLine}
-      tocFocused={tocFocused}
-      tocOpen={tocOpen}
+      tocHeadings={tocState.getTocHeadings()}
+      tocActiveLine={tocState.getTocActiveLine()}
+      tocFocused={tocState.getTocFocused()}
+      tocOpen={tocState.getTocOpen()}
       pendingTocExpanded={pendingTocExpanded}
       pendingTocSelectedIndex={pendingTocSelectedIndex}
       pendingRestoreScrollTop={pendingRestoreScrollTop}
@@ -1031,10 +858,24 @@
       renderTrigger={renderTrigger}
       mode={mode}
       onTocJump={(_line) => {}}
-      onTocFocusChange={handleTocFocusChange}
-      onRenderComplete={() => {}}
-      onTocHeadingsChange={(h) => { tocHeadings = h; tocActiveLine = -1; }}
-      onTocActiveLineChange={(line) => { tocActiveLine = line; }}
+      onTocFocusChange={tocState.handleTocFocusChange}
+      onRenderComplete={() => {
+        // Apply pending scroll ratio after async render completes.
+        // pendingRestoreScrollRatio is set by the mode effect when exiting editor mode.
+        if (pendingRestoreScrollRatio >= 0) {
+          const ratio = pendingRestoreScrollRatio;
+          pendingRestoreScrollRatio = -1;
+          requestAnimationFrame(() => {
+            const slot = previewPane?.getActiveSlot();
+            if (slot) {
+              const maxScroll = slot.scrollHeight - slot.clientHeight;
+              if (maxScroll > 0) slot.scrollTop = ratio * maxScroll;
+            }
+          });
+        }
+      }}
+      onTocHeadingsChange={tocState.onHeadingsChange}
+      onTocActiveLineChange={tocState.onActiveLineChange}
     />
     </div>
     <TextEditorHost

@@ -558,6 +558,7 @@ export class MarkdownPreviewer implements Previewer {
 			mermaid.initialize({
 				startOnLoad: false,
 				theme: isDark ? 'dark' : 'default',
+				suppressErrorRendering: true,
 			});
 			const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
 			const { svg } = await mermaid.render(id, code);
@@ -566,6 +567,8 @@ export class MarkdownPreviewer implements Previewer {
 			wrapper.innerHTML = svg;
 			pre.replaceWith(wrapper);
 		} catch {
+			// Clean up any residual mermaid error SVGs from the DOM
+			document.querySelectorAll(`[id^="dmermaid-"]`).forEach(el => el.remove());
 			pre.classList.add('mermaid-error');
 		}
 	}

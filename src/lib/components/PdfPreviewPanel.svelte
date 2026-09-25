@@ -376,7 +376,6 @@
     const hasExplicitY = Number.isFinite(pdfY) && pdfY > 0 && pdfY < pageHeight;
     const yOffset = hasExplicitY ? (pageHeight - pdfY) * scale : 0;
     const target = Math.max(0, pageTop + yOffset);
-    console.log(`[pdf-nav] measure page=${pageNum} slotTop=${pageTop} yOffset=${yOffset.toFixed(1)} scale=${scale.toFixed(2)} target=${target.toFixed(1)}`);
     return target;
   }
 
@@ -754,6 +753,15 @@
   export function scrollToPage(pageNum: number, pdfY = 0) {
     if (!scrollEl || pageNum < 0 || pageNum >= totalPages) return;
     schedulePageJump(pageNum, pdfY);
+  }
+
+  // Direct scrollTop access for cache restore
+  export function getScrollTop(): number {
+    return scrollEl?.scrollTop ?? 0;
+  }
+
+  export function setScrollTop(top: number) {
+    if (scrollEl) scrollEl.scrollTop = top;
   }
 
   // Focus management
