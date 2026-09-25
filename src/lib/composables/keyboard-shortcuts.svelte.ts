@@ -201,7 +201,7 @@ function handleSwitchPanel(direction: 'left' | 'right') {
     } else if (current === 'current') {
       deps.focusPanel('preview');
     } else if (current === 'preview') {
-      if (l.previewExpanded && deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
+      if (deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
         deps.getPreviewEditor().focusToc();
       }
     }

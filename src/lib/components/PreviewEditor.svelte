@@ -1,70 +1,31 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
-  import { PreviewRouter } from '$lib/previewers';
   import type { VideoMeta, TocHeading } from '$lib/previewers';
   import { isTextFile, isImageFile, isPdfFile, isVideoFile, isArchiveFile } from '$lib/utils/file-types';
-  import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
-  import TocSidebar from './TocSidebar.svelte';
   import { EditorView } from 'codemirror';
-  import { EditorState, StateField, StateEffect, Compartment } from '@codemirror/state';
-  import {
-    keymap, Decoration, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
-    drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine,
-  } from '@codemirror/view';
-  import { search, SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel, highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-  import {
-    indentUnit, foldGutter, indentOnInput, bracketMatching,
-    syntaxHighlighting, defaultHighlightStyle, foldKeymap,
-  } from '@codemirror/language';
-  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-  import { history, historyKeymap, defaultKeymap, toggleComment } from '@codemirror/commands';
-  import { lintKeymap } from '@codemirror/lint';
-  import { vim, Vim, getCM } from '@replit/codemirror-vim';
-  import { getLanguage } from '$lib/utils/language';
-  import { pythonCompletionSource } from '$lib/completions/python-completion';
-  import { pythonLanguage } from '@codemirror/lang-python';
-  import { createVimCommandHandler, setupAllVimCommands, getRegistersOutput } from '$lib/utils/vim-commands';
-  import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { closeSearchPanel } from '@codemirror/search';
+  import type { ClipboardBridge } from '$lib/utils/clipboard-bridge';
   import PdfPreviewPanel from './PdfPreviewPanel.svelte';
   import PdfTocSidebar from './PdfTocSidebar.svelte';
   import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
   import { fetchPdfOutline } from '$lib/utils/pdf-shared';
-  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
-  import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
-  import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
+  import { getEditorIndentPolicy } from '$lib/utils/editor-indent-policy';
   import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
-  import {
-    EDITOR_TAB_SIZE,
-    editorAutocompleteKeymap,
-    handleInsertModeEnter,
-    handleInsertModeShiftTab,
-    handleInsertModeTab,
-  } from '$lib/utils/editor-text-keys';
+  import { handleInsertModeShiftTab, handleInsertModeTab } from '$lib/utils/editor-text-keys';
   import {
     type TextContentSnapshot,
-    type TabEditorCache,
     TabCacheManager,
     collectExpandedLines,
     restoreExpandedLines,
   } from '$lib/utils/tab-cache';
-  import {
-    isDirectEditorFile,
-    formatSize,
-    loadArchiveDirectory,
-    loadArchiveFile,
-    loadImage,
-    loadPdf,
-    loadVideo,
-    loadTextFile,
-  } from '$lib/utils/file-loader';
-  import PreviewPane from './PreviewPane.svelte';
+  import { isDirectEditorFile, formatSize } from '$lib/utils/file-loader';
   import TextEditorHost from './TextEditorHost.svelte';
   import VimOverlay from './VimOverlay.svelte';
-  import { sMatchField, triggerSMatchUpdate, clearSMatch } from '$lib/utils/vim-smatch';
+  import PreviewPane from './PreviewPane.svelte';
 
   interface FileEntry {
     name: string;
@@ -113,17 +74,11 @@
   let originalFileSize: number = $state(0);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
-  let previewArea: HTMLElement | undefined = $state(undefined);
-  let previewWithToc: HTMLElement | undefined = $state(undefined);
-  let editorContainer: HTMLElement | undefined = $state(undefined);
   let panelElement: HTMLElement | undefined = $state(undefined);
-  let previewRouter: PreviewRouter | undefined;
-  let directoryPreviewer: DirectoryPreviewer | undefined;
   let editorView: EditorView | undefined = $state(undefined);
   let editorFilePath: string | null = $state(null);
   let archiveEditPath: string | null = $state(null);
   let archiveEditInternalPath: string | null = $state(null);
-  let themeObserver: MutationObserver | null = null;
   let loadGeneration: number = 0;
   let readyTextContent = $state<TextContentSnapshot | null>(null);
   let codeFileDirectEdit = $derived(
@@ -135,143 +90,40 @@
     readyTextContent.generation === loadGeneration &&
     isDirectEditorFile(filePath)
   );
-  let overlayElement: HTMLElement | undefined = $state(undefined);
-  let renderRequestId: number = 0;
-
-  interface EditorSession {
-    tabId: number;
-    filePath: string;
-    host: HTMLDivElement;
-    view: EditorView;
-    lineNumberCompartment: Compartment;
-    themeCompartment: Compartment;
-    resizeObserver: ResizeObserver;
-    clipboardBridge: ClipboardBridge;
-  }
-  const editorSessions = new Map<number, EditorSession>();
-
-  function tracePerformance(name: string, start: string): void {
-    if (!import.meta.env.DEV || typeof performance === 'undefined') return;
-    performance.mark(name);
-    const measure = performance.measure(name, start, name);
-    if (measure.duration > 16) console.debug(`[PreviewEditor] ${name}: ${measure.duration.toFixed(1)}ms`);
-  }
+  let textEditorHost: TextEditorHost | undefined = $state(undefined);
+  let vimOverlay: VimOverlay | undefined = $state(undefined);
+  let previewPane: PreviewPane | undefined = $state(undefined);
+  let renderTrigger: number = $state(0);
+  let editorInitInFlight: boolean = false;
+  let suppressModeEffect: boolean = false;
 
   function destroyEditorSession(tabId: number): void {
-    const session = editorSessions.get(tabId);
-    if (!session) return;
-    session.resizeObserver.disconnect();
-    session.clipboardBridge.dispose();
-    teardownVimLineNumbers(session.view);
-    session.view.destroy();
-    session.host.remove();
-    editorSessions.delete(tabId);
-    if (editorView === session.view) {
-      editorView = undefined;
-      editorFilePath = null;
-      clipboardBridge = null;
-    }
+    textEditorHost?.destroySession(tabId);
   }
 
   function activateEditorSession(tabId: number, path: string): boolean {
-    const session = editorSessions.get(tabId);
-    if (!session || session.filePath !== path) return false;
-    if (import.meta.env.DEV) performance.mark('vim-session-activate-start');
-    for (const candidate of editorSessions.values()) {
-      candidate.host.style.display = candidate === session ? 'block' : 'none';
-    }
-    editorView = session.view;
-    editorFilePath = session.filePath;
-    clipboardBridge = session.clipboardBridge;
-    let savedTopToRestore: number | null = null;
-    if (pendingEditorPos >= 0 && pendingEditorPos <= session.view.state.doc.length) {
-      session.view.dispatch({ selection: { anchor: pendingEditorPos } });
-      pendingEditorPos = -1;
-    }
-    if (pendingEditorScrollTop >= 0) {
-      savedTopToRestore = pendingEditorScrollTop;
-      pendingEditorScrollTop = -1;
-    }
-    void refreshEditorLayoutAfterPaint(session, () => {
-      if (savedTopToRestore !== null) session.view.scrollDOM.scrollTop = savedTopToRestore;
-    });
-    if (import.meta.env.DEV) tracePerformance('vim-session-activate', 'vim-session-activate-start');
-    return true;
+    return textEditorHost?.activateSession(tabId, path) ?? false;
   }
 
   function hideEditorSessions(): void {
-    for (const session of editorSessions.values()) session.host.style.display = 'none';
-  }
-
-  function nextAnimationFrame(): Promise<void> {
-    return new Promise(resolve => requestAnimationFrame(() => resolve()));
-  }
-
-  function isVisibleBox(element: HTMLElement | undefined): boolean {
-    if (!element || element.getClientRects().length === 0) return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  function isActiveEditorSession(session: EditorSession): boolean {
-    return editorSessions.get(session.tabId) === session
-      && editorView === session.view
-      && renderTabId === session.tabId
-      && filePath === session.filePath;
-  }
-
-  function getSessionForView(view: EditorView): EditorSession | undefined {
-    for (const session of editorSessions.values()) {
-      if (session.view === view) return session;
-    }
-  }
-
-  function clampEditorScroll(view: EditorView): void {
-    const s = view.scrollDOM;
-    s.scrollTop = Math.max(0, Math.min(s.scrollTop, s.scrollHeight - s.clientHeight));
-  }
-
-  function hasStableEditorLayout(session: EditorSession): boolean {
-    return isVisibleBox(editorContainer)
-      && isVisibleBox(session.host)
-      && isVisibleBox(session.view.dom)
-      && isVisibleBox(session.view.scrollDOM);
-  }
-
-  async function waitForStableEditorLayout(session: EditorSession, maxFrames: number = 6): Promise<boolean> {
-    await tick();
-    for (let i = 0; i < maxFrames; i++) {
-      if (!isActiveEditorSession(session)) return false;
-      await nextAnimationFrame();
-      if (!isActiveEditorSession(session)) return false;
-      session.view.requestMeasure();
-      if (hasStableEditorLayout(session)) return true;
-    }
-    return isActiveEditorSession(session) && hasStableEditorLayout(session);
-  }
-
-  async function refreshEditorLayoutAfterPaint(session: EditorSession, applyAfterMeasure?: () => void): Promise<void> {
-    if (!await waitForStableEditorLayout(session)) return;
-    if (!isActiveEditorSession(session)) return;
-    session.view.requestMeasure();
-    await nextAnimationFrame();
-    if (!isActiveEditorSession(session)) return;
-    applyAfterMeasure?.();
-    clampEditorScroll(session.view);
-    session.view.requestMeasure();
+    textEditorHost?.hideAllSessions();
   }
 
   function focusActiveEditor(): void {
-    if (mode === 'editor-normal' && overlayElement) {
-      clipboardBridge?.refresh();
-      overlayElement.focus({ preventScroll: true });
-    } else if (mode === 'editor-insert' && editorView) {
-      editorView.focus();
+    // Focus VimOverlay's overlay which has the keydown handler,
+    // NOT TextEditorHost's overlay (which has no keydown handler).
+    if (mode === 'editor-normal') {
+      const overlay = vimOverlay?.getOverlayElement();
+      if (overlay) {
+        overlay.focus({ preventScroll: true });
+        return;
+      }
     }
+    textEditorHost?.focusActiveEditor();
   }
 
   export function focusActiveInput(): void {
-    if (!outputVisible) focusActiveEditor();
+    if (!vimOverlay?.getOutputVisible()) focusActiveEditor();
   }
 
   export function prepareTabFocus(
@@ -279,10 +131,17 @@
     path: string | null,
     targetMode: 'editor-normal' | 'editor-insert' | 'global-normal',
   ): boolean {
-    if (!path || targetMode === 'global-normal' || !activateEditorSession(tabId, path)) return false;
+    if (!path || targetMode === 'global-normal') return false;
+    // Suppress mode effect to prevent infinite loop when mode actually changes:
+    // activateEditorSession updates editorView → triggers mode effect → calls activateEditorSession again
+    const willChangeMode = mode !== targetMode;
+    if (willChangeMode) suppressModeEffect = true;
+    if (!activateEditorSession(tabId, path)) {
+      suppressModeEffect = false;
+      return false;
+    }
     mode = targetMode;
-    if (previewWithToc) previewWithToc.style.display = 'none';
-    if (editorContainer) editorContainer.style.display = 'block';
+    // suppressModeEffect is cleared by the mode effect (only set if mode actually changed)
     focusActiveEditor();
     return true;
   }
@@ -290,13 +149,14 @@
   // TOC state
   let tocHeadings: TocHeading[] = $state([]);
   let tocActiveLine: number = $state(-1);
-  let tocSidebar: TocSidebar | undefined = $state(undefined);
   let pdfPreviewPanel: PdfPreviewPanel | undefined = $state(undefined);
   let tocFocused: boolean = $state(false);
   let tocOpen: boolean = $state(true);
   let pendingTocExpanded: Set<number> | null = null;
-  let scrollObserver: IntersectionObserver | undefined;
   let isMarkdown: boolean = $state(false);
+  let isDirectory: boolean = $state(false);
+  // File will go to editor (independent of content load state) — suppress preview rendering
+  let directEdit = $derived(!!filePath && !binaryContent && !isDirectory && isDirectEditorFile(filePath));
   let editorTargetLine: number = -1;
   let pendingEditorPos: number = -1;
   let pendingEditorScrollTop: number = -1;
@@ -308,49 +168,9 @@
   let currentFileMtime: number = 0;
   let fileChangedUnlisten: (() => void) | null = null;
 
-  // Per-tab persistent preview slots.
-  // Each tabId gets its own DOM container; slots stay in the document.
-  // Switching tabs only detaches/attaches slots — no DOM tree is moved,
-  // so the browser does not re-layout on every tab switch.
-  const tabSlots = new Map<number, HTMLDivElement>();
-
-  function getActiveSlot(): HTMLDivElement | undefined {
-    return tabSlots.get(renderTabId);
-  }
-
-  function getOrCreateSlot(tabId: number): HTMLDivElement {
-    let slot = tabSlots.get(tabId);
-    if (!slot) {
-      slot = document.createElement('div');
-      slot.className = 'tab-preview-slot';
-      slot.style.zIndex = '0';
-      const fm = getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim();
-      if (fm) slot.style.fontFamily = fm;
-      previewArea?.appendChild(slot);
-      tabSlots.set(tabId, slot);
-    }
-    return slot;
-  }
-
-  function showTabSlot(tabId: number) {
-    // All slots remain visible — only z-index is toggled.
-    // This avoids any layout invalidation (display/visibility changes
-    // may cause browsers to discard cached layout for hidden elements).
-    for (const [id, slot] of tabSlots) {
-      slot.style.zIndex = id === tabId ? '1' : '0';
-    }
-  }
-
-  let renderInFlight: boolean = false;
-  let renderQueued: boolean = false;
-
   export function clearTabCache(tabId: number) {
     tabCache.delete(tabId);
-    const slot = tabSlots.get(tabId);
-    if (slot) {
-      slot.remove();
-      tabSlots.delete(tabId);
-    }
+    previewPane?.clearSlot(tabId);
     destroyEditorSession(tabId);
   }
 
@@ -361,17 +181,23 @@
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
-      previewScrollTop: tabSlots.get(tabId)?.scrollTop ?? 0,
+      previewScrollTop: previewPane?.getScrollTop() ?? 0,
       isModified, pdfCurrentPage, pdfPageCount, pdfPageDimensions: [...pdfPageDimensions], pdfOutline: [...pdfOutline], pdfTocOpen, fileMtime: currentFileMtime,
       tocOpen, tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
-      tocFocused, tocSelectedIndex: tocSidebar?.getSelectedIndex() ?? -1,
+      tocFocused, tocSelectedIndex: previewPane?.getTocSelectedIndex() ?? -1,
     });
   }
 
   export function deactivateTab() {
     // Visual cleanup only: reset mode so the editor is hidden during tab
     // switch. editorView is NOT destroyed here — teardown is loadFile's job.
+    // Clear content to prevent the render effect from firing with stale content
+    // when mode changes to 'global-normal'. Without this, the render effect would
+    // start an async render with old content, clearing the slot and causing a blank
+    // flash + scroll position loss when loadFile subsequently sets new content.
+    content = '';
+    binaryContent = null;
     mode = 'global-normal';
   }
 
@@ -385,7 +211,7 @@
   } {
     return {
       mode,
-      previewScrollTop: getActiveSlot()?.scrollTop ?? 0,
+      previewScrollTop: previewPane?.getScrollTop() ?? 0,
       isModified, pdfCurrentPage,
       tocOpen, tocExpandedLines: collectExpandedLines(tocHeadings),
     };
@@ -420,8 +246,7 @@
     if (a !== b) return;
     if (mode !== 'global-normal') return;
     tabCache.delete(renderTabId);
-    const slot = tabSlots.get(renderTabId);
-    if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
+    previewPane?.clearActiveSlot();
     await loadFile(filePath);
   }
 
@@ -438,33 +263,15 @@
     }
   });
 
-  // When the active/preview tab changes, show the target slot.
-  // Only clear the slot's content if it holds a different file;
-  // keeping the rendered DOM for the same file avoids expensive
-  // re-renders (especially for markdown with syntax highlighting).
-  $effect(() => {
-    const t0 = performance.now();
-    const slot = tabSlots.get(renderTabId);
-    const cleared = slot && slot.dataset.filePath !== filePath;
-    if (cleared) {
-      slot.innerHTML = '';
-      delete slot.dataset.rendered;
-      delete slot.dataset.filePath;
-      delete slot.dataset.fileMtime;
-    }
-    showTabSlot(renderTabId);
-    const t1 = performance.now();
-    if (t1 - t0 > 1 || cleared) {
-      console.log(`[tab-perf] preview showSlot tab=${renderTabId} cleared=${cleared} time=${(t1-t0).toFixed(1)}ms`);
-    }
-  });
-
   // Re-focus overlay after mouse selection (mouseup may fire outside editor panel)
   $effect(() => {
-    if (mode !== 'editor-normal' || !overlayElement) return;
+    if (mode !== 'editor-normal') return;
+    const overlay = vimOverlay?.getOverlayElement();
+    if (!overlay) return;
     function handleDocMouseUp() {
       requestAnimationFrame(() => {
-        if (overlayElement && mode === 'editor-normal' && activeColumn === 'preview' && document.activeElement !== overlayElement) {
+        const ov = vimOverlay?.getOverlayElement();
+        if (ov && mode === 'editor-normal' && activeColumn === 'preview' && document.activeElement !== ov) {
           focusActiveEditor();
         }
       });
@@ -474,19 +281,20 @@
   });
 
   $effect(() => {
-    if (!overlayElement) return;
+    const overlay = vimOverlay?.getOverlayElement();
+    if (!overlay) return;
     const blockComposition = (event: CompositionEvent) => { event.preventDefault(); event.stopPropagation(); };
-    overlayElement.addEventListener('compositionstart', blockComposition, true);
-    overlayElement.addEventListener('compositionend', blockComposition, true);
+    overlay.addEventListener('compositionstart', blockComposition, true);
+    overlay.addEventListener('compositionend', blockComposition, true);
     return () => {
-      overlayElement?.removeEventListener('compositionstart', blockComposition, true);
-      overlayElement?.removeEventListener('compositionend', blockComposition, true);
+      overlay.removeEventListener('compositionstart', blockComposition, true);
+      overlay.removeEventListener('compositionend', blockComposition, true);
     };
   });
 
   // Auto-focus output panel when it becomes visible
   $effect(() => {
-    if (outputVisible) {
+    if (vimOverlay?.getOutputVisible()) {
       requestAnimationFrame(() => {
         const el = document.querySelector('.panel-output') as HTMLElement | null;
         if (el) el.focus();
@@ -501,20 +309,17 @@
     if (loadKey === _prevLoadKey) return;
     _prevLoadKey = loadKey;
     if (filePath) {
-      const t0 = performance.now();
-      getOrCreateSlot(renderTabId);
-      showTabSlot(renderTabId);
+      // Reset isDirectory immediately so the auto-render effect doesn't use
+      // stale state from a previous tab (e.g. directory → file switch).
+      isDirectory = false;
+      previewPane?.prepareForLoad();
       loadFile(filePath);
-      const t1 = performance.now();
-      console.log(`[tab-perf] preview loadFile dispatch tab=${renderTabId} file=${filePath.split(/[/\\]/).pop()} time=${(t1-t0).toFixed(1)}ms`);
     }
   });
 
   onDestroy(() => {
-    previewRouter?.dispose();
-    for (const tabId of [...editorSessions.keys()]) destroyEditorSession(tabId);
-    scrollObserver?.disconnect();
-    themeObserver?.disconnect();
+    // Editor sessions are destroyed by TextEditorHost's onDestroy
+    // Preview resources are destroyed by PreviewPane's onDestroy
     stopWatching();
     if (fileChangedUnlisten) { fileChangedUnlisten(); fileChangedUnlisten = null; }
   });
@@ -530,59 +335,67 @@
     const changed = m !== prevMode;
     prevMode = m;
     if (m === 'editor-normal' || m === 'editor-insert') {
-      if (previewWithToc) previewWithToc.style.display = 'none';
-      if (editorContainer) editorContainer.style.display = 'block';
-      const activeSession = editorView ? getSessionForView(editorView) : undefined;
-      if (activeSession && isActiveEditorSession(activeSession)) {
-        void refreshEditorLayoutAfterPaint(activeSession);
+      // Clear preview slot content to prevent stale preview flash during mode transition
+      previewPane?.clearActiveSlot();
+      // activateEditorSession/initEditor update editorView state which would
+      // re-trigger this effect. Use untrack() to prevent the dependency.
+      const activeSession = textEditorHost?.getActiveEditorSession();
+      if (activeSession && textEditorHost?.isActiveSession(activeSession)) {
+        void textEditorHost?.refreshLayout(activeSession);
       }
       const textSnapshot = readyTextContent;
       if (!textSnapshot || !isCurrentTextSnapshot(textSnapshot)) {
         return;
       }
-      if (activateEditorSession(renderTabId, textSnapshot.path)) {
-        if (editorTargetLine >= 0 && editorView) moveCursorToLine(editorTargetLine);
+      if (untrack(() => activateEditorSession(renderTabId, textSnapshot.path))) {
+        pendingEditorPos = -1;
+        pendingEditorScrollTop = -1;
+        if (editorTargetLine >= 0 && editorView) { textEditorHost?.moveCursorToLine(editorTargetLine); editorTargetLine = -1; }
         if (changed && activeColumn === 'preview') focusActiveEditor();
-      } else if (editorContainer && (!editorSessions.has(textSnapshot.tabId) || editorSessions.get(textSnapshot.tabId)?.filePath !== textSnapshot.path)) {
+      } else if (!textEditorHost?.hasSession(textSnapshot.tabId) || textEditorHost?.getEditorSession(textSnapshot.tabId)?.filePath !== textSnapshot.path) {
         requestAnimationFrame(() => {
           if (mode !== 'editor-normal' && mode !== 'editor-insert') return;
           if (!isCurrentTextSnapshot(textSnapshot)) return;
-          if (editorContainer && (!editorSessions.has(textSnapshot.tabId) || editorSessions.get(textSnapshot.tabId)?.filePath !== textSnapshot.path)) {
-            initEditor(textSnapshot);
+          if (!textEditorHost?.hasSession(textSnapshot.tabId) || textEditorHost?.getEditorSession(textSnapshot.tabId)?.filePath !== textSnapshot.path) {
+            untrack(() => initEditor(textSnapshot));
+            pendingEditorPos = -1;
+            pendingEditorScrollTop = -1;
             if (activeColumn === 'preview') focusActiveEditor();
           }
         });
       } else if (editorView && editorTargetLine >= 0 && changed) {
-        moveCursorToLine(editorTargetLine);
+        textEditorHost?.moveCursorToLine(editorTargetLine);
+        editorTargetLine = -1;
       }
-      if (changed && activeColumn === 'preview' && editorView && editorFilePath === filePath) focusActiveEditor();
+      if (changed && activeColumn === 'preview' && editorView && textEditorHost?.getEditorFilePath() === filePath) focusActiveEditor();
     } else {
-      // Read editor scroll position BEFORE hiding editorContainer
-      // (hidden container has zero layout, making lineBlockAtHeight unreliable)
-      let pendingPreviewLine = -1;
+      editorInitInFlight = false; // safety reset
+      suppressModeEffect = false; // safety reset
+      // Read editor scroll position BEFORE hiding editor container
+      // (hidden container has zero layout, making scroll measurements unreliable)
+      let editorScrollRatio = -1;
       if (changed && editorView) {
-        const vh = editorView.scrollDOM.clientHeight;
-        const centerY = editorView.scrollDOM.scrollTop + vh / 2;
-        const block = editorView.lineBlockAtHeight(centerY);
-        if (block) {
-          pendingPreviewLine = editorView.state.doc.lineAt(block.from).number - 1;
+        const scrollDOM = editorView.scrollDOM;
+        const scrollHeight = scrollDOM.scrollHeight - scrollDOM.clientHeight;
+        if (scrollHeight > 0) {
+          editorScrollRatio = scrollDOM.scrollTop / scrollHeight;
         }
       }
-      if (previewWithToc) previewWithToc.style.display = (filePath && isPdfFile(filePath)) ? 'none' : '';
-      if (editorContainer) editorContainer.style.display = 'none';
       hideEditorSessions();
       if (editorView) closeSearchPanel(editorView);
-      if (pendingPreviewLine >= 0) {
-        const targetLine = pendingPreviewLine;
+      // Restore preview scroll to match editor's current viewport position
+      if (changed && editorScrollRatio >= 0) {
+        const ratio = editorScrollRatio;
         requestAnimationFrame(() => {
-          const slot = getActiveSlot();
-          const el = slot?.querySelector(`[data-line="${targetLine}"]`);
-          if (el) el.scrollIntoView({ block: 'center', behavior: 'auto' });
+          const slot = previewPane?.getActiveSlot();
+          if (slot) {
+            const maxScroll = slot.scrollHeight - slot.clientHeight;
+            if (maxScroll > 0) slot.scrollTop = ratio * maxScroll;
+          }
         });
       }
       if (changed && codeFileDirectEdit) {
-        const slot = getActiveSlot();
-        if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
+        previewPane?.clearActiveSlot();
       }
       if (changed && panelElement && !tocFocused && activeColumn === 'preview') {
         panelElement.focus();
@@ -590,39 +403,11 @@
     }
   });
 
-  // Render preview when content is ready and in preview mode.
-  // For fresh loads, loadFile calls renderPreview() directly with the correct
-  // content — this effect handles re-renders triggered by mode transitions
-  // (e.g. leaving editor mode) and file-changed events.
-  $effect(() => {
-    if (mode !== 'global-normal') return;
-    if (!previewArea || !filePath) return;
-    if (isPdfFile(filePath)) return; // PDF uses PdfPreviewPanel component
-    if (codeFileDirectEdit && content) {
-      renderSimpleCodePreview();
-    } else if (content || binaryContent) {
-      renderPreview();
-    }
-  });
-
-  function renderSimpleCodePreview() {
-    const slot = getOrCreateSlot(renderTabId);
-    showTabSlot(renderTabId);
-    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath) return;
-    slot.innerHTML = '';
-    slot.dataset.filePath = filePath || '';
-    slot.dataset.rendered = 'true';
-    const pre = document.createElement('pre');
-    pre.style.cssText = 'margin:0;white-space:pre-wrap;word-break:break-all;font-family:var(--font-mono);font-size:13px;line-height:1.5;color:var(--text-primary);';
-    pre.textContent = content;
-    slot.appendChild(pre);
-  }
-
   export function getMode(): string { return mode; }
   export function getIsModified(): boolean { return isModified; }
 
   function handlePanelFocus() {
-    if (outputVisible) return;
+    if (vimOverlay?.getOutputVisible()) return;
     if (mode === 'global-normal' && filePath && isPdfFile(filePath)) {
       pdfPreviewPanel?.focusPanel();
       return;
@@ -648,56 +433,9 @@
     handleInsertModeShiftTab(editorView, { indentPolicy: getEditorIndentPolicy(editorFilePath || filePath) });
   }
 
-  function getPreviewRouter(): PreviewRouter {
-    if (!previewRouter) {
-      previewRouter = new PreviewRouter();
-      previewRouter.onHeadings = (headings: TocHeading[]) => { tocHeadings = headings; tocActiveLine = -1; };
-    }
-    return previewRouter;
-  }
-
-  function getDirectoryPreviewer(): DirectoryPreviewer {
-    if (!directoryPreviewer) { directoryPreviewer = new DirectoryPreviewer(); }
-    return directoryPreviewer;
-  }
-
-  function setupScrollObserver() {
-    scrollObserver?.disconnect();
-    const slot = getActiveSlot();
-    if (!slot || !isMarkdown) return;
-    const headings = slot.querySelectorAll('h1, h2, h3, h4, h5, h6');
-    if (headings.length === 0) return;
-    headings.forEach((el, i) => { if (!el.id) el.id = `heading-${i}`; });
-    scrollObserver = new IntersectionObserver(
-      (entries) => {
-        let topEntry: IntersectionObserverEntry | null = null;
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            if (!topEntry || entry.boundingClientRect.top < topEntry.boundingClientRect.top) {
-              topEntry = entry;
-            }
-          }
-        }
-        if (topEntry) {
-          const line = parseInt((topEntry.target as HTMLElement).dataset.line || '-1');
-          if (line >= 0) { tocActiveLine = line; }
-        }
-      },
-      { root: slot, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
-    );
-    headings.forEach((el) => { scrollObserver!.observe(el); });
-  }
-
-  function handleTocJump(line: number) {
-    const slot = getActiveSlot();
-    if (!slot) return;
-    const heading = slot.querySelector(`[data-line="${line}"]`);
-    if (heading) { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); tocActiveLine = line; }
-  }
-
   export function isTocVisible(): boolean {
     return mode === 'global-normal' && (
-      (isMarkdown && tocHeadings.length > 0 && tocOpen)
+      previewPane?.isTocVisible() === true
       || (isPdfFile(filePath || '') && pdfOutline.length > 0 && pdfTocOpen)
     );
   }
@@ -711,7 +449,7 @@
     }
     tocFocused = true;
     onToast('Focus: TOC');
-    tocSidebar?.focus();
+    previewPane?.focusToc();
   }
   export function focusContent() {
     tocFocused = false;
@@ -739,7 +477,6 @@
   let pdfTocSidebar: PdfTocSidebar | undefined = $state(undefined);
 
   async function loadFile(path: string) {
-    const t0 = performance.now();
     const gen = ++loadGeneration;
     const fileName = path.split(/[/\\]/).pop() || path;
 
@@ -761,6 +498,10 @@
     const cached = tabCache.get(loadTabId);
     if (cached && cached.filePath === path && !browsingArchive) {
       if (gen !== loadGeneration) return;
+      // Bring cached slot to front FIRST to hide old tab's content immediately.
+      // Slot retains its rendered content and scroll position from the previous visit.
+      previewPane?.prepareForLoad();
+      console.log(`[loadFile-CACHE] tab=${loadTabId} path=${path?.split(/[/\\]/).pop()} cachedScroll=${cached.previewScrollTop} cachedMtime=${cached.fileMtime} cachedContentLen=${cached.content?.length ?? 0}`);
       content = cached.content;
       savedContent = cached.savedContent;
       binaryContent = cached.binaryContent;
@@ -792,16 +533,22 @@
         tocHeadings = cached.tocHeadings;
       }
       mode = cached.mode;
-      const tCache = performance.now();
       if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
         pendingEditorPos = cached.editorCursorPos;
         pendingEditorScrollTop = cached.editorScrollTop;
       }
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
-        renderPreview();
+        renderTrigger++;
       }
-      const tRender = performance.now();
-      console.log(`[tab-perf] loadFile CACHE_HIT tab=${loadTabId} file=${fileName} cacheRestore=${(tCache-t0).toFixed(1)}ms render=${(tRender-tCache).toFixed(1)}ms total=${(tRender-t0).toFixed(1)}ms`);
+      // Restore preview scroll position directly (slot content is already cached).
+      if (cached.previewScrollTop > 0) {
+        const savedScroll = cached.previewScrollTop;
+        requestAnimationFrame(() => {
+          const slot = previewPane?.getActiveSlot();
+          console.log(`[loadFile-CACHE rAF] tab=${loadTabId} savedScroll=${savedScroll} slot.scrollTop=${slot?.scrollTop} slot.scrollHeight=${slot?.scrollHeight}`);
+          slot?.scrollTo(0, savedScroll);
+        });
+      }
       startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
@@ -809,14 +556,20 @@
       return;
     }
 
-    // Reset content immediately so the render $effect (which fires before
-    // async loadFile completes) does not render stale data from a previous file.
+    // Bring new tab's slot to front FIRST to hide old tab's content immediately.
+    previewPane?.prepareForLoad();
+    // Reset content so the render $effect does not render stale data from a previous file.
     content = '';
     binaryContent = null;
     readyTextContent = null;
+    previewPane?.bumpContentGeneration();
     pendingRestoreScrollTop = -1;
     isModified = false;
+    isDirectory = false;
+    currentFileMtime = 0;
     mode = 'global-normal';
+    // Clear slot content for fresh load (no cached content to display).
+    previewPane?.clearActiveSlot();
 
     const ext = path.split('.').pop()?.toLowerCase() || '';
     isMarkdown = ext === 'md' || ext === 'markdown';
@@ -839,9 +592,9 @@
           content = ''; binaryContent = null;
           destroyEditorSession(loadTabId);
           mode = 'global-normal';
-          const slot = getOrCreateSlot(renderTabId);
-          showTabSlot(renderTabId);
-          slot.dataset.filePath = path;
+          previewPane?.prepareForLoad();
+          const slot = previewPane?.getActiveSlot();
+          if (slot) slot.dataset.filePath = path;
           const rows = dirEntries.map((entry: any) => {
             const safeName = entry.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             const name = entry.is_dir ? safeName + '/' : safeName;
@@ -850,7 +603,7 @@
             const sizeClass = entry.is_dir ? 'dir' : 'file';
             return `<div class="dir-entry"><span class="${nameClass}">${name}</span><span class="entry-size ${sizeClass}">${size}</span></div>`;
           });
-          slot.innerHTML = dirEntries.length === 0
+          if (slot) slot.innerHTML = dirEntries.length === 0
             ? '<p class="preview-empty">Empty directory</p>'
             : `<div class="dir-list">${rows.join('')}</div>`;
           stopWatching();
@@ -875,18 +628,23 @@
           readyTextContent = null;
           destroyEditorSession(loadTabId);
           mode = 'global-normal';
-          renderPreview();
+          renderTrigger++;
         } else {
           const text = new TextDecoder().decode(uint8.slice(0, Math.min(uint8.length, 1024 * 1024)));
           content = text;
           binaryContent = null;
           readyTextContent = { tabId: loadTabId, path, generation: gen, content };
           if (isDirectEditorFile(path)) {
+            editorInitInFlight = true;
+            if (!activateEditorSession(loadTabId, path)) {
+              initEditor(readyTextContent);
+            }
             mode = 'editor-normal';
+            // editorInitInFlight is cleared by the mode effect
           } else {
             destroyEditorSession(loadTabId);
             mode = 'global-normal';
-            renderPreview();
+            renderTrigger++;
           }
         }
         stopWatching();
@@ -897,7 +655,7 @@
         readyTextContent = null;
         destroyEditorSession(loadTabId);
         mode = 'global-normal';
-        renderPreview();
+        renderTrigger++;
         stopWatching();
         return;
       }
@@ -910,7 +668,8 @@
       content = ''; binaryContent = null;
       destroyEditorSession(loadTabId);
       mode = 'global-normal';
-      renderDirectoryPreview();
+      isDirectory = true;
+      renderTrigger++;
       stopWatching();
       return;
     } catch { /* not a directory */ }
@@ -948,7 +707,7 @@
         binaryContent = null; thumbnailMeta = null; content = '';
       }
       mode = 'global-normal';
-      renderPreview();
+      renderTrigger++;
       return;
     }
 
@@ -956,15 +715,13 @@
     if (isPdfFile(path)) {
       content = ''; binaryContent = null; mode = 'global-normal';
       // Clear old preview slot content immediately
-      const slot = getActiveSlot();
-      if (slot) { slot.innerHTML = ''; delete slot.dataset.rendered; }
+      previewPane?.clearActiveSlot();
       try {
         const info = await invoke<{ page_count: number; title: string | null; author: string | null; file_size: number; page_dimensions: PdfPageDimensions[] }>('get_pdf_info', { path });
         if (gen !== loadGeneration) return;
         pdfPageCount = info.page_count; pdfCurrentPage = 0; pdfFileSize = info.file_size; pdfTitle = info.title; pdfPageDimensions = info.page_dimensions;
         // Fetch outline (non-blocking, don't fail on outline errors)
         fetchPdfOutline(path).then(outline => {
-          console.log(`[pdf] outline loaded: ${outline.length} items`, outline.length > 0 ? outline[0] : '(empty)');
           if (gen === loadGeneration) {
             pdfOutline = outline;
             if (outline.length > 0) pdfTocOpen = true;
@@ -983,7 +740,8 @@
       content = ''; binaryContent = null;
       destroyEditorSession(loadTabId);
       mode = 'global-normal';
-      renderArchivePreview(path);
+      renderTrigger++;
+      previewPane?.renderArchivePreview(path);
       return;
     }
 
@@ -995,10 +753,9 @@
         videoMeta = result; binaryContent = null; content = JSON.stringify(result);
       } catch (error) {
         if (gen !== loadGeneration) return;
-        console.error('Failed to load video thumbnail:', error);
         videoMeta = null; binaryContent = null; content = String(error);
       }
-      mode = 'global-normal'; renderPreview();
+      mode = 'global-normal'; renderTrigger++;
       return;
     }
 
@@ -1053,577 +810,48 @@
     }
     // Code files go directly to editor mode (no Shiki preview)
     if (readyTextContent && isDirectEditorFile(path)) {
+      // Initialize editor synchronously BEFORE changing mode so that when
+      // the editor container becomes visible (mode → editor-normal), the
+      // CodeMirror view is already attached — no blank frame or focus trap.
+      // editorInitInFlight prevents the mode effect from re-calling
+      // activateEditorSession (which would trigger an infinite update loop).
+      editorInitInFlight = true;
+      if (!activateEditorSession(loadTabId, path)) {
+        initEditor(readyTextContent);
+      }
       mode = 'editor-normal';
+      // editorInitInFlight is cleared by the mode effect
     } else {
       destroyEditorSession(loadTabId);
       mode = 'global-normal';
-      renderPreview();
+      renderTrigger++;
     }
     startWatching(path);
   }
 
-  function requestTabRender(tabId: number): number {
-    return tabCache.requestRender(tabId);
-  }
-
-  function isCurrentTabRender(tabId: number, path: string, version: number): boolean {
-    return tabCache.isCurrentRender(tabId, path, version, renderTabId, filePath || '');
-  }
-
-  async function renderPreview() {
-    if (!previewArea || !filePath) return;
-    requestTabRender(renderTabId);
-
-    // PreviewRouter and MarkdownPreviewer keep instance-local mutable state.
-    // Serialize work instead of dropping a render while another tab is pending;
-    // the queue always renders the newest tab/file context next.
-    if (renderInFlight) {
-      renderQueued = true;
-      return;
-    }
-
-    renderInFlight = true;
-    try {
-      do {
-        renderQueued = false;
-        await renderPreviewOnce();
-      } while (renderQueued);
-    } finally {
-      renderInFlight = false;
-      // A render request may arrive between the loop condition and finally.
-      if (renderQueued) {
-        renderQueued = false;
-        void renderPreview();
-      }
-    }
-  }
-
-  async function renderPreviewOnce() {
-    if (!previewArea || !filePath) return;
-
-    const tabId = renderTabId;
-    const path = filePath;
-    const tabVersion = tabCache.getRenderVersion(tabId) || requestTabRender(tabId);
-    const slot = getOrCreateSlot(tabId);
-    showTabSlot(tabId);
-
-    // Skip if this tab's slot already holds a fresh render of the same file.
-    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === path
-        && slot.dataset.fileMtime === String(currentFileMtime)) {
-      pendingRestoreScrollTop = -1;
-      if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
-      if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
-        requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
-      }
-      return;
-    }
-
-    slot.innerHTML = '';
-    slot.dataset.filePath = path;
-
-    const requestId = ++renderRequestId;
-    if (thumbnailMeta) {
-      slot.dataset.thumbWidth = String(thumbnailMeta.width);
-      slot.dataset.thumbHeight = String(thumbnailMeta.height);
-      slot.dataset.thumbOriginalSize = String(thumbnailMeta.originalSize);
-      slot.dataset.thumbIsThumbnail = String(thumbnailMeta.isThumbnail);
-    } else {
-      delete slot.dataset.thumbWidth; delete slot.dataset.thumbHeight;
-      delete slot.dataset.thumbOriginalSize; delete slot.dataset.thumbIsThumbnail;
-    }
-    if (originalFileSize > 0) { slot.dataset.originalFileSize = String(originalFileSize); }
-    else { delete slot.dataset.originalFileSize; }
-
-    const previewContent: string | ArrayBuffer = binaryContent ?? content;
-    await getPreviewRouter().preview(path, previewContent, slot);
-    if (requestId !== renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) return;
-
-    slot.dataset.rendered = 'true';
-    slot.dataset.fileMtime = String(currentFileMtime);
-
-    const savedScroll2 = pendingRestoreScrollTop;
-    pendingRestoreScrollTop = -1;
-    if (savedScroll2 >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll2; }); }
-    if (pendingTocExpanded && tocHeadings.length > 0) {
-      restoreExpandedLines(tocHeadings, pendingTocExpanded);
-      pendingTocExpanded = null; tocHeadings = [...tocHeadings];
-    }
-    if (tocFocused && tocOpen) {
-      requestAnimationFrame(() => {
-        if (pendingTocSelectedIndex >= 0) { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; }
-        tocSidebar?.focus();
-      });
-    }
-    if (isMarkdown) { setupScrollObserver(); }
-  }
-
   function scrollPreview(deltaY: number, deltaX: number = 0) {
-    const slot = getActiveSlot();
-    if (slot) slot.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
+    previewPane?.scrollPreview(deltaY, deltaX);
   }
 
   export function getVisibleLine(): number {
-    const slot = getActiveSlot();
-    if (!slot || !content) return 0;
-    const rect = slot.getBoundingClientRect();
-    const el = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    if (el) {
-      const lined = el.closest('[data-line]');
-      if (lined) { const line = parseInt(lined.getAttribute('data-line')!); if (!isNaN(line)) return line; }
-    }
-    const maxScroll = slot.scrollHeight - slot.clientHeight;
-    if (maxScroll <= 0) return 0;
-    return Math.round((slot.scrollTop / maxScroll) * (content.split('\n').length - 1));
-  }
-
-  function getPosAtLine(text: string, lineNumber: number): number {
-    let pos = 0;
-    for (let i = 0, line = 0; i < text.length && line < lineNumber; i++) {
-      if (text[i] === '\n') line++;
-      if (line < lineNumber) pos = i + 1;
-    }
-    return pos;
+    return previewPane?.getVisibleLine() ?? 0;
   }
 
   function moveCursorToLine(lineNumber: number) {
-    if (!editorView) return;
-    const targetLine = Math.min(lineNumber + 1, editorView.state.doc.lines);
-    editorView.dispatch({ selection: { anchor: editorView.state.doc.line(targetLine).from } });
-    scrollEditorToPos(editorView, editorView.state.selection.main.head);
+    textEditorHost?.moveCursorToLine(lineNumber);
     editorTargetLine = -1;
   }
 
   function scrollEditorToPos(view: EditorView, pos: number) {
-    const session = getSessionForView(view);
-    if (session) {
-      void refreshEditorLayoutAfterPaint(session, () => {
-        view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
-      });
-      return;
-    }
-    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => clampEditorScroll(view));
-    });
-  }
-
-  async function renderDirectoryPreview() {
-    const slot = getOrCreateSlot(renderTabId);
-    showTabSlot(renderTabId);
-    if (!filePath) return;
-    const requestId = ++renderRequestId;
-    const previewer = getDirectoryPreviewer();
-    slot.dataset.filePath = filePath;
-    await previewer.render('', slot);
-    if (requestId !== renderRequestId) return;
-  }
-
-  async function renderArchivePreview(path: string) {
-    const slot = getOrCreateSlot(renderTabId);
-    showTabSlot(renderTabId);
-    const requestId = ++renderRequestId;
-    slot.dataset.filePath = path;
-    await getPreviewRouter().preview(path, '', slot);
-    if (requestId !== renderRequestId) return;
+    textEditorHost?.scrollEditorToPos(view, pos);
   }
 
   function initEditor(textSnapshot: TextContentSnapshot) {
-    if (!editorContainer || !isCurrentTextSnapshot(textSnapshot)) return;
-    if (activateEditorSession(textSnapshot.tabId, textSnapshot.path)) return;
-    destroyEditorSession(textSnapshot.tabId);
-    if (import.meta.env.DEV) performance.mark('vim-session-create-start');
-    const tabId = textSnapshot.tabId;
-    const targetPath = textSnapshot.path;
-    const initialContent = textSnapshot.content;
-    const host = document.createElement('div');
-    host.className = 'editor-session';
-    editorContainer.appendChild(host);
-    const sessionLineNumberCompartment = new Compartment();
-    const sessionThemeCompartment = new Compartment();
-    editorFilePath = targetPath;
-    const language = getLanguage(targetPath);
-    const indentPolicy = getEditorIndentPolicy(targetPath);
-    const extensions = [
-      highlightActiveLineGutter(), highlightSpecialChars(), history(),
-      foldGutter(), drawSelection(), dropCursor(), autocompletion({ defaultKeymap: false }),
-      bracketMatching(), closeBrackets(), crosshairCursor(),
-      highlightActiveLine(), highlightSelectionMatches(), indentOnInput(),
-      rectangularSelection(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...editorAutocompleteKeymap, ...lintKeymap]),
-      sessionLineNumberCompartment.of(lineNumbers()),
-      search({ top: true }), sMatchField, EditorView.lineWrapping,
-      EditorState.tabSize.of(EDITOR_TAB_SIZE),
-      indentUnit.of(getEditorIndentUnit(indentPolicy)),
-      vim({ status: false }),
-      createVimCommandHandler(
-        () => ({
-          save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else await saveFile(); },
-          quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!codeFileDirectEdit) mode = 'global-normal'; },
-          forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!codeFileDirectEdit) { content = savedContent; isModified = false; mode = 'global-normal'; } },
-          isModified: () => isModified,
-        }),
-        (msg) => onToast(msg)
-      ),
-      sessionThemeCompartment.of(getSyntaxTheme()),
-      suppressNativeSelection,
-      gruvboxTheme,
-      EditorView.theme({
-        '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
-        '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
-      }),
-      EditorView.updateListener.of((update) => {
-        const isActive = renderTabId === tabId && editorSessions.get(tabId)?.view === update.view;
-        if (update.docChanged && isActive) { content = update.state.doc.toString(); isModified = content !== savedContent; }
-        const cm = (update.view as any).cm;
-        const vimState = cm?.state?.vim;
-        if (vimState && isActive) {
-          if (vimState.insertMode && mode === 'editor-normal') mode = 'editor-insert';
-          else if (!vimState.insertMode && !vimState.visualMode && mode === 'editor-insert') mode = 'editor-normal';
-          update.view.dom.classList.toggle('vim-visual', !!vimState.visualMode);
-          update.view.dom.classList.toggle('cm-insert-selecting', !!vimState.insertMode && !update.state.selection.main.empty);
-        } else {
-          update.view.dom.classList.remove('vim-visual');
-          update.view.dom.classList.remove('cm-insert-selecting');
-        }
-      }),
-    ];
-    if (language) extensions.push(language);
-    if (targetPath.toLowerCase().endsWith('.py')) {
-      extensions.push(pythonLanguage.data.of({ autocomplete: pythonCompletionSource }));
-    }
-    const restorePos = pendingEditorPos >= 0 ? pendingEditorPos : 0;
-    const state = EditorState.create({
-      doc: initialContent, extensions,
-      selection: pendingEditorPos >= 0 ? { anchor: pendingEditorPos }
-        : editorTargetLine >= 0 ? { anchor: getPosAtLine(initialContent, editorTargetLine) }
-        : undefined,
-    });
-    const needsScroll = pendingEditorPos >= 0 || editorTargetLine >= 0;
-    editorTargetLine = -1;
-    pendingEditorPos = -1;
-    const view = new EditorView({ state, parent: host });
-    editorView = view;
-    savedContent = view.state.doc.toString();
-    isModified = false;
-
-    // Clamp editor scroll on container resize (terminal drag, panel resize, etc.)
-    const resizeObserver = new ResizeObserver(() => {
-      if (editorSessions.get(tabId)?.view === view) {
-        const activeSession = editorSessions.get(tabId);
-        if (activeSession && isActiveEditorSession(activeSession)) {
-          void refreshEditorLayoutAfterPaint(activeSession);
-        } else {
-          clampEditorScroll(view);
-        }
-      }
-    });
-    resizeObserver.observe(host);
-
-    const bridge = initClipboardBridge(view);
-    const session: EditorSession = {
-      tabId, filePath: targetPath, host, view,
-      lineNumberCompartment: sessionLineNumberCompartment,
-      themeCompartment: sessionThemeCompartment,
-      resizeObserver, clipboardBridge: bridge,
-    };
-    editorSessions.set(tabId, session);
-    clipboardBridge = bridge;
-
-    setupVimLineNumbers(sessionLineNumberCompartment, view);
-    setupAllVimCommands((text) => {
-      outputText = text;
-      outputVisible = true;
-    });
-    if (pendingEditorScrollTop >= 0) {
-      const savedTop = pendingEditorScrollTop;
-      pendingEditorScrollTop = -1;
-      void refreshEditorLayoutAfterPaint(session, () => {
-        view.scrollDOM.scrollTop = savedTop;
-      });
-    } else if (needsScroll) {
-      scrollEditorToPos(view, view.state.selection.main.head);
-    } else {
-      void refreshEditorLayoutAfterPaint(session);
-    }
-
-    // Watch theme changes to swap syntax highlighting
-    if (!themeObserver) {
-      themeObserver = new MutationObserver(() => {
-        for (const session of editorSessions.values()) {
-          const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-          session.view.dispatch({ effects: session.themeCompartment.reconfigure(isLight ? gruvboxLight : gruvboxDark) });
-        }
-      });
-      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    }
-
-    view.contentDOM.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key !== 'Enter' || mode !== 'editor-insert') return;
-      if (handleInsertModeEnter(view, { indentPolicy })) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    }, true);
-    if (import.meta.env.DEV) tracePerformance('vim-session-create', 'vim-session-create-start');
+    if (!isCurrentTextSnapshot(textSnapshot)) return;
+    textEditorHost?.initEditor(textSnapshot);
   }
 
-  function codeToVimKey(event: KeyboardEvent): string | null {
-    const code = event.code;
-    let key = '';
-    if (event.ctrlKey) key += 'C-';
-    if (event.altKey) key += 'A-';
-    if (event.metaKey) key += 'M-';
-    if (code.startsWith('Key') && code.length === 4) key += event.shiftKey ? code[3] : code[3].toLowerCase();
-    else if (code === 'Enter') key += 'Enter';
-    else if (code === 'Space') key += 'Space';
-    else if (code === 'Escape') key = 'Esc';
-    else if (code === 'Backspace') key += 'BS';
-    else if (code === 'Tab') key += 'Tab';
-    else if (code === 'Delete') key += 'Del';
-    else if (code.startsWith('Digit')) {
-      const shifted = ')!@#$%^&*(';
-      key += event.shiftKey ? shifted[parseInt(code[5])] : code[5];
-    }
-    else if (code.startsWith('Arrow')) key += code.slice(5);
-    else if (code === 'BracketLeft') key += event.shiftKey ? '{' : '[';
-    else if (code === 'BracketRight') key += event.shiftKey ? '}' : ']';
-    else if (code === 'Semicolon') key += event.shiftKey ? ':' : ';';
-    else if (code === 'Quote') key += event.shiftKey ? '"' : "'";
-    else if (code === 'Comma') key += event.shiftKey ? '<' : ',';
-    else if (code === 'Period') key += event.shiftKey ? '>' : '.';
-    else if (code === 'Slash') key += event.shiftKey ? '?' : '/';
-    else if (code === 'Backslash') key += '\\';
-    else if (code === 'Minus') key += event.shiftKey ? '_' : '-';
-    else if (code === 'Equal') key += event.shiftKey ? '+' : '=';
-    else if (code === 'Backquote') key += event.shiftKey ? '~' : '`';
-    else return null;
-    if (key.length > 1) key = '<' + key + '>';
-    return key;
-  }
-
-  let overlayCmdBuf = $state('');
-  let overlayCmdActive = $state(false);
   let clipboardBridge: ClipboardBridge | null = null;
-  let searchActive: boolean = $state(false);
-  let searchBuf: string = $state('');
-  let outputVisible: boolean = $state(false);
-  let outputText: string = $state('');
-  let outputExitCode: number = $state(0);
-
-  // Tab completion state
-  let completions: { name: string; is_dir: boolean }[] = [];
-  let completionIndex: number = -1;
-  let completionPrefix: string = '';
-  let completionDir: string = '';
-
-  async function triggerFileCompletion() {
-    const cmd = overlayCmdBuf;
-    // Only complete after :! prefix with a non-empty partial
-    if (!cmd.startsWith('!')) return;
-    const afterBang = cmd.slice(1); // text after !
-    const lastSpace = afterBang.lastIndexOf(' ');
-    const partial = lastSpace >= 0 ? afterBang.slice(lastSpace + 1) : '';
-    if (!partial) return;
-
-    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || 'C:\\' : 'C:\\';
-
-    // Re-fetch if directory changed
-    if (completionDir !== cwd || completions.length === 0) {
-      try {
-        const entries = await invoke<{ name: string; is_dir: boolean }[]>('read_directory', { path: cwd });
-        completions = entries
-          .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        completionDir = cwd;
-        completionPrefix = partial;
-        completionIndex = 0;
-      } catch {
-        resetCompletion();
-        return;
-      }
-    } else {
-      // Cycle to next match
-      if (completions.length > 0) {
-        completionIndex = (completionIndex + 1) % completions.length;
-      }
-    }
-
-    if (completions.length === 0) return;
-
-    const completed = completions[completionIndex];
-    const prefix = lastSpace >= 0 ? afterBang.slice(0, lastSpace + 1) : '';
-    overlayCmdBuf = '!' + prefix + completed.name;
-  }
-
-  function resetCompletion() {
-    completions = [];
-    completionIndex = -1;
-    completionPrefix = '';
-    completionDir = '';
-  }
-
-  function executeSearch() {
-    if (!editorView || !searchBuf) return;
-    openSearchPanel(editorView);
-    const query = new SearchQuery({ search: searchBuf, caseSensitive: false });
-    editorView.dispatch({ effects: setSearchQuery.of(query) });
-    findNext(editorView);
-  }
-
-  function highlightSMatches() {
-    if (!editorView) return;
-    const cmd = overlayCmdBuf;
-    const delimMatch = cmd.match(/^(['<,'>]*)([%]?)s(.)/);
-    if (delimMatch) {
-      const delim = delimMatch[3];
-      const esc = delim.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(`s${esc}([^${esc}]*)(?:${esc}([^${esc}]*))?(?:${esc}([ggiI]*))?`);
-      const pm = cmd.match(re);
-      if (pm && pm[2] !== undefined) { editorView.dom.style.setProperty('--s-replacement', JSON.stringify(pm[2])); }
-      else { editorView.dom.style.removeProperty('--s-replacement'); }
-    } else { editorView.dom.style.removeProperty('--s-replacement'); }
-    editorView.dispatch({ effects: triggerSMatchUpdate.of() });
-  }
-
-  async function executeShellCommand(command: string) {
-    const cwd = filePath ? filePath.split(/[/\\]/).slice(0, -1).join('\\') || null : null;
-    outputVisible = true;
-    outputText = 'Executing...';
-    outputExitCode = 0;
-    try {
-      const result = await invoke<{ stdout: string; stderr: string; exit_code: number }>('exec_shell_command', { command, cwd });
-      outputText = result.stdout;
-      if (result.stderr) outputText += '\n' + result.stderr;
-      outputExitCode = result.exit_code;
-      if (!outputText.trim()) outputText = '(no output)';
-    } catch (error) {
-      outputText = String(error);
-      outputExitCode = -1;
-    }
-  }
-
-  function closeOutputPanel() {
-    outputVisible = false;
-    outputText = '';
-    if (mode === 'editor-normal' && overlayElement) {
-      overlayElement.focus();
-    } else if (mode === 'editor-insert' && editorView) {
-      editorView.focus();
-    }
-  }
-
-  function handleOutputKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' || event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      closeOutputPanel();
-    }
-  }
-
-  function processOverlayCommand(cmd: string) {
-    const trimmed = cmd.trim();
-    if (trimmed.startsWith('!')) {
-      const shellCmd = trimmed.slice(1).trim();
-      if (!shellCmd) { onToast('E471: Argument required'); return; }
-      executeShellCommand(shellCmd);
-      return;
-    }
-    if (trimmed === 'w' || trimmed === 'write') {
-      if (batchRenameTempPath) onBatchRenameSave(content); else saveFile();
-    } else if (trimmed === 'q!' || trimmed === 'quit!' || trimmed === 'qall' || trimmed === 'qall!') {
-      if (batchRenameTempPath) onBatchRenameCancel();
-      else { content = savedContent; isModified = false; mode = 'global-normal'; }
-    } else if (trimmed === 'q' || trimmed === 'quit') {
-      if (batchRenameTempPath) onBatchRenameCancel();
-      else if (isModified) onToast('E37: No write since last change (add ! to override)');
-      else mode = 'global-normal';
-    } else if (trimmed === 'wq' || trimmed === 'x') {
-      if (batchRenameTempPath) onBatchRenameSave(content);
-      else saveFile().then(() => { mode = 'global-normal'; });
-    } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
-      if (batchRenameTempPath) onBatchRenameSave(content);
-      else saveFile().then(() => { mode = 'global-normal'; });
-    } else if (trimmed === 'reg' || trimmed === 'registers') {
-      const regOutput = getRegistersOutput();
-      outputText = regOutput;
-      outputVisible = true;
-    } else if (editorView) {
-      const cm = getCM(editorView);
-      if (cm) { Vim.handleEx(cm as any, trimmed); editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); }
-    }
-  }
-
-  let ctrlWPending: boolean = false;
-
-  function handleOverlayKeydown(event: KeyboardEvent) {
-    // Pass Ctrl+W window nav keys through to PanelLayout
-    if (event.ctrlKey && event.key === 'w') {
-      ctrlWPending = true;
-      return;
-    }
-    if (ctrlWPending) {
-      ctrlWPending = false;
-      if (event.code === 'KeyH' || event.code === 'KeyL' || event.code === 'KeyJ' || event.code === 'KeyK' || event.code === 'KeyM') {
-        return;
-      }
-    }
-
-    if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.code === 'Slash') {
-      event.preventDefault(); event.stopPropagation();
-      if (editorView) toggleComment(editorView);
-      return;
-    }
-
-    event.preventDefault(); event.stopPropagation();
-    if (outputVisible) {
-      if (event.key === 'Enter' || event.key === 'Escape') {
-        closeOutputPanel();
-      }
-      return;
-    }
-    if (overlayCmdActive) {
-      if (event.key === 'Enter') { overlayCmdActive = false; processOverlayCommand(overlayCmdBuf); overlayCmdBuf = ''; setTimeout(() => { if (overlayElement && mode === 'editor-normal') overlayElement.focus(); }, 0); return; }
-      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { overlayCmdActive = false; overlayCmdBuf = ''; onToast(''); if (editorView) { editorView.dispatch({ effects: clearSMatch.of() }); editorView.dom.style.removeProperty('--s-replacement'); } return; }
-      if (event.key === 'Backspace') { if (overlayCmdBuf.length > 0) overlayCmdBuf = overlayCmdBuf.slice(0, -1); else overlayCmdActive = false; highlightSMatches(); return; }
-      if (event.key === 'Tab') { event.preventDefault(); triggerFileCompletion(); return; }
-      if (event.key.length === 1) { overlayCmdBuf += event.key; resetCompletion(); highlightSMatches(); }
-      return;
-    }
-    if (searchActive) {
-      if (event.key === 'Enter') { searchActive = false; executeSearch(); return; }
-      if (event.key === 'Escape' || event.ctrlKey && event.code === 'BracketLeft') { searchActive = false; searchBuf = ''; return; }
-      if (event.key === 'Backspace') { if (searchBuf.length > 0) searchBuf = searchBuf.slice(0, -1); else searchActive = false; return; }
-      if (event.key.length === 1) searchBuf += event.key;
-      return;
-    }
-    if (event.key === ':') {
-      overlayCmdActive = true;
-      overlayCmdBuf = '';
-      if (editorView) {
-        const cm = getCM(editorView);
-        if (cm?.state?.vim?.visualMode) {
-          overlayCmdBuf = "'<,'>";
-        }
-      }
-      return;
-    }
-    if (event.key === '/' || event.key === '?') { searchActive = true; searchBuf = ''; return; }
-
-    if (event.code === 'KeyN' && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      if (editorView) { if (event.shiftKey) findPrevious(editorView); else findNext(editorView); }
-      return;
-    }
-    if (event.key === 'Escape' && editorView) closeSearchPanel(editorView);
-    const vimKey = codeToVimKey(event);
-    if (!vimKey || !editorView) return;
-    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) { clipboardBridge.injectClipboard(); }
-    const cm = getCM(editorView);
-    if (!cm) return;
-    (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
-    const vimState = cm.state?.vim;
-    if (vimState?.insertMode) { mode = 'editor-insert'; }
-  }
 
   function handleKeydown(event: KeyboardEvent) {
     if (mode !== 'global-normal') return;
@@ -1636,8 +864,8 @@
     else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(-40); }
     else if (event.code === 'KeyH' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, -40); }
     else if (event.code === 'KeyL' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(0, 40); }
-    else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const ggSlot = getActiveSlot(); if (ggSlot) ggSlot.scrollTop = 0; }
-    else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const gSlot = getActiveSlot(); if (gSlot) gSlot.scrollTop = gSlot.scrollHeight; }
+    else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const ggSlot = previewPane?.getActiveSlot(); if (ggSlot) ggSlot.scrollTop = 0; }
+    else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const gSlot = previewPane?.getActiveSlot(); if (gSlot) gSlot.scrollTop = gSlot.scrollHeight; }
     else if (event.ctrlKey && event.code === 'KeyS') { event.preventDefault(); saveFile(); }
   }
 
@@ -1668,7 +896,7 @@
         }
       }
       savedContent = content; isModified = false;
-      const saveSlot = getActiveSlot();
+      const saveSlot = previewPane?.getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
     } catch (error) { console.error('Failed to save file:', error); }
   }
@@ -1736,7 +964,7 @@
       <button
         class="toc-toggle"
         class:closed={!tocOpen}
-        onclick={() => { tocOpen = !tocOpen; console.log('[PreviewEditor] TOC toggle ->', tocOpen); }}
+        onclick={() => { tocOpen = !tocOpen; }}
         title={tocOpen ? 'Hide outline' : 'Show outline'}
       >
         ☰
@@ -1785,40 +1013,79 @@
         {/if}
       </div>
     {/if}
-    <div class="preview-with-toc" bind:this={previewWithToc} class:hidden={(!filePath && !batchRenameTempPath) || (filePath && isPdfFile(filePath) && mode === 'global-normal')} class:modeHidden={mode !== 'global-normal'}>
-      <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
-      {#if isMarkdown && tocHeadings.length > 0 && mode === 'global-normal' && tocOpen}
-        <TocSidebar
-          bind:this={tocSidebar}
-          headings={tocHeadings}
-          activeLine={tocActiveLine}
-          onJump={handleTocJump}
-          onFocusChange={handleTocFocusChange}
-        />
-      {/if}
+    <div class="preview-pane-wrapper" class:hidden={(!filePath && !batchRenameTempPath) || (filePath && isPdfFile(filePath) && mode === 'global-normal')} class:modeHidden={mode !== 'global-normal'}>
+    <PreviewPane
+      bind:this={previewPane}
+      filePath={filePath}
+      content={content}
+      binaryContent={binaryContent}
+      originalFileSize={originalFileSize}
+      thumbnailMeta={thumbnailMeta}
+      currentFileMtime={currentFileMtime}
+      isMarkdown={isMarkdown}
+      tocHeadings={tocHeadings}
+      tocActiveLine={tocActiveLine}
+      tocFocused={tocFocused}
+      tocOpen={tocOpen}
+      pendingTocExpanded={pendingTocExpanded}
+      pendingTocSelectedIndex={pendingTocSelectedIndex}
+      pendingRestoreScrollTop={pendingRestoreScrollTop}
+      renderTabId={renderTabId}
+      codeFileDirectEdit={codeFileDirectEdit}
+      directEdit={directEdit}
+      isDirectory={isDirectory}
+      renderTrigger={renderTrigger}
+      mode={mode}
+      onTocJump={(_line) => {}}
+      onTocFocusChange={handleTocFocusChange}
+      onRenderComplete={() => {}}
+      onTocHeadingsChange={(h) => { tocHeadings = h; tocActiveLine = -1; }}
+      onTocActiveLineChange={(line) => { tocActiveLine = line; }}
+    />
     </div>
-    <div class="editor-area" bind:this={editorContainer} class:hidden={!filePath && !batchRenameTempPath} class:activeEditor={mode === 'editor-normal' || mode === 'editor-insert'} onclick={(e) => e.stopPropagation()} onmouseup={() => {
-      // Re-focus overlay after mouse interactions (selection, click) pass through to CodeMirror.
-      // pointer-events:none on the overlay lets mouse events reach CodeMirror, which steals focus.
-      if (mode === 'editor-normal') {
-        requestAnimationFrame(() => {
-          if (overlayElement && mode === 'editor-normal' && activeColumn === 'preview') {
-            focusActiveEditor();
-          }
-        });
-      }
-    }}>
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div
-        class="editor-overlay"
-        class:overlay-hidden={mode !== 'editor-normal'}
-        bind:this={overlayElement}
-        onkeydown={handleOverlayKeydown}
-        tabindex={mode === 'editor-normal' ? 0 : -1}
-        role="region"
-        aria-label="Editor navigation"
-      ></div>
-    </div>
+    <TextEditorHost
+      bind:this={textEditorHost}
+      tabId={renderTabId}
+      filePath={filePath}
+      content={content}
+      savedContent={savedContent}
+      mode={mode}
+      pendingEditorPos={pendingEditorPos}
+      pendingEditorScrollTop={pendingEditorScrollTop}
+      editorTargetLine={editorTargetLine}
+      activeColumn={activeColumn}
+      batchRenameTempPath={batchRenameTempPath}
+      isDirectEditorFile={codeFileDirectEdit}
+      onModeChange={(m) => { mode = m; }}
+      onContentChange={(c) => { content = c; }}
+      onSavedContentChange={(c) => { savedContent = c; }}
+      onModifiedChange={(m) => { isModified = m; }}
+      onClipboardBridgeChange={(b) => { clipboardBridge = b; }}
+      onEditorViewChange={(v) => { editorView = v; }}
+      onSaveFile={() => saveFile()}
+      onToast={(msg) => onToast(msg)}
+      onBatchRenameSave={onBatchRenameSave}
+      onBatchRenameCancel={onBatchRenameCancel}
+    />
+    <VimOverlay
+      bind:this={vimOverlay}
+      mode={mode}
+      editorView={editorView}
+      clipboardBridge={clipboardBridge}
+      filePath={filePath}
+      content={content}
+      savedContent={savedContent}
+      isModified={isModified}
+      batchRenameTempPath={batchRenameTempPath}
+      onModeChange={(m) => { mode = m; }}
+      onContentChange={(c) => { content = c; }}
+      onSavedContentChange={(c) => { savedContent = c; }}
+      onModifiedChange={(m) => { isModified = m; }}
+      onToast={(msg) => onToast(msg)}
+      onBatchRenameSave={onBatchRenameSave}
+      onBatchRenameCancel={onBatchRenameCancel}
+      onSaveFile={() => saveFile()}
+    />
     {#if !filePath && !batchRenameTempPath}
       <div class="welcome">
         <h2>Welcome to Wind</h2>
@@ -1839,34 +1106,6 @@
       </div>
     {/if}
   </div>
-
-  {#if mode === 'editor-normal' && overlayCmdActive}
-    <div class="panel-cmdline">:{overlayCmdBuf}</div>
-  {/if}
-
-  {#if mode === 'editor-normal' && searchActive}
-    <div class="panel-cmdline">/{searchBuf}</div>
-  {/if}
-
-  {#if outputVisible}
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div
-      class="panel-output"
-      tabindex="0"
-      onkeydown={handleOutputKeydown}
-      onclick={(e) => e.stopPropagation()}
-    >
-      <div class="output-content">
-        <pre class="output-text">{outputText}</pre>
-      </div>
-      <div class="output-footer">
-        <span>Press ENTER to continue</span>
-        {#if outputExitCode !== 0}
-          <span class="output-exitcode">exit: {outputExitCode}</span>
-        {/if}
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -1936,38 +1175,13 @@
 
   .panel-content { flex: 1; overflow: hidden; position: relative; }
 
-  .preview-with-toc { display: flex; width: 100%; height: 100%; }
-  .preview-with-toc.modeHidden { display: none; }
-  .preview-with-toc.hidden { display: none; }
+  .preview-pane-wrapper { width: 100%; height: 100%; }
+  .preview-pane-wrapper.modeHidden { display: none; }
+  .preview-pane-wrapper.hidden { display: none; }
 
   .pdf-with-toc { display: flex; width: 100%; height: 100%; }
 
-  .preview-area { flex: 1; min-width: 0; height: 100%; overflow: hidden; position: relative; }
-
-  :global(.tab-preview-slot) {
-    position: absolute; inset: 0; overflow: auto;
-    padding: 12px; display: flex; flex-direction: column; box-sizing: border-box;
-    background: var(--bg-primary);
-    font-family: var(--font-mono);
-  }
-
-  .editor-area { width: 100%; height: 100%; display: none; position: relative; }
-  .editor-area.hidden { display: none; }
-  .editor-area.activeEditor:not(.hidden) { display: block; }
   :global(.editor-session) { width: 100%; height: 100%; }
-
-  .editor-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    z-index: 10; background: transparent; outline: none;
-    pointer-events: none;
-  }
-  .editor-overlay.overlay-hidden { display: none; }
-
-  .panel-cmdline {
-    padding: 4px 12px; background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border); font-family: var(--font-mono);
-    font-size: 13px; color: var(--text-primary);
-  }
 
   .welcome {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -2108,46 +1322,6 @@
 	:global(.preview-markdown .table-indent-wrapper) {
 		display: block;
 	}
-
-  /* Output panel */
-  .panel-output {
-    display: flex;
-    flex-direction: column;
-    max-height: 200px;
-    background-color: var(--bg-primary);
-    border-top: 2px solid var(--accent);
-  }
-  .output-content {
-    flex: 1;
-    overflow: auto;
-    padding: 8px 12px;
-    min-height: 0;
-  }
-  .output-text {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--text-primary);
-    white-space: pre-wrap;
-    word-break: break-all;
-    margin: 0;
-    user-select: text;
-    cursor: text;
-  }
-  .output-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 12px;
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-  .output-exitcode {
-    color: var(--warning);
-  }
 
   /* Notebook Preview (.ipynb) */
   :global(.preview-ipynb) {

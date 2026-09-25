@@ -22,7 +22,9 @@ export interface FileLoadResult {
 
 export function isDirectEditorFile(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase() || '';
-  return !['md', 'markdown', 'json', 'ipynb'].includes(ext);
+  if (['md', 'markdown', 'json', 'ipynb'].includes(ext)) return false;
+  if (!isTextFile(path)) return false; // binary files (video, image, PDF, etc.) go to preview, not editor
+  return true;
 }
 
 export function formatSize(bytes: number): string {

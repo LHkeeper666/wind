@@ -67,13 +67,25 @@ export class PreviewRouter {
     previewer.onHeadings = this.onHeadings;
     await previewer.render(content, staging);
 
+    // Staleness check: if container.dataset.filePath changed during the async render
+    // (e.g. user selected a different file), skip the swap to prevent stale content flash.
+    if (container.dataset.filePath !== filePath) {
+      staging.remove();
+      return;
+    }
+
     // Swap: replace old content with new, then clean up old previewer
     container.innerHTML = '';
     while (staging.firstChild) {
       container.appendChild(staging.firstChild);
     }
     staging.remove();
-    oldPreviewer?.dispose();
+    // Only dispose the old previewer if it's a DIFFERENT instance.
+    // When oldPreviewer === previewer (same type), disposing would revoke
+    // blob URLs that the new render just created (e.g. video thumbnails).
+    if (oldPreviewer && oldPreviewer !== previewer) {
+      oldPreviewer.dispose();
+    }
 
     this.currentPreviewer = previewer;
   }

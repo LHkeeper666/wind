@@ -692,11 +692,12 @@
       showToast(`Batch rename error: ${e}`);
     }
 
-    // Cleanup
-    await invoke('delete_temp_file', { path: batchRenameTempPath });
+    // Cleanup — always clear state even if temp file deletion fails
+    const tempPath = batchRenameTempPath;
     batchRenameTempPath = null;
     batchRenameFileEntries = [];
     selectedFile = null;
+    try { await invoke('delete_temp_file', { path: tempPath }); } catch {}
     currentDirectoryPanel?.focus();
     // Refresh directory
     currentDirectoryPanel?.refresh();

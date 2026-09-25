@@ -27,8 +27,6 @@
     EDITOR_TAB_SIZE,
     editorAutocompleteKeymap,
     handleInsertModeEnter,
-    handleInsertModeShiftTab,
-    handleInsertModeTab,
   } from '$lib/utils/editor-text-keys';
   import { sMatchField } from '$lib/utils/vim-smatch';
 
@@ -57,15 +55,17 @@
     onContentChange = (content: string) => {},
     onSavedContentChange = (content: string) => {},
     onModifiedChange = (isModified: boolean) => {},
-    onOutputVisibleChange = (visible: boolean) => {},
-    onOutputTextChange = (text: string) => {},
-    onOutputExitCodeChange = (code: number) => {},
+    onOutputVisibleChange = undefined as ((visible: boolean) => void) | undefined,
+    onOutputTextChange = undefined as ((text: string) => void) | undefined,
+    onOutputExitCodeChange = undefined as ((code: number) => void) | undefined,
     onClipboardBridgeChange = (bridge: ClipboardBridge | null) => {},
     onEditorViewChange = (view: EditorView | undefined) => {},
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
     isDirectEditorFile = false,
+    onSaveFile = () => {},
+    onToast = (_msg: string) => {},
   }: {
     tabId: number;
     filePath: string | null;
@@ -80,15 +80,17 @@
     onContentChange: (content: string) => void;
     onSavedContentChange: (content: string) => void;
     onModifiedChange: (isModified: boolean) => void;
-    onOutputVisibleChange: (visible: boolean) => void;
-    onOutputTextChange: (text: string) => void;
-    onOutputExitCodeChange: (code: number) => void;
+    onOutputVisibleChange?: (visible: boolean) => void;
+    onOutputTextChange?: (text: string) => void;
+    onOutputExitCodeChange?: (code: number) => void;
     onClipboardBridgeChange: (bridge: ClipboardBridge | null) => void;
     onEditorViewChange: (view: EditorView | undefined) => void;
     batchRenameTempPath: string | null;
     onBatchRenameSave: (content: string) => void;
     onBatchRenameCancel: () => void;
     isDirectEditorFile: boolean;
+    onSaveFile: () => void;
+    onToast: (msg: string) => void;
   } = $props();
 
   let editorContainer: HTMLElement | undefined = $state(undefined);
@@ -284,6 +286,26 @@
     return overlayElement;
   }
 
+  export function hasSession(tabId: number): boolean {
+    return editorSessions.has(tabId);
+  }
+
+  export function activateSession(tabId: number, path: string): boolean {
+    return activateEditorSession(tabId, path);
+  }
+
+  export function destroySession(tabId: number): void {
+    destroyEditorSession(tabId);
+  }
+
+  export function hideAllSessions(): void {
+    hideEditorSessions();
+  }
+
+  export function getEditorFilePath(): string | null {
+    return editorFilePath;
+  }
+
   export function initEditor(textSnapshot: { tabId: number; path: string; content: string; generation: number }): void {
     if (!editorContainer) return;
     if (activateEditorSession(textSnapshot.tabId, textSnapshot.path)) return;
@@ -315,12 +337,12 @@
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
-          save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else await saveFile(); },
+          save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else onSaveFile(); },
           quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!isDirectEditorFile) onModeChange('global-normal'); },
           forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!isDirectEditorFile) { onContentChange(savedContent); onModifiedChange(false); onModeChange('global-normal'); } },
           isModified: () => content !== savedContent,
         }),
-        (msg) => console.log('[Vim]', msg)
+        (msg) => onToast(msg)
       ),
       sessionThemeCompartment.of(getSyntaxTheme()),
       suppressNativeSelection,
@@ -392,8 +414,8 @@
 
     setupVimLineNumbers(sessionLineNumberCompartment, view);
     setupAllVimCommands((text) => {
-      onOutputTextChange(text);
-      onOutputVisibleChange(true);
+      onOutputTextChange?.(text);
+      onOutputVisibleChange?.(true);
     });
     if (pendingEditorScrollTop >= 0) {
       const savedTop = pendingEditorScrollTop;

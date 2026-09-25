@@ -37,17 +37,17 @@
     savedContent: string;
     isModified: boolean;
     batchRenameTempPath: string | null;
-    onModeChange: (mode: 'global-normal' | 'editor-normal' | 'editor-insert') => void;
-    onContentChange: (content: string) => void;
-    onSavedContentChange: (content: string) => void;
-    onModifiedChange: (isModified: boolean) => void;
-    onOutputVisibleChange: (visible: boolean) => void;
-    onOutputTextChange: (text: string) => void;
-    onOutputExitCodeChange: (code: number) => void;
-    onToast: (message: string) => void;
-    onBatchRenameSave: (content: string) => void;
-    onBatchRenameCancel: () => void;
-    onSaveFile: () => void;
+    onModeChange?: (mode: 'global-normal' | 'editor-normal' | 'editor-insert') => void;
+    onContentChange?: (content: string) => void;
+    onSavedContentChange?: (content: string) => void;
+    onModifiedChange?: (isModified: boolean) => void;
+    onOutputVisibleChange?: (visible: boolean) => void;
+    onOutputTextChange?: (text: string) => void;
+    onOutputExitCodeChange?: (code: number) => void;
+    onToast?: (message: string) => void;
+    onBatchRenameSave?: (content: string) => void;
+    onBatchRenameCancel?: () => void;
+    onSaveFile?: () => void;
   } = $props();
 
   let overlayElement: HTMLElement | undefined = $state(undefined);
@@ -266,7 +266,7 @@
       else onModeChange('global-normal');
     } else if (trimmed === 'wq' || trimmed === 'x') {
       if (batchRenameTempPath) onBatchRenameSave(content);
-      else onSaveFile();
+      else { onSaveFile(); onModeChange('global-normal'); }
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
       if (batchRenameTempPath) onBatchRenameSave(content);
       else onSaveFile();

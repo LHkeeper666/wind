@@ -220,6 +220,8 @@ function applyMarkdownListTreeMovement(
   roots: MarkdownListItem[],
   direction: 'indent' | 'dedent',
   tabSize: number,
+  onlyRootLine: boolean = false,
+  selectionEndLine: number = Infinity,
 ): void {
   for (const root of roots) {
     const rootTargetColumns = direction === 'indent'
@@ -228,7 +230,8 @@ function applyMarkdownListTreeMovement(
     const delta = rootTargetColumns - root.indentColumns;
     if (delta === 0) continue;
 
-    for (let lineIndex = root.lineIndex; lineIndex <= root.subtreeEndIndex; lineIndex++) {
+    const endLine = onlyRootLine ? root.lineIndex : Math.min(root.subtreeEndIndex, selectionEndLine);
+    for (let lineIndex = root.lineIndex; lineIndex <= endLine; lineIndex++) {
       if (!lines[lineIndex].trim()) continue;
       lines[lineIndex] = replaceLeadingColumns(lines[lineIndex], leadingColumns(lines[lineIndex], tabSize) + delta);
     }
@@ -248,11 +251,11 @@ function hasOrderedContainerBarrier(
 
     const prefix = parseMarkdownListPrefix(text);
     if (prefix) {
-      if (countColumn(prefix.indent, tabSize) <= indentColumns) return true;
+      if (countColumn(prefix.indent, tabSize) < indentColumns) return true;
       continue;
     }
 
-    if (leadingColumns(text, tabSize) <= indentColumns) return true;
+    if (leadingColumns(text, tabSize) < indentColumns) return true;
   }
 
   return false;
@@ -327,7 +330,7 @@ function markdownListTreeChangesForLines(
 
   if (roots.length === 0) return { handled: false, changes: [] };
 
-  applyMarkdownListTreeMovement(lines, roots, direction, tabSize);
+  applyMarkdownListTreeMovement(lines, roots, direction, tabSize, from === to, range.to);
   renumberOrderedListContainers(lines, tabSize);
 
   return { handled: true, changes: lineTextChanges(state, lines) };
@@ -501,6 +504,15 @@ export function handleInsertModeEnter(view: EditorView, options: number | Editor
         selection: { anchor: line.from },
       });
     }
+    // Renumber subsequent ordered list items after removing the empty list item
+    const { tabSize } = normalizeTextKeyOptions(options);
+    const afterState = view.state;
+    const afterLines = documentLines(afterState);
+    renumberOrderedListContainers(afterLines, tabSize);
+    const renumberChanges = lineTextChanges(afterState, afterLines);
+    if (renumberChanges.length > 0) {
+      view.dispatch({ changes: renumberChanges });
+    }
     return true;
   }
 
@@ -513,5 +525,14 @@ export function handleInsertModeEnter(view: EditorView, options: number | Editor
     changes: { from: main.head, insert: `\n${continuation}` },
     selection: { anchor: main.head + 1 + continuation.length },
   });
+  // Renumber subsequent ordered list items after inserting the continuation line
+  const { tabSize } = normalizeTextKeyOptions(options);
+  const afterState = view.state;
+  const afterLines = documentLines(afterState);
+  renumberOrderedListContainers(afterLines, tabSize);
+  const renumberChanges = lineTextChanges(afterState, afterLines);
+  if (renumberChanges.length > 0) {
+    view.dispatch({ changes: renumberChanges });
+  }
   return true;
 }

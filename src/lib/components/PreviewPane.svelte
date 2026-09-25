@@ -5,6 +5,7 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { restoreExpandedLines } from '$lib/utils/tab-cache';
+  import { isDirectEditorFile } from '$lib/utils/file-loader';
 
   let {
     filePath = null,
@@ -21,9 +22,17 @@
     pendingTocExpanded = null as Set<number> | null,
     pendingTocSelectedIndex = -1,
     pendingRestoreScrollTop = -1,
+    renderTabId = 0,
+    codeFileDirectEdit = false,
+    directEdit = false,
+    isDirectory = false,
+    renderTrigger = 0,
+    mode = 'global-normal' as 'global-normal' | 'editor-normal' | 'editor-insert',
     onTocJump = (line: number) => {},
     onTocFocusChange = (focused: boolean) => {},
     onRenderComplete = () => {},
+    onTocHeadingsChange = (_headings: TocHeading[]) => {},
+    onTocActiveLineChange = (_line: number) => {},
   }: {
     filePath: string | null;
     content: string;
@@ -39,9 +48,17 @@
     pendingTocExpanded: Set<number> | null;
     pendingTocSelectedIndex: number;
     pendingRestoreScrollTop: number;
-    onTocJump: (line: number) => void;
-    onTocFocusChange: (focused: boolean) => void;
-    onRenderComplete: () => void;
+    renderTabId: number;
+    codeFileDirectEdit: boolean;
+    directEdit: boolean;
+    isDirectory: boolean;
+    renderTrigger: number;
+    mode: 'global-normal' | 'editor-normal' | 'editor-insert';
+    onTocJump?: (line: number) => void;
+    onTocFocusChange?: (focused: boolean) => void;
+    onRenderComplete?: () => void;
+    onTocHeadingsChange?: (headings: TocHeading[]) => void;
+    onTocActiveLineChange?: (line: number) => void;
   } = $props();
 
   let previewArea: HTMLElement | undefined = $state(undefined);
@@ -49,21 +66,27 @@
   let tocSidebar: TocSidebar | undefined = $state(undefined);
   let previewRouter: PreviewRouter | undefined;
   let directoryPreviewer: DirectoryPreviewer | undefined;
-  let renderRequestId: number = 0;
+  let _renderRequestId: number = 0;
+  let _contentGeneration: number = 0;
   let renderInFlight: boolean = false;
   let renderQueued: boolean = false;
   let scrollObserver: IntersectionObserver | undefined;
 
+  // Track isDirectory staleness: when filePath changes, isDirectory may be stale
+  // from a previous tab. Only render directory preview if isDirectory was set for THIS path.
+  let _lastIsDirPath: string = '';
+  let _lastIsDirValue: boolean = false;
+
+  // Track content staleness for binary files (images/videos).
+  // When filePath changes, binaryContent may still hold the previous file's data.
+  // Skip render until binaryContent is cleared and reloaded with fresh data.
+  let _lastBinaryContentRef: ArrayBuffer | null = null;
+
   // Per-tab persistent preview slots
   const tabSlots = new Map<number, HTMLDivElement>();
-  let currentTabId: number = 0;
-
-  export function setTabId(tabId: number) {
-    currentTabId = tabId;
-  }
 
   export function getActiveSlot(): HTMLDivElement | undefined {
-    return tabSlots.get(currentTabId);
+    return tabSlots.get(renderTabId);
   }
 
   export function getOrCreateSlot(tabId: number): HTMLDivElement {
@@ -82,7 +105,11 @@
 
   export function showTabSlot(tabId: number) {
     for (const [id, slot] of tabSlots) {
-      slot.style.zIndex = id === tabId ? '1' : '0';
+      const newZ = id === tabId ? '1' : '0';
+      if (slot.style.zIndex !== newZ) {
+        console.log(`[showTabSlot] tab=${id} zIndex ${slot.style.zIndex}→${newZ} scrollTop=${slot.scrollTop}`);
+      }
+      slot.style.zIndex = newZ;
     }
   }
 
@@ -101,12 +128,42 @@
     tabSlots.clear();
   }
 
+  export function bumpContentGeneration() {
+    _contentGeneration++;
+  }
+
+  export function clearActiveSlot() {
+    const slot = tabSlots.get(renderTabId);
+    if (slot) {
+      slot.innerHTML = '';
+      delete slot.dataset.rendered;
+      delete slot.dataset.filePath;
+      delete slot.dataset.fileMtime;
+    }
+  }
+
+  export function getScrollTop(): number {
+    return tabSlots.get(renderTabId)?.scrollTop ?? 0;
+  }
+
+  export function prepareForLoad() {
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
+    console.log(`[prepareForLoad] tab=${renderTabId} slot.rendered=${slot.dataset.rendered} slot.path=${slot.dataset.filePath?.split(/[/\\]/).pop()} scrollTop=${slot.scrollTop} children=${tabSlots.size}`);
+  }
+
+  export function getPreviewArea(): HTMLElement | undefined {
+    return previewArea;
+  }
+
   function getPreviewRouter(): PreviewRouter {
     if (!previewRouter) {
       previewRouter = new PreviewRouter();
       previewRouter.onHeadings = (headings: TocHeading[]) => {
         tocHeadings = headings;
         tocActiveLine = -1;
+        onTocHeadingsChange(headings);
+        onTocActiveLineChange(-1);
       };
     }
     return previewRouter;
@@ -119,18 +176,73 @@
     return directoryPreviewer;
   }
 
-  export function requestTabRender(tabId: number): number {
+  function requestTabRender(tabId: number): number {
     return (tabSlots.get(tabId)?.dataset.renderVersion ? parseInt(tabSlots.get(tabId)!.dataset.renderVersion!) : 0) + 1;
   }
 
-  export function isCurrentTabRender(tabId: number, path: string, version: number): boolean {
+  function isCurrentTabRender(tabId: number, path: string, version: number): boolean {
     const slot = tabSlots.get(tabId);
     return slot?.dataset.renderVersion === String(version) && slot?.dataset.filePath === path;
   }
 
+  // Auto-render effect: triggers when content/mode/tab changes
+  let _prevRenderKey: string = '';
+  let _prevFilePathForContent: string | null = null;
+  $effect(() => {
+    const contentFingerprint = content ? `${content.length}:${content.slice(0, 80)}` : '';
+    const key = `${renderTrigger}:${mode}:${filePath}:${renderTabId}:${codeFileDirectEdit}:${directEdit}:${isDirectory}:${contentFingerprint}:${!!binaryContent}`;
+    if (key === _prevRenderKey) return;
+    console.log(`[renderEffect] FIRED tab=${renderTabId} path=${filePath?.split(/[/\\]/).pop()} mode=${mode} contentLen=${content?.length ?? 0} binary=${!!binaryContent} pendingScroll=${pendingRestoreScrollTop}`);
+    _prevRenderKey = key;
+
+    // Track which path isDirectory was set for.
+    // When filePath changes (tab switch), isDirectory may be stale from a different tab.
+    // We record the path that isDirectory=true was associated with so we can detect staleness.
+    if (isDirectory !== _lastIsDirValue) {
+      _lastIsDirPath = isDirectory ? (filePath ?? '') : '';
+      _lastIsDirValue = isDirectory;
+    }
+
+    // When filePath changes, reset binary content staleness tracker.
+    // binaryContent may still hold data from the previous file;
+    // skip rendering until binaryContent is cleared and reloaded with fresh data.
+    if (filePath !== _prevFilePathForContent) {
+      _prevFilePathForContent = filePath;
+      _lastBinaryContentRef = null;
+    }
+
+    if (mode !== 'global-normal') return;
+    if (directEdit) return; // Code files go directly to editor, never render preview
+    if (!previewArea || !filePath) return;
+
+    if (isDirectory) {
+      // Guard: only render directory preview if isDirectory was set for THIS filePath.
+      // Prevents stale isDirectory=true from a previous tab triggering a directory render
+      // for a file path that isn't actually a directory.
+      if (filePath !== _lastIsDirPath) return;
+      void renderDirectoryPreview();
+    } else if (codeFileDirectEdit && content) {
+      renderSimpleCodePreview();
+    } else if (content || binaryContent) {
+      // Guard: if filePath changed but binaryContent is still from the previous file,
+      // skip render to prevent stale image/video flash.
+      // binaryContent will be cleared by the load effect and re-rendered when new data arrives.
+      if (binaryContent && binaryContent === _lastBinaryContentRef) return;
+      _lastBinaryContentRef = binaryContent;
+      console.log(`[renderEffect] → renderPreview() pendingScroll=${pendingRestoreScrollTop}`);
+      void renderPreview();
+    }
+  });
+
+  // Show correct tab slot when renderTabId changes
+  $effect(() => {
+    const id = renderTabId;
+    if (tabSlots.size > 0) showTabSlot(id);
+  });
+
   export async function renderPreview() {
     if (!previewArea || !filePath) return;
-    requestTabRender(currentTabId);
+    requestTabRender(renderTabId);
 
     if (renderInFlight) {
       renderQueued = true;
@@ -155,16 +267,28 @@
   async function renderPreviewOnce() {
     if (!previewArea || !filePath) return;
 
-    const tabId = currentTabId;
+    const tabId = renderTabId;
     const path = filePath;
+    const snapContent = content;
+    const snapBinary = binaryContent;
+    const snapMtime = currentFileMtime;
+    const snapGen = _contentGeneration;
     const tabVersion = requestTabRender(tabId);
     const slot = getOrCreateSlot(tabId);
     showTabSlot(tabId);
 
+    const slotRendered = slot.dataset.rendered === 'true';
+    const slotPath = slot.dataset.filePath;
+    const slotMtime = slot.dataset.fileMtime;
+    console.log(`[renderPreviewOnce] tab=${tabId} path=${path?.split(/[/\\]/).pop()} mtime=${snapMtime} slot.rendered=${slotRendered} slot.path=${slotPath?.split(/[/\\]/).pop()} slot.mtime=${slotMtime} pendingScroll=${pendingRestoreScrollTop} contentLen=${snapContent?.length ?? 0} scrollTop=${slot.scrollTop}`);
+
     // Skip if this tab's slot already holds a fresh render of the same file.
-    if (slot.dataset.rendered === 'true' && slot.dataset.filePath === path
-        && slot.dataset.fileMtime === String(currentFileMtime)) {
+    if (slotRendered && slotPath === path
+        && slotMtime === String(snapMtime)) {
+      const savedScroll = pendingRestoreScrollTop;
       pendingRestoreScrollTop = -1;
+      console.log(`[renderPreviewOnce] FRESHNESS_PASS savedScroll=${savedScroll} slot.scrollTop=${slot.scrollTop}`);
+      if (savedScroll >= 0) { requestAnimationFrame(() => { console.log(`[renderPreviewOnce] rAF restoring scroll to ${savedScroll}, current=${slot.scrollTop}`); slot.scrollTop = savedScroll; }); }
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
       if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
         requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
@@ -176,7 +300,7 @@
     slot.dataset.filePath = path;
     slot.dataset.renderVersion = String(tabVersion);
 
-    const requestId = ++renderRequestId;
+    const requestId = ++_renderRequestId;
     if (thumbnailMeta) {
       slot.dataset.thumbWidth = String(thumbnailMeta.width);
       slot.dataset.thumbHeight = String(thumbnailMeta.height);
@@ -189,12 +313,14 @@
     if (originalFileSize > 0) { slot.dataset.originalFileSize = String(originalFileSize); }
     else { delete slot.dataset.originalFileSize; }
 
-    const previewContent: string | ArrayBuffer = binaryContent ?? content;
+    const previewContent: string | ArrayBuffer = snapBinary ?? snapContent;
     await getPreviewRouter().preview(path, previewContent, slot);
-    if (requestId !== renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) return;
+    if (requestId !== _renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) return;
+    // Discard if loadFile started a new load during the async render
+    if (snapGen !== _contentGeneration) return;
 
     slot.dataset.rendered = 'true';
-    slot.dataset.fileMtime = String(currentFileMtime);
+    slot.dataset.fileMtime = String(snapMtime);
 
     const savedScroll2 = pendingRestoreScrollTop;
     pendingRestoreScrollTop = -1;
@@ -214,8 +340,8 @@
   }
 
   export function renderSimpleCodePreview() {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
     if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath) return;
     slot.innerHTML = '';
     slot.dataset.filePath = filePath || '';
@@ -227,23 +353,23 @@
   }
 
   export async function renderDirectoryPreview() {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
     if (!filePath) return;
-    const requestId = ++renderRequestId;
+    const requestId = ++_renderRequestId;
     const previewer = getDirectoryPreviewer();
     slot.dataset.filePath = filePath;
     await previewer.render('', slot);
-    if (requestId !== renderRequestId) return;
+    if (requestId !== _renderRequestId) return;
   }
 
   export async function renderArchivePreview(path: string) {
-    const slot = getOrCreateSlot(currentTabId);
-    showTabSlot(currentTabId);
-    const requestId = ++renderRequestId;
+    const slot = getOrCreateSlot(renderTabId);
+    showTabSlot(renderTabId);
+    const requestId = ++_renderRequestId;
     slot.dataset.filePath = path;
     await getPreviewRouter().preview(path, '', slot);
-    if (requestId !== renderRequestId) return;
+    if (requestId !== _renderRequestId) return;
   }
 
   export function scrollPreview(deltaY: number, deltaX: number = 0) {
@@ -284,7 +410,10 @@
         }
         if (topEntry) {
           const line = parseInt((topEntry.target as HTMLElement).dataset.line || '-1');
-          if (line >= 0) { tocActiveLine = line; }
+          if (line >= 0) {
+            tocActiveLine = line;
+            onTocActiveLineChange(line);
+          }
         }
       },
       { root: slot, rootMargin: '-10% 0px -80% 0px', threshold: 0 }
@@ -296,7 +425,7 @@
     const slot = getActiveSlot();
     if (!slot) return;
     const heading = slot.querySelector(`[data-line="${line}"]`);
-    if (heading) { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); tocActiveLine = line; }
+    if (heading) { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); tocActiveLine = line; onTocActiveLineChange(line); }
     onTocJump(line);
   }
 
@@ -321,6 +450,10 @@
 
   export function isTocFocused(): boolean {
     return tocFocused;
+  }
+
+  export function getTocSelectedIndex(): number {
+    return tocSidebar?.getSelectedIndex() ?? -1;
   }
 
   function handleTocFocusChangeInternal(focused: boolean) {
@@ -359,6 +492,14 @@
     overflow: hidden;
   }
 
+  .preview-with-toc.hidden {
+    display: none;
+  }
+
+  .preview-with-toc.modeHidden {
+    display: none;
+  }
+
   .preview-area {
     flex: 1;
     overflow: hidden;
@@ -372,5 +513,8 @@
     right: 0;
     bottom: 0;
     overflow: auto;
+    padding: 8px 16px;
+    box-sizing: border-box;
+    background-color: var(--bg-primary);
   }
 </style>

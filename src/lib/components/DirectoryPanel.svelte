@@ -5,6 +5,7 @@
   import { layout, type ArchiveFormat } from '$lib/stores/layout';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import { transfer } from '$lib/stores/transfer';
+  import FileListPanel from './FileListPanel.svelte';
   import SearchModal from './SearchModal.svelte';
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
@@ -1351,29 +1352,34 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    // Only handle if this panel has focus
-    if (!isFocused) {
-      return;
-    }
-
-    // Don't intercept keys when a modal or dialog is open
+    if (!isFocused) return;
     if (showDeleteConfirm || inputVisible || isSearchModalOpen || showFileInfo) {
       event.stopPropagation();
       return;
     }
-
-    // Stop event propagation to prevent other panels from handling
     event.stopPropagation();
-
-    // Ignore standalone modifier key presses
-    if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
-      return;
-    }
+    if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) return;
 
     const now = Date.now();
     const isDoubleG = lastKey === 'KeyG' && event.code === 'KeyG' && now - lastKeyTime < 500;
     const isGSlash = lastKey === 'KeyG' && event.code === 'Slash' && now - lastKeyTime < 500;
-    // Sort prefix state machine (s + sub-key)
+
+    if (handleSortPrefix(event)) return;
+    if (isArchiveMode) { handleArchiveKey(event, now); updateLastKey(event, now); return; }
+    if (projectMode && handleTreeKey(event, isDoubleG, now)) { updateLastKey(event, now); return; }
+    if (handleOperationKey(event, now, isGSlash)) { updateLastKey(event, now); return; }
+    handleNavigationKey(event, isDoubleG);
+    updateLastKey(event, now);
+  }
+
+  function updateLastKey(event: KeyboardEvent, now: number) {
+    if (!['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
+      lastKey = event.code;
+      lastKeyTime = now;
+    }
+  }
+
+  function handleSortPrefix(event: KeyboardEvent): boolean {
     const codeMap: Record<string, string> = {
       KeyN: 'name', KeyS: 'size', KeyE: 'ext',
       KeyM: 'modified', KeyC: 'created', KeyT: 'dirfirst',
@@ -1383,12 +1389,9 @@
       sortPrefixPending = false;
       if (sortPrefixTimeout) { clearTimeout(sortPrefixTimeout); sortPrefixTimeout = null; }
       const mode = codeMap[event.code];
-      if (mode === 'dirfirst') {
-        toggleDirFirst();
-      } else {
-        setSort(mode as any, event.shiftKey);
-      }
-      return;
+      if (mode === 'dirfirst') toggleDirFirst();
+      else setSort(mode as any, event.shiftKey);
+      return true;
     }
     if (sortPrefixPending) {
       sortPrefixPending = false;
@@ -1399,264 +1402,217 @@
       sortPrefixPending = true;
       if (sortPrefixTimeout) clearTimeout(sortPrefixTimeout);
       sortPrefixTimeout = setTimeout(() => { sortPrefixPending = false; }, 1000);
-      return;
+      return true;
     }
+    return false;
+  }
 
+  function handleArchiveKey(event: KeyboardEvent, _now: number) {
     switch (event.key) {
       case 'Escape':
-        if (filterPattern) {
-          event.preventDefault();
-          clearFilter();
-        }
+        if (filterPattern) { event.preventDefault(); clearFilter(); }
         break;
       case 'Enter':
         event.preventDefault();
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
           if (entry.is_dir) {
-            if (projectMode) { toggleTreeNode(treeVisibleNodes[selectedIndex]); break; }
-            else if (isArchiveMode) {
-              // Navigate within archive
-              if (entry.name === '..') {
-                handleArchiveUp();
-              } else {
-                layout.setArchiveInternalPath(entry.path);
-              }
-            } else onNavigate(entry.path);
-          } else {
-            if (isArchiveMode) {
-              // Preview file in archive: select it for preview panel
-              onSelect(entry.path, entry.is_dir);
-            } else {
-              onActivate(entry.path);
-            }
-          }
+            if (entry.name === '..') handleArchiveUp();
+            else layout.setArchiveInternalPath(entry.path);
+          } else onSelect(entry.path, entry.is_dir);
         }
         break;
-      case 'R':
+      case 'R': event.preventDefault(); refresh(); break;
+      case 'r': event.preventDefault(); handleArchiveRename(); break;
+      case 'D': event.preventDefault(); handleDelete(true); break;
+      case 'd': event.preventDefault(); handleArchiveDelete(); break;
+      case 'x': event.preventDefault(); handleArchiveExtract(); break;
+      case 'i': event.preventDefault(); toggleFileInfo(); break;
+      case 'f': event.preventDefault(); startFilter('wildcard'); break;
+      case 'o': event.preventDefault(); openSelectedFile(); break;
+      case 'O': event.preventDefault(); openSelectedFileWith(); break;
+      case 'a':
         event.preventDefault();
-        if (isArchiveMode) {
-          refresh();
-        } else {
-          refresh();
-        }
+        setTimeout(() => { if (lastKey === 'KeyA') startCreateFile(); }, 300);
         break;
+      case '/':
+        if (lastKey === 'KeyA' && Date.now() - lastKeyTime < 500) { event.preventDefault(); lastKey = ''; startCreateDir(); }
+        break;
+      case 'A': event.preventDefault(); startCreateDir(); break;
+      default:
+        switch (event.code) {
+          case 'KeyJ': event.preventDefault(); selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1)); break;
+          case 'KeyK': event.preventDefault(); selectByIndex(Math.max(selectedIndex - 1, 0)); break;
+          case 'KeyG':
+            if (lastKey === 'KeyG' && Date.now() - lastKeyTime < 500) { event.preventDefault(); selectByIndex(0); lastKey = ''; }
+            else if (event.shiftKey) { event.preventDefault(); selectByIndex(displayFiles.length - 1); }
+            break;
+          case 'KeyH':
+            event.preventDefault();
+            if (archiveState && archiveState.internalPath) {
+              const parts = archiveState.internalPath.split('/');
+              pendingSelectName = parts[parts.length - 1] || null;
+            } else if (archiveState) {
+              pendingSelectName = archiveState.archivePath.split(/[/\\]/).pop() || null;
+            }
+            handleArchiveUp();
+            break;
+          case 'KeyL':
+            event.preventDefault();
+            if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+              const entry = displayFiles[selectedIndex];
+              if (entry.is_dir) {
+                if (entry.name === '..') handleArchiveUp();
+                else layout.setArchiveInternalPath(entry.path);
+              } else {
+                if (isArchiveFile(entry.name)) onToast('Nested archives not supported in this phase');
+                else onSelect(entry.path, entry.is_dir);
+              }
+            }
+            break;
+          case 'Space':
+            event.preventDefault();
+            if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+              const entry = displayFiles[selectedIndex];
+              if (entry.name !== '..') selectionState = togglePathSelection(selectionState, entry.path);
+              selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
+            }
+            break;
+          case 'KeyY':
+            event.preventDefault();
+            {
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
+              if (entries.length > 0 && archiveState) {
+                clipboard.yankFromArchive(archiveState.archivePath, entries);
+                layout.setMark('copy', entries.map(e => e.path));
+                clearSelection();
+                onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked from archive`);
+              }
+            }
+            break;
+          case 'Period':
+            event.preventDefault();
+            showHidden = !showHidden;
+            onToast(showHidden ? 'Showing hidden files' : 'Hiding hidden files');
+            break;
+        }
+    }
+  }
+
+  function handleTreeKey(event: KeyboardEvent, isDoubleG: boolean, _now: number): boolean {
+    switch (event.code) {
+      case 'KeyJ':
+        event.preventDefault();
+        selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
+        return true;
+      case 'KeyK':
+        event.preventDefault();
+        if (event.shiftKey) {
+          const parentPath = treeVisibleNodes[selectedIndex]?.parentPath;
+          if (parentPath) selectTreePathOrAncestor(parentPath);
+        } else selectByIndex(Math.max(selectedIndex - 1, 0));
+        return true;
+      case 'KeyG':
+        if (isDoubleG) { event.preventDefault(); selectByIndex(0); lastKey = ''; return true; }
+        if (event.shiftKey) { event.preventDefault(); selectByIndex(displayFiles.length - 1); return true; }
+        return false;
+      case 'KeyH':
+        event.preventDefault();
+        if (event.shiftKey) { collapseDeepestTreeLevel(); }
+        else {
+          const node = treeVisibleNodes[selectedIndex];
+          if (node?.expanded) collapseTreeNode(node);
+          else if (node?.parentPath) { const parent = findTreeNode(node.parentPath); if (parent?.expanded) collapseTreeNode(parent); }
+        }
+        return true;
+      case 'KeyL':
+        event.preventDefault();
+        {
+          const node = treeVisibleNodes[selectedIndex];
+          if (node?.entry.is_dir) {
+            if (event.shiftKey) void expandRecursively(node);
+            else if (node.expanded && node.children.length > 0) selectByIndex(selectedIndex + 1);
+            else void expandTreeNode(node);
+          } else if (node) onActivate(node.entry.path);
+        }
+        return true;
+      case 'KeyV':
+        event.preventDefault();
+        if (checkHasSelection()) clearSelection();
+        else if (projectRoot) selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
+        else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+        return true;
+    }
+    return false;
+  }
+
+  function handleOperationKey(event: KeyboardEvent, now: number, isGSlash: boolean): boolean {
+    switch (event.key) {
+      case 'Escape':
+        if (filterPattern) { event.preventDefault(); clearFilter(); return true; }
+        return false;
+      case 'Enter':
+        event.preventDefault();
+        if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+          const entry = displayFiles[selectedIndex];
+          if (entry.is_dir) {
+            if (projectMode) toggleTreeNode(treeVisibleNodes[selectedIndex]);
+            else onNavigate(entry.path);
+          } else onActivate(entry.path);
+        }
+        return true;
+      case 'R': event.preventDefault(); refresh(); return true;
       case 'r':
         event.preventDefault();
-        if (isArchiveMode) {
-          handleArchiveRename();
-        } else if (getSelectedProjectNodes().filter(node => !node.entry.is_dir).length > 1) {
-          startBatchRename();
-        } else {
-          startRename();
+        {
+          const selectedNonDirCount = projectMode
+            ? getSelectedProjectNodes().filter(node => !node.entry.is_dir).length
+            : files.filter(entry => !entry.is_dir && selectionState.selectedPaths.has(entry.path)).length;
+          if (selectedNonDirCount > 1) startBatchRename();
+          else startRename();
         }
-        break;
-      case 'D':
-        event.preventDefault();
-        handleDelete(true);
-        break;
+        return true;
+      case 'D': event.preventDefault(); handleDelete(true); return true;
       case 'E':
         event.preventDefault();
-        if (isArchiveMode) {
-          break; // E not available in archive mode
-        }
-        // Extract mark: mark archive file for extraction
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
-          if (entry.is_dir) break;
-          if (isArchiveFile(entry.name)) {
-            void markArchiveForExtraction(
-              entry.path,
-              (paths) => {
-                layout.setMark('extract', paths);
-                onToast(`Archive marked: ${paths[0]}`);
-              },
-              (msg) => onToast(msg)
-            );
-          } else {
-            onToast('E key only works on archive files');
-          }
+          if (!entry.is_dir && isArchiveFile(entry.name)) {
+            void markArchiveForExtraction(entry.path, (paths) => { layout.setMark('extract', paths); onToast(`Archive marked: ${paths[0]}`); }, (msg) => onToast(msg));
+          } else onToast('E key only works on archive files');
         }
-        break;
+        return true;
       case 'e':
         event.preventDefault();
-        if (isArchiveMode) break; // e not available in archive mode
         if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
           const entry = displayFiles[selectedIndex];
-          if (entry.is_dir) break;
-          if (isArchiveFile(entry.name)) {
-            handleExtractHere(entry.path);
-          }
+          if (!entry.is_dir && isArchiveFile(entry.name)) handleExtractHere(entry.path);
         }
-        break;
-      case 'c':
-        event.preventDefault();
-        if (isArchiveMode) break; // c not available in archive mode
-        handleCompress();
-        break;
+        return true;
+      case 'c': event.preventDefault(); handleCompress(); return true;
       case 'C':
         event.preventDefault();
-        if (isArchiveMode) break; // C not available in archive mode
         {
-          const entries = getEntriesToOperate(
-            selectionState,
-            files,
-            displayFiles,
-            selectedIndex,
-            projectMode,
-            (path: string) => findTreeNode(path)
-          );
+          const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
           if (entries.length > 0) {
             layout.setMark('compress', entries.map(e => e.path));
             clearSelection();
             onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} marked for compression. Press p to compress.`);
           }
         }
-        break;
-      case 'i':
-        event.preventDefault();
-        toggleFileInfo();
-        break;
-      case 'f':
-        event.preventDefault();
-        startFilter('wildcard');
-        break;
-      case 'o':
-        event.preventDefault();
-        openSelectedFile();
-        break;
-      case 'O':
-        event.preventDefault();
-        openSelectedFileWith();
-        break;
+        return true;
+      case 'i': event.preventDefault(); toggleFileInfo(); return true;
+      case 'f': event.preventDefault(); startFilter('wildcard'); return true;
+      case 'o': event.preventDefault(); openSelectedFile(); return true;
+      case 'O': event.preventDefault(); openSelectedFileWith(); return true;
       default:
-        // Use event.code for letter keys to support Chinese IME
         switch (event.code) {
-          case 'KeyJ':
-            event.preventDefault();
-            selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
-            break;
-          case 'KeyK':
-            event.preventDefault();
-            if (projectMode) {
-              if (event.shiftKey) {
-                const parentPath = treeVisibleNodes[selectedIndex]?.parentPath;
-                if (parentPath) selectTreePathOrAncestor(parentPath);
-              } else {
-                selectByIndex(Math.max(selectedIndex - 1, 0));
-              }
-            } else selectByIndex(Math.max(selectedIndex - 1, 0));
-            break;
-          case 'KeyG':
-            if (isDoubleG) {
-              event.preventDefault();
-              selectByIndex(0);
-              lastKey = '';
-              return;
-            }
-            if (event.shiftKey) {
-              event.preventDefault();
-              selectByIndex(displayFiles.length - 1);
-            }
-            break;
-          case 'KeyH':
-            if (projectMode) {
-              event.preventDefault();
-              if (event.shiftKey) {
-                collapseDeepestTreeLevel();
-              } else {
-                const node = treeVisibleNodes[selectedIndex];
-                if (node?.expanded) {
-                  collapseTreeNode(node);
-                } else if (node?.parentPath) {
-                  const parent = findTreeNode(node.parentPath);
-                  if (parent?.expanded) collapseTreeNode(parent);
-                }
-              }
-              break;
-            }
-            if (isArchiveMode) {
-              event.preventDefault();
-              if (archiveState && archiveState.internalPath) {
-                const parts = archiveState.internalPath.split('/');
-                pendingSelectName = parts[parts.length - 1] || null;
-              } else if (archiveState) {
-                // Exiting archive: remember the archive file name to restore focus
-                pendingSelectName = archiveState.archivePath.split(/[/\\]/).pop() || null;
-              }
-              handleArchiveUp();
-              break;
-            }
-            if (type === 'current' || type === 'parent') {
-              event.preventDefault();
-              const shouldRestore = isFocused;
-              const dirName = path.split(/[/\\]/).filter(Boolean).pop();
-              if (dirName && type === 'current') pendingSelectName = dirName;
-              onNavigateUp();
-              if (shouldRestore) {
-                setTimeout(() => { panelElement?.focus(); isFocused = true; }, 100);
-              }
-            }
-            break;
-          case 'KeyL':
-            if (projectMode) {
-              event.preventDefault();
-              const node = treeVisibleNodes[selectedIndex];
-              if (node?.entry.is_dir) {
-                if (event.shiftKey) void expandRecursively(node);
-                else if (node.expanded && node.children.length > 0) selectByIndex(selectedIndex + 1);
-                else void expandTreeNode(node);
-              } else if (node) onActivate(node.entry.path);
-              break;
-            }
-            if (type === 'current' || detached || type === 'parent') {
-              event.preventDefault();
-              if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
-                const entry = displayFiles[selectedIndex];
-                if (entry.is_dir) {
-                  if (isArchiveMode) {
-                    if (entry.name === '..') {
-                      handleArchiveUp();
-                    } else {
-                      layout.setArchiveInternalPath(entry.path);
-                    }
-                  } else {
-                    onNavigate(entry.path);
-                  }
-                } else {
-                  if (isArchiveMode) {
-                    // Check if it's a nested archive (first phase: don't enter)
-                    if (isArchiveFile(entry.name)) {
-                      onToast('Nested archives not supported in this phase');
-                    } else {
-                      onSelect(entry.path, entry.is_dir);
-                    }
-                  } else {
-                    // Normal mode: if it's an archive, enter archive mode
-                    if (isArchiveFile(entry.name)) {
-                      enterArchive(entry.path, layout);
-                    } else {
-                      onActivate(entry.path);
-                    }
-                  }
-                }
-              }
-            }
-            break;
           case 'Slash':
             event.preventDefault();
-            if (lastKey === 'KeyA' && now - lastKeyTime < 500) {
-              lastKey = '';
-              startCreateDir();
-            } else if (isGSlash) {
-              searchMode = 'recursive';
-              lastKey = '';
-              openSearchModal();
-            } else {
-              searchMode = 'current';
-              openSearchModal();
-            }
-            break;
+            if (lastKey === 'KeyA' && now - lastKeyTime < 500) { lastKey = ''; startCreateDir(); }
+            else if (isGSlash) { searchMode = 'recursive'; lastKey = ''; openSearchModal(); }
+            else { searchMode = 'current'; openSearchModal(); }
+            return true;
           case 'Space':
             event.preventDefault();
             if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
@@ -1666,49 +1622,19 @@
                 if (node) selectionState = toggleTreeSelection(selectionState, node.entry.path, node.entry.is_dir);
                 else selectionState = togglePathSelection(selectionState, entry.path);
               }
-              // Advance cursor
               selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
             }
-            break;
+            return true;
           case 'KeyV':
             event.preventDefault();
-            if (checkHasSelection()) {
-              clearSelection();
-            } else if (projectMode && projectRoot) {
-              selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
-            } else {
-              selectionState = {
-                ...selectionState,
-                selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)),
-              };
-            }
-            break;
+            if (checkHasSelection()) clearSelection();
+            else if (projectMode && projectRoot) selectionState = selectTreeSubtree(selectionState, projectRoot.entry.path);
+            else selectionState = { ...selectionState, selectedPaths: new Set(displayFiles.filter(f => f.name !== '..').map(f => f.path)) };
+            return true;
           case 'KeyY':
             event.preventDefault();
-            if (isArchiveMode) {
-              const entries = getEntriesToOperate(
-                selectionState,
-                files,
-                displayFiles,
-                selectedIndex,
-                projectMode,
-                (path: string) => findTreeNode(path)
-              );
-              if (entries.length > 0 && archiveState) {
-                clipboard.yankFromArchive(archiveState.archivePath, entries);
-                layout.setMark('copy', entries.map(e => e.path));
-                clearSelection();
-                onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked from archive`);
-              }
-            } else {
-              const entries = getEntriesToOperate(
-                selectionState,
-                files,
-                displayFiles,
-                selectedIndex,
-                projectMode,
-                (path: string) => findTreeNode(path)
-              );
+            {
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
               if (entries.length > 0) {
                 clipboard.yank(entries);
                 layout.setMark('copy', entries.map(e => e.path));
@@ -1716,20 +1642,11 @@
                 onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} yanked`);
               }
             }
-            break;
+            return true;
           case 'KeyX':
             event.preventDefault();
-            if (isArchiveMode) {
-              handleArchiveExtract();
-            } else {
-              const entries = getEntriesToOperate(
-                selectionState,
-                files,
-                displayFiles,
-                selectedIndex,
-                projectMode,
-                (path: string) => findTreeNode(path)
-              );
+            {
+              const entries = getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectMode, (path: string) => findTreeNode(path));
               if (entries.length > 0) {
                 clipboard.cut(entries);
                 layout.setMark('cut', entries.map(e => e.path));
@@ -1737,43 +1654,63 @@
                 onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} cut`);
               }
             }
-            break;
+            return true;
           case 'Period':
             event.preventDefault();
             showHidden = !showHidden;
             if (projectMode) void refreshProjectTree();
             onToast(showHidden ? 'Showing hidden files' : 'Hiding hidden files');
-            break;
+            return true;
           case 'KeyA':
             event.preventDefault();
-            // a alone = create file, a/ = create dir (handled via lastKey in Slash case)
-            if (lastKey === 'KeyA' && now - lastKeyTime < 500) {
-              // Double-a: do nothing special
-            }
-            // Delay to check if '/' follows
-            setTimeout(() => {
-              if (lastKey === 'KeyA') {
-                startCreateFile();
-              }
-            }, 300);
-            break;
+            setTimeout(() => { if (lastKey === 'KeyA') startCreateFile(); }, 300);
+            return true;
           case 'KeyD':
             event.preventDefault();
-            if (isArchiveMode) {
-              handleArchiveDelete();
-            } else {
-              handleDelete(false);
-            }
-            break;
+            handleDelete(false);
+            return true;
+        }
+    }
+    return false;
+  }
+
+  function handleNavigationKey(event: KeyboardEvent, isDoubleG: boolean) {
+    switch (event.code) {
+      case 'KeyJ':
+        event.preventDefault();
+        selectByIndex(Math.min(selectedIndex + 1, displayFiles.length - 1));
+        break;
+      case 'KeyK':
+        event.preventDefault();
+        selectByIndex(Math.max(selectedIndex - 1, 0));
+        break;
+      case 'KeyG':
+        if (isDoubleG) { event.preventDefault(); selectByIndex(0); lastKey = ''; }
+        else if (event.shiftKey) { event.preventDefault(); selectByIndex(displayFiles.length - 1); }
+        break;
+      case 'KeyH':
+        if (type === 'current' || type === 'parent') {
+          event.preventDefault();
+          const shouldRestore = isFocused;
+          const dirName = path.split(/[/\\]/).filter(Boolean).pop();
+          if (dirName && type === 'current') pendingSelectName = dirName;
+          onNavigateUp();
+          if (shouldRestore) setTimeout(() => { panelElement?.focus(); isFocused = true; }, 100);
         }
         break;
-    }
-
-    // Don't overwrite prefix state when modifier keys are pressed first
-    // (e.g. user presses s, then Shift+N — Shift keydown fires before N)
-    if (!['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(event.code)) {
-      lastKey = event.code;
-      lastKeyTime = now;
+      case 'KeyL':
+        if (type === 'current' || detached || type === 'parent') {
+          event.preventDefault();
+          if (selectedIndex >= 0 && selectedIndex < displayFiles.length) {
+            const entry = displayFiles[selectedIndex];
+            if (entry.is_dir) onNavigate(entry.path);
+            else {
+              if (isArchiveFile(entry.name)) enterArchive(entry.path, layout);
+              else onActivate(entry.path);
+            }
+          }
+        }
+        break;
     }
   }
 
@@ -1907,30 +1844,17 @@
           type={type}
         />
       {:else}
-        <div class="file-list">
-          {#each displayFiles as file, index (file.path)}
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <div
-              class="file-item"
-              class:selected={selectedFile?.path === file.path}
-              class:multi-selected={selectionState.selectedPaths.has(file.path)}
-              class:cut-marked={cutPaths.has(file.path)}
-              class:directory={file.is_dir}
-              class:hidden-file={file.is_hidden}
-              tabindex="-1"
-              onclick={(event) => handleItemClick(index, event)}
-              ondblclick={(event) => handleItemDblClick(file, event, index)}
-              onkeydown={() => {}}
-              data-path={file.path}
-              data-index={index}
-            >
-              {#if cutPaths.has(file.path)}
-                <span class="cut-marker">x</span>
-              {/if}
-              <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
-            </div>
-          {/each}
-        </div>
+        <FileListPanel
+          files={displayFiles}
+          selectedIndex={selectedIndex}
+          cutPaths={cutPaths}
+          selectionState={selectionState}
+          onSelect={selectByIndex}
+          onDblClick={(entry, _index, _event) => {
+            if (entry.is_dir) onNavigate(entry.path);
+            else onActivate(entry.path);
+          }}
+        />
       {/if}
     {/if}
   </div>
