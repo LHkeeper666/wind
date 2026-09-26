@@ -1,3 +1,4 @@
+use log::{debug, error, info};
 use serde::Serialize;
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus,
@@ -12,14 +13,14 @@ pub fn set_ime_enabled(enabled: bool) {
         let hwnd = GetForegroundWindow();
         let himc = ImmGetContext(hwnd);
         if himc.is_invalid() {
-            eprintln!("[IME] ImmGetContext returned invalid handle");
+            error!("[IME] ImmGetContext returned invalid handle");
             return;
         }
         let current = ImmGetOpenStatus(himc).as_bool();
-        eprintln!("[IME] current={current}, requested={enabled}");
+        debug!("[IME] current={current}, requested={enabled}");
         if current != enabled {
             let _ = ImmSetOpenStatus(himc, enabled.into());
-            eprintln!("[IME] toggled to {enabled}");
+            info!("[IME] toggled to {enabled}");
         }
         let _ = ImmReleaseContext(hwnd, himc);
     }

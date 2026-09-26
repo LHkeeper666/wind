@@ -3,6 +3,8 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+use log::{debug, error, info, warn};
+
 use crate::tool_cache;
 
 #[tauri::command]
@@ -155,29 +157,29 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
         let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         let is_jpeg_ext = ext == "jpg" || ext == "jpeg";
 
-        eprintln!("[thumbnail] Processing: {} ({} bytes, ext={}, actual_jpeg={})", path, original_size, ext, is_actual_jpeg);
+        info!("[thumbnail] Processing: {} ({} bytes, ext={}, actual_jpeg={})", path, original_size, ext, is_actual_jpeg);
 
         if is_actual_jpeg {
             let t0 = std::time::Instant::now();
 
             let mut decompressor = turbojpeg::Decompressor::new()
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to create decompressor: {}", e);
+                    error!("[thumbnail] Failed to create decompressor: {}", e);
                     format!("Failed to create decompressor: {}", e)
                 })?;
             let header = decompressor.read_header(&file_data)
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to read JPEG headers {}: {}", path, e);
+                    error!("[thumbnail] Failed to read JPEG headers {}: {}", path, e);
                     format!("Failed to read JPEG headers: {}", e)
                 })?;
             let orig_w = header.width as u32;
             let orig_h = header.height as u32;
             let max_side = orig_w.max(orig_h);
 
-            eprintln!("[thumbnail] JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
+            debug!("[thumbnail] JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
 
             if max_side <= THUMBNAIL_MAX_SIDE || original_size <= THUMBNAIL_SKIP_SIZE {
-                eprintln!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
+                info!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -191,7 +193,7 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
             let rgb_pixels: Vec<u8> = match turbojpeg::decompress(&file_data, turbojpeg::PixelFormat::RGB) {
                 Ok(image) => image.pixels,
                 Err(e) => {
-                    eprintln!("[thumbnail] turbojpeg failed ({}), falling back to image crate", e);
+                    warn!("[thumbnail] turbojpeg failed ({}), falling back to image crate", e);
                     let img = image::load_from_memory(&file_data)
                         .map_err(|e2| format!("Failed to decode JPEG: {} (turbojpeg: {})", e2, e))?;
                     img.to_rgb8().into_raw()
@@ -236,7 +238,7 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
                 .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
             let t4 = std::time::Instant::now();
 
-            eprintln!("[turbojpeg+fast-resize] {}x{} -> {}x{}, read={}ms decode={}ms resize={}ms encode={}ms total={}ms",
+            debug!("[turbojpeg+fast-resize] {}x{} -> {}x{}, read={}ms decode={}ms resize={}ms encode={}ms total={}ms",
                 orig_w, orig_h, final_w, final_h,
                 (t1-t0).as_millis(), (t2-t1).as_millis(), (t3-t2).as_millis(), (t4-t3).as_millis(), (t4-t0).as_millis());
 
@@ -249,33 +251,33 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
             })
         } else {
             if is_jpeg_ext && !is_actual_jpeg {
-                eprintln!("[thumbnail] Warning: {} has .jpg extension but is not JPEG format", path);
+                warn!("[thumbnail] Warning: {} has .jpg extension but is not JPEG format", path);
             }
 
             let format = image::guess_format(&file_data)
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to guess format {}: {}", path, e);
+                    error!("[thumbnail] Failed to guess format {}: {}", path, e);
                     format!("Failed to guess image format: {}", e)
                 })?;
-            eprintln!("[thumbnail] Detected format: {:?}", format);
+            debug!("[thumbnail] Detected format: {:?}", format);
 
             let reader = image::ImageReader::new(std::io::Cursor::new(&file_data))
                 .with_guessed_format()
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to create reader {}: {}", path, e);
+                    error!("[thumbnail] Failed to create reader {}: {}", path, e);
                     format!("Failed to create image reader: {}", e)
                 })?;
             let (orig_w, orig_h) = reader.into_dimensions()
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to read dimensions {}: {}", path, e);
+                    error!("[thumbnail] Failed to read dimensions {}: {}", path, e);
                     format!("Failed to read image dimensions: {}", e)
                 })?;
             let max_side = orig_w.max(orig_h);
 
-            eprintln!("[thumbnail] Non-JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
+            debug!("[thumbnail] Non-JPEG dimensions: {}x{}, max_side={}", orig_w, orig_h, max_side);
 
             if max_side <= THUMBNAIL_MAX_SIDE || original_size <= THUMBNAIL_SKIP_SIZE {
-                eprintln!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
+                info!("[thumbnail] Skip thumbnail ({}x{}, {}B)", orig_w, orig_h, original_size);
                 return Ok(ImageThumbnail {
                     data: String::new(),
                     width: orig_w,
@@ -287,7 +289,7 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
 
             let img = image::load_from_memory(&file_data)
                 .map_err(|e| {
-                    eprintln!("[thumbnail] Failed to load image {}: {}", path, e);
+                    error!("[thumbnail] Failed to load image {}: {}", path, e);
                     format!("Failed to load image: {}", e)
                 })?;
             let rgb_img = img.to_rgb8();

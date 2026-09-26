@@ -1,6 +1,7 @@
 import type { Previewer, TocHeading } from './types';
 import { TextPreviewer } from './TextPreviewer';
 import { MarkdownPreviewer } from './MarkdownPreviewer';
+import { logError } from '../utils/log';
 import { ImagePreviewer } from './ImagePreviewer';
 import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
@@ -68,7 +69,7 @@ export class PreviewRouter {
     try {
       await previewer.render(content, staging);
     } catch (err) {
-      console.error('[PreviewRouter] render failed:', err);
+      logError('PreviewRouter', `render failed: ${err}`);
       staging.innerHTML = '<p class="preview-error">Preview failed</p>';
     }
 

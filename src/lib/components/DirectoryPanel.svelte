@@ -3,6 +3,7 @@
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { layout, type ArchiveFormat } from '$lib/stores/layout';
+  import { logInfo, logError } from '$lib/utils/log';
   import { clipboard, type ClipboardEntry } from '$lib/stores/clipboard';
   import { transfer } from '$lib/stores/transfer';
   import FileListPanel from './FileListPanel.svelte';
@@ -427,7 +428,7 @@
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
-        console.log(`[tab-perf] selectInitialEntry pendingSelectName=${target} file=${displayFiles[idx].name}`);
+        logInfo('tab-perf', `selectInitialEntry pendingSelectName=${target} file=${displayFiles[idx].name}`);
         onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
@@ -438,7 +439,7 @@
       if (idx >= 0) {
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
-        console.log(`[tab-perf] selectInitialEntry selectedPath file=${displayFiles[idx].name}`);
+        logInfo('tab-perf', `selectInitialEntry selectedPath file=${displayFiles[idx].name}`);
         onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
@@ -446,7 +447,7 @@
     const firstReal = displayFiles.findIndex(f => f.name !== '..');
     selectedIndex = firstReal >= 0 ? firstReal : 0;
     selectedPathInternal = displayFiles[selectedIndex].path;
-    console.log(`[tab-perf] selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
+    logInfo('tab-perf', `selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
     onSelect(displayFiles[selectedIndex].path, displayFiles[selectedIndex].is_dir);
   }
 
@@ -476,7 +477,7 @@
       applyPendingRestore();
       markDirectorySynchronized(dirPath, version);
       isLoading = false;
-      console.log(`[tab-perf] loadDirectory CACHE_HIT dir=${dirPath.split(/[/\\]/).pop()} time=${(performance.now()-t0).toFixed(1)}ms`);
+      logInfo('tab-perf', `loadDirectory CACHE_HIT dir=${dirPath.split(/[/\\]/).pop()} time=${(performance.now()-t0).toFixed(1)}ms`);
       return true;
     }
 
@@ -533,7 +534,7 @@
       return true;
     } catch (error) {
       if (gen !== loadingGen) return false;
-      console.error('Failed to load directory:', error);
+      logError('DirectoryPanel', `Failed to load directory: ${error}`);
       errorMessage = `Failed to load: ${error}`;
       return false;
     } finally {

@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { formatSize } from '$lib/utils/file-types';
+  import { logInfo, logError } from '$lib/utils/log';
   import {
     type PdfPageDimensions,
     type PdfSearchState,
@@ -281,7 +282,7 @@
       if (generation === renderGeneration) appendTile(layer, data, generation, onInserted, retryVisibleHighTile);
     }).catch(error => {
       if (generation === renderGeneration) {
-        console.error(`Failed to render PDF tile ${spec.key}:`, error);
+        logError('PdfPreviewPanel', `Failed to render PDF tile ${spec.key}: ${error}`);
         retryVisibleHighTile();
       }
     }).finally(() => {
@@ -311,8 +312,8 @@
 
     try {
       const links = await fetchPdfPageLinks(pdfPath, pageNum);
-      if (links.length === 0) { console.log(`[pdf] links p${pageNum}: 0`); return; }
-      console.log(`[pdf] links p${pageNum}: ${links.length} items`, links[0]);
+      if (links.length === 0) { logInfo('pdf', `links p${pageNum}: 0`); return; }
+      logInfo('pdf', `links p${pageNum}: ${links.length} items`);
 
       const dim = pageDimensions[pageNum];
       if (!dim) return;

@@ -36,12 +36,132 @@ struct AppState {
     transfer_scheduler: Arc<TokioMutex<transfer::TransferScheduler>>,
 }
 
+fn setup_logging(app_handle: &tauri::AppHandle) {
+    let is_dev = cfg!(debug_assertions);
+
+    // Determine log level from RUST_LOG env var
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| {
+            let level_str: Option<String> = v
+                .split(',')
+                .find(|s| s.starts_with("wind"))
+                .and_then(|s| s.split('=').nth(1))
+                .map(|s| s.to_lowercase());
+            level_str
+        })
+        .and_then(|l| match l.as_str() {
+            "trace" => Some(log::LevelFilter::Trace),
+            "debug" => Some(log::LevelFilter::Debug),
+            "info" => Some(log::LevelFilter::Info),
+            "warn" => Some(log::LevelFilter::Warn),
+            "error" => Some(log::LevelFilter::Error),
+            _ => None,
+        })
+        .unwrap_or(log::LevelFilter::Info);
+
+    let mut dispatch = fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{} {} [{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(level);
+
+    if is_dev {
+        // Dev mode: stdout only
+        dispatch = dispatch.chain(std::io::stdout());
+    } else {
+        // Release mode: file output with date-based rotation
+        if let Ok(log_dir) = app_handle.path().app_local_data_dir().map(|p| p.join("logs")) {
+            let _ = std::fs::create_dir_all(&log_dir);
+
+            // State for tracking current log file and date
+            let state: &'static Mutex<(Option<std::fs::File>, String)> =
+                Box::leak(Box::new(Mutex::new((None, String::new()))));
+
+            // Use a custom log target for date-based file rotation
+            let log_dir_clone = log_dir.clone();
+            dispatch = dispatch.chain(fern::Output::call(move |record| {
+                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let mut guard = state.lock().unwrap();
+                let (ref mut file, ref mut current_date) = *guard;
+                if current_date != &today {
+                    let log_path = log_dir_clone.join(format!("wind-{}.log", today));
+                    if let Ok(f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        *file = Some(f);
+                        *current_date = today;
+                    }
+                }
+                if let Some(ref mut f) = file {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", record.args());
+                }
+            }));
+        }
+    }
+
+    dispatch.apply().ok();
+}
+
+/// Clean up log files older than 7 days
+fn cleanup_old_logs(app_handle: &tauri::AppHandle) {
+    if let Ok(log_dir) = app_handle.path().app_local_data_dir().map(|p| p.join("logs")) {
+        if !log_dir.exists() {
+            return;
+        }
+        let cutoff = chrono::Local::now() - chrono::Duration::days(7);
+        if let Ok(entries) = std::fs::read_dir(&log_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Match wind-YYYY-MM-DD.log pattern
+                if name_str.starts_with("wind-") && name_str.ends_with(".log") {
+                    let date_part = &name_str[5..name_str.len() - 4];
+                    if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
+                        if file_date < cutoff.naive_local().date() {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Tauri command for frontend to send log messages
+#[tauri::command]
+fn frontend_log(level: String, message: String) {
+    match level.to_lowercase().as_str() {
+        "error" => log::error!("[frontend] {}", message),
+        "warn" => log::warn!("[frontend] {}", message),
+        "debug" => log::debug!("[frontend] {}", message),
+        _ => log::info!("[frontend] {}", message),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Initialize logging
+            setup_logging(&handle);
+            log::info!("Wind application starting");
+
+            // Clean up old log files
+            cleanup_old_logs(&handle);
+
             let mut terminal = terminal::TerminalManager::new();
             terminal.set_app_handle(handle.clone());
             let mut ftp_manager = ftp::FtpManager::new();
@@ -147,6 +267,7 @@ pub fn run() {
             commands::ftp_cmd::list_ftp_connections,
             commands::ftp_cmd::check_ftp_connection,
             python_completion::get_package_api,
+            frontend_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

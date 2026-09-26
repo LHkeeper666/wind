@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import { formatSize } from '$lib/utils/file-types';
+  import { logError } from '$lib/utils/log';
 
   interface ImageEntry {
     name: string;
@@ -89,7 +90,7 @@
         img.src = url;
       });
     } catch (error) {
-      console.error('Failed to load image:', error);
+      logError('FullscreenImageViewer', `Failed to load image: ${error}`);
       hasError = true;
       isLoading = false;
     }

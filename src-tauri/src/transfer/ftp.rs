@@ -9,6 +9,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::Mutex as TokioMutex;
 
+use log::{info, warn, error, debug};
+
 use crate::ftp::FtpManager;
 
 use super::TransferTask;
@@ -29,7 +31,7 @@ pub async fn execute_ftp_download(
     } else {
         "/"
     };
-    eprintln!("[transfer] FTP download: conn={conn_name} remote={remote_path} → local={}", task.destination);
+    info!("[transfer] FTP download: conn={conn_name} remote={remote_path} → local={}", task.destination);
 
     let mgr = ftp_manager.lock().await;
     let session = mgr.create_independent(conn_name).await?;
@@ -39,15 +41,15 @@ pub async fn execute_ftp_download(
 
     // Try to get file size for progress display
     let file_size = match ftp.client.size(remote_path).await {
-        Ok(s) => { eprintln!("[transfer] FTP SIZE: {s} bytes"); s }
-        Err(e) => { eprintln!("[transfer] FTP SIZE failed (ignored): {e}"); 0 }
+        Ok(s) => { debug!("[transfer] FTP SIZE: {s} bytes"); s }
+        Err(e) => { warn!("[transfer] FTP SIZE failed (ignored): {e}"); 0 }
     };
 
     let mut stream = ftp.client.retr_as_stream(remote_path)
         .await
         .map_err(|e| {
             let msg = format!("FTP download failed: {e}");
-            eprintln!("[transfer] {msg}");
+            error!("[transfer] {msg}");
             msg
         })?;
 
@@ -129,7 +131,7 @@ pub async fn execute_ftp_upload(
     } else {
         "/"
     };
-    eprintln!("[transfer] FTP upload: local={} → conn={conn_name} remote={remote_path}", task.source);
+    info!("[transfer] FTP upload: local={} → conn={conn_name} remote={remote_path}", task.source);
 
     let mgr = ftp_manager.lock().await;
     let session = mgr.create_independent(conn_name).await?;
@@ -168,7 +170,7 @@ pub async fn execute_ftp_upload(
             if reader.cancel_flag.load(Ordering::Relaxed) {
                 // Try to delete partial file from server
                 let _ = ftp.client.rm(remote_path).await;
-                eprintln!("[transfer] FTP upload cancelled, cleaned up remote file: {remote_path}");
+                info!("[transfer] FTP upload cancelled, cleaned up remote file: {remote_path}");
                 Err("Cancelled".into())
             } else {
                 Err(format!("FTP upload failed: {}", e))
@@ -192,7 +194,7 @@ pub async fn execute_ftp_delete(
     } else {
         "/"
     };
-    eprintln!("[transfer] FTP delete: conn={conn_name} remote={remote_path}");
+    info!("[transfer] FTP delete: conn={conn_name} remote={remote_path}");
 
     let mgr = ftp_manager.lock().await;
     let session = mgr.create_independent(conn_name).await?;
@@ -217,7 +219,7 @@ pub async fn execute_ftp_delete(
             Ok(1)
         }
         Err(rm_err) => {
-            eprintln!("[transfer] FTP delete rm failed, trying rmdir: {rm_err}");
+            warn!("[transfer] FTP delete rm failed, trying rmdir: {rm_err}");
             ftp.client.rmdir(remote_path)
                 .await
                 .map_err(|e| format!("FTP delete failed (both rm and rmdir): {rm_err} / {e}"))?;
@@ -294,7 +296,7 @@ pub async fn ensure_remote_dir(
     // Try creating the full path directly
     match client.mkdir(path).await {
         Ok(_) => return Ok(()),
-        Err(e) => eprintln!("[transfer] MKD '{}' direct failed, building by segments: {}", path, e),
+        Err(e) => warn!("[transfer] MKD '{}' direct failed, building by segments: {}", path, e),
     }
 
     // Build directory path segment by segment

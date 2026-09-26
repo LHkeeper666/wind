@@ -3,6 +3,7 @@ import type PdfPreviewPanel from '$lib/components/PdfPreviewPanel.svelte';
 import type PdfTocSidebar from '$lib/components/PdfTocSidebar.svelte';
 import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
 import { fetchPdfOutline } from '$lib/utils/pdf-shared';
+import { logError } from '$lib/utils/log';
 
 export interface PdfCacheData {
   pdfCurrentPage: number;
@@ -135,13 +136,13 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
           }
         })
         .catch(e => {
-          console.error('[pdf] outline fetch failed:', e);
+          logError('pdf', `outline fetch failed: ${e}`);
           if (gen === lastLoadGen) pdfOutline = [];
         });
       return true;
     } catch (error) {
       if (gen !== lastLoadGen) return false;
-      console.error('Failed to load PDF:', error);
+      logError('pdf', `Failed to load PDF: ${error}`);
       pdfPageCount = 0;
       pdfCurrentPage = 0;
       pdfPageDimensions = [];

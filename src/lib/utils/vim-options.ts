@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Vim } from '@replit/codemirror-vim';
+import { logError } from './log';
 
 interface OptionMeta {
   name: string;
@@ -101,14 +102,14 @@ class VimOptionStore {
     const entry = this.options.get(name);
     if (!entry) return;
     for (const fn of entry.listeners) {
-      try { fn(value); } catch (e) { console.error(`Option change listener error [${name}]:`, e); }
+      try { fn(value); } catch (e) { logError('VimOptions', `Option change listener error [${name}]: ${e}`); }
     }
     // Also notify shortName listeners
     if (entry.shortName) {
       const aliasEntry = this.options.get(entry.shortName);
       if (aliasEntry && aliasEntry !== entry) {
         for (const fn of aliasEntry.listeners) {
-          try { fn(value); } catch (e) { console.error(`Option change listener error [${name}]:`, e); }
+          try { fn(value); } catch (e) { logError('VimOptions', `Option change listener error [${name}]: ${e}`); }
         }
       }
     }

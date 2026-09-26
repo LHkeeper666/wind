@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy, tick } from 'svelte';
+  import { logError } from '$lib/utils/log';
 
   interface SearchResult {
     name: string;
@@ -156,7 +157,7 @@
       selectedIndex = results.length > 0 ? 0 : -1;
     } catch (error) {
       if (currentGeneration !== searchGeneration) return;
-      console.error('Search failed:', error);
+      logError('SearchModal', `Search failed: ${error}`);
       results = [];
     } finally {
       if (currentGeneration === searchGeneration) {

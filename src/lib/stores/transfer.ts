@@ -3,6 +3,7 @@ import type { DirectoryMutationOutcome, LegacyTransferTerminalEvent } from '$lib
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { formatSize } from '$lib/utils/file-types';
+import { logError } from '$lib/utils/log';
 
 export interface TransferEntry {
   id: number;
@@ -219,7 +220,7 @@ function createTransferStore() {
     try {
       return await invoke<number[]>('transfer_enqueue', { tasks });
     } catch (e) {
-      console.error('[transfer] enqueue failed:', e);
+      logError('transfer', `enqueue failed: ${e}`);
       return [];
     }
   }
@@ -228,7 +229,7 @@ function createTransferStore() {
     try {
       await invoke('transfer_cancel', { id });
     } catch (e) {
-      console.error('[transfer] cancel failed:', e);
+      logError('transfer', `cancel failed: ${e}`);
     }
   }
 
@@ -236,7 +237,7 @@ function createTransferStore() {
     try {
       await invoke('transfer_cancel_all');
     } catch (e) {
-      console.error('[transfer] cancel all failed:', e);
+      logError('transfer', `cancel all failed: ${e}`);
     }
   }
 
@@ -292,7 +293,7 @@ function createTransferStore() {
     try {
       await invoke('transfer_reorder', { ids });
     } catch (e) {
-      console.error('[transfer] reorder failed:', e);
+      logError('transfer', `reorder failed: ${e}`);
     }
   }
 
@@ -314,7 +315,7 @@ function createTransferStore() {
         elapsedMs: ((r.completed_at as number) - (r.started_at as number)) * 1000,
       }));
     } catch (e) {
-      console.error('[transfer] load history failed:', e);
+      logError('transfer', `load history failed: ${e}`);
       return [];
     }
   }
@@ -324,7 +325,7 @@ function createTransferStore() {
       await invoke('transfer_clear_history');
       update(entries => entries.filter(e => e.status === 'queued' || e.status === 'running'));
     } catch (e) {
-      console.error('[transfer] clear history failed:', e);
+      logError('transfer', `clear history failed: ${e}`);
     }
   }
 

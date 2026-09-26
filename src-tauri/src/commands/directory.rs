@@ -6,6 +6,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 use tauri::Emitter;
 
+use log::{error, info};
+
 use crate::{AppState, FileEntry};
 
 static FOLDER_SIZE_CALCS: LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
@@ -188,12 +190,12 @@ pub async fn read_directory(
 ) -> Result<Vec<FileEntry>, String> {
     // Route FTP paths
     if path.starts_with("ftp://") {
-        eprintln!("[FTP] read_directory routing: FTP path — {}", path);
+        info!("[FTP] read_directory routing: FTP path — {}", path);
         return crate::commands::ftp_cmd::ftp_read_directory(path, state).await;
     }
     // Route virtual root
     if path == "\\" {
-        eprintln!("[FTP] read_directory routing: virtual root");
+        info!("[FTP] read_directory routing: virtual root");
         return list_virtual_root(state).await;
     }
 
@@ -262,7 +264,7 @@ pub async fn read_directory(
                         });
                     }
                     Err(e) => {
-                        eprintln!("Error reading entry: {}", e);
+                        error!("Error reading entry: {}", e);
                     }
                 }
             }

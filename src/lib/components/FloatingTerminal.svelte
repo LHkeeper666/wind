@@ -3,6 +3,7 @@
   import { terminalManager } from '$lib/terminal/terminal-manager';
   import type { TerminalInstance } from '$lib/terminal/terminal-manager';
   import { layout } from '$lib/stores/layout';
+  import { logInfo } from '$lib/utils/log';
   import '@xterm/xterm/css/xterm.css';
 
   let {
@@ -75,12 +76,12 @@
       const tCreate = performance.now();
       terminalManager.create(activeTabId, shellTypeProp, terminalCwd);
       const tCreated = performance.now();
-      console.log(`[tab-perf] terminal createContainer=${(tCreate-t0).toFixed(1)}ms create=${(tCreated-tCreate).toFixed(1)}ms`);
+      logInfo('tab-perf', `terminal createContainer=${(tCreate-t0).toFixed(1)}ms create=${(tCreated-tCreate).toFixed(1)}ms`);
       terminalManager.startShell(activeTabId, shellTypeProp);
     } else {
       terminalManager.setContainerVisible(activeTabId, true);
       const t1 = performance.now();
-      console.log(`[tab-perf] terminal setVisible=${(t1-t0).toFixed(1)}ms`);
+      logInfo('tab-perf', `terminal setVisible=${(t1-t0).toFixed(1)}ms`);
     }
 
     // Restore focus on tab switch (only when terminal is the active column)

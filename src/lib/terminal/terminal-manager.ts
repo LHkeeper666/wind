@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { logInfo, logError } from '../utils/log';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -86,7 +87,7 @@ export class TerminalManager {
     }
     const t1 = performance.now();
     if (t1 - t0 > 1) {
-      console.log(`[tab-perf] setContainerVisible tab=${tabId} visible=${visible} time=${(t1-t0).toFixed(1)}ms`);
+      logInfo('tab-perf', `setContainerVisible tab=${tabId} visible=${visible} time=${(t1-t0).toFixed(1)}ms`);
     }
   }
 
@@ -190,12 +191,12 @@ export class TerminalManager {
     };
 
     terminal.onData((data) => {
-      invoke('terminal_input', { tabId, data }).catch(console.error);
+      invoke('terminal_input', { tabId, data }).catch(e => logError('terminal', String(e)));
     });
 
     terminal.onResize(({ cols, rows }) => {
       instance.terminalSize = { cols, rows };
-      invoke('terminal_resize', { tabId, cols, rows }).catch(console.error);
+      invoke('terminal_resize', { tabId, cols, rows }).catch(e => logError('terminal', String(e)));
     });
 
     if (container.offsetWidth > 0 && container.offsetHeight > 0) {
@@ -287,7 +288,7 @@ export class TerminalManager {
         rows: instance.terminalSize.rows,
       });
     } catch (error) {
-      console.error('Failed to start shell:', error);
+      logError('terminal', `Failed to start shell: ${error}`);
       instance.terminal.writeln('Failed to start shell: ' + error);
     }
   }
@@ -339,7 +340,7 @@ export class TerminalManager {
     }
 
     // Kill backend shell process
-    invoke('terminal_kill', { tabId }).catch(console.error);
+    invoke('terminal_kill', { tabId }).catch(e => logError('terminal', String(e)));
 
     instance.terminal.dispose();
 

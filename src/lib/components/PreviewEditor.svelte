@@ -3,6 +3,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
+  import { logError } from '$lib/utils/log';
   import type { VideoMeta, TocHeading } from '$lib/previewers';
   import { isTextFile, isImageFile, isPdfFile, isVideoFile, isArchiveFile } from '$lib/utils/file-types';
   import { EditorView } from 'codemirror';
@@ -729,7 +730,7 @@
       savedContent = content; isModified = false;
       const saveSlot = previewPane?.getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
-    } catch (error) { console.error('Failed to save file:', error); }
+    } catch (error) { logError('PreviewEditor', `Failed to save file: ${error}`); }
   }
 
   function getFileName(): string { if (!filePath) return ''; return filePath.split('\\').pop() || filePath.split('/').pop() || ''; }

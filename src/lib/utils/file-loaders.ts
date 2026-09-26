@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { VideoMeta } from '$lib/previewers';
+import { logError } from './log';
 import type { FileEntry } from '$lib/types/file-explorer';
 import type { TextContentSnapshot } from '$lib/utils/tab-cache';
 import type { PdfPageDimensions } from '$lib/utils/pdf-shared';
@@ -185,7 +186,7 @@ export async function loadImage(
     };
   } catch (error) {
     if (!checkGen()) return { aborted: true };
-    console.error('Failed to load image:', error);
+    logError('file-loaders', `Failed to load image: ${error}`);
     return { type: 'image', content: '', binaryContent: null, thumbnailMeta: null };
   }
 }

@@ -1,3 +1,5 @@
+use log::{info, error, debug};
+
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc;
@@ -20,7 +22,7 @@ impl FileWatcher {
 
         // Skip directories — we only watch files
         if Path::new(&file_path).is_dir() {
-            eprintln!("[file_watcher] Skipping directory: {}", file_path);
+            info!("[file_watcher] Skipping directory: {}", file_path);
             return;
         }
 
@@ -36,7 +38,7 @@ impl FileWatcher {
         let mut watcher = match notify::RecommendedWatcher::new(tx, config) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("[file_watcher] Failed to create watcher: {}", e);
+                error!("[file_watcher] Failed to create watcher: {}", e);
                 return;
             }
         };
@@ -46,10 +48,10 @@ impl FileWatcher {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| Path::new(".").to_path_buf());
 
-        eprintln!("[file_watcher] Watching {} (parent: {})", normalized, parent.display());
+        info!("[file_watcher] Watching {} (parent: {})", normalized, parent.display());
 
         if let Err(e) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-            eprintln!("[file_watcher] Failed to watch {}: {}", parent.display(), e);
+            error!("[file_watcher] Failed to watch {}: {}", parent.display(), e);
             return;
         }
 
@@ -58,12 +60,12 @@ impl FileWatcher {
                 let evt = match event {
                     Ok(e) => e,
                     Err(e) => {
-                        eprintln!("[file_watcher] Watch error: {}", e);
+                        error!("[file_watcher] Watch error: {}", e);
                         continue;
                     }
                 };
 
-                eprintln!("[file_watcher] Raw event: kind={:?} paths={:?}", evt.kind, evt.paths);
+                debug!("[file_watcher] Raw event: kind={:?} paths={:?}", evt.kind, evt.paths);
 
                 let is_modify = matches!(
                     &evt.kind,
@@ -79,13 +81,13 @@ impl FileWatcher {
                         || p_str.to_lowercase() == normalized.to_lowercase()
                 });
                 if matched {
-                    eprintln!("[file_watcher] Emitting file-changed for {}", normalized);
+                    info!("[file_watcher] Emitting file-changed for {}", normalized);
                     if let Err(e) = app_handle.emit("file-changed", normalized.clone()) {
-                        eprintln!("[file_watcher] Emit error: {}", e);
+                        error!("[file_watcher] Emit error: {}", e);
                     }
                 }
             }
-            eprintln!("[file_watcher] Thread exiting");
+            debug!("[file_watcher] Thread exiting");
         });
 
         self._watcher = Some(watcher);
@@ -93,7 +95,7 @@ impl FileWatcher {
 
     pub fn stop(&mut self) {
         if self._watcher.is_some() {
-            eprintln!("[file_watcher] Stopping watcher");
+            info!("[file_watcher] Stopping watcher");
         }
         self._watcher = None;
     }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { EditorView } from 'codemirror';
+  import { logDebug } from '$lib/utils/log';
   import { EditorState, Compartment } from '@codemirror/state';
   import {
     keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
@@ -104,7 +105,7 @@
     if (!import.meta.env.DEV || typeof performance === 'undefined') return;
     performance.mark(name);
     const measure = performance.measure(name, start, name);
-    if (measure.duration > 16) console.debug(`[TextEditorHost] ${name}: ${measure.duration.toFixed(1)}ms`);
+    if (measure.duration > 16) logDebug('TextEditorHost', `${name}: ${measure.duration.toFixed(1)}ms`);
   }
 
   function destroyEditorSession(tabId: number): void {

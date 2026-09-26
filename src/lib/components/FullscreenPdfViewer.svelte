@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
   import { formatSize } from '$lib/utils/file-types';
+  import { logError } from '$lib/utils/log';
   import {
     type PdfPageData,
     type PdfSearchState,
@@ -109,7 +110,7 @@ import { onMount, onDestroy } from 'svelte';
       pageData = data;
       isLoading = false;
     } catch (error) {
-      console.error(`Failed to render PDF page ${pageNum}:`, error);
+      logError('FullscreenPdfViewer', `Failed to render PDF page ${pageNum}: ${error}`);
       hasError = true;
       errorMessage = `Failed to render page ${pageNum}`;
       isLoading = false;
@@ -148,7 +149,7 @@ import { onMount, onDestroy } from 'svelte';
         }
       }
     } catch (error) {
-      console.error('Search failed:', error);
+      logError('FullscreenPdfViewer', `Search failed: ${error}`);
       searchStatus = 'Search failed';
     } finally {
       isSearching = false;

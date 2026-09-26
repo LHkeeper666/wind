@@ -1,4 +1,5 @@
 import type { Previewer } from './types';
+import { logError } from '../utils/log';
 
 const SUPPORTED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
 
@@ -139,7 +140,7 @@ export class ImagePreviewer implements Previewer {
         bar.appendChild(info);
       }
     } catch (error) {
-      console.error('Failed to load original image:', error);
+      logError('ImagePreviewer', `Failed to load original image: ${error}`);
       if (bar) {
         const btn = bar.querySelector('.image-view-original') as HTMLButtonElement | null;
         if (btn) {

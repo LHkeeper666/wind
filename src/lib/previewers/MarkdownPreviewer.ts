@@ -1,6 +1,7 @@
 import type { Previewer, TocHeading } from './types';
 // @ts-ignore - markdown-it has no bundled types
 import MarkdownIt from 'markdown-it';
+import { logInfo, logWarn, logError } from '../utils/log';
 // @ts-ignore - markdown-it-texmath has no bundled types
 import texmath from 'markdown-it-texmath';
 import katex from 'katex';
@@ -282,7 +283,7 @@ export class MarkdownPreviewer implements Previewer {
 				this.renderMathAsync(container); // fire-and-forget
 			}
 			const tPost = performance.now();
-			console.log(`[md-render] codeCache:${this.codeCache.size} imageCache:${this.imageCache.size} mermaidCache:${this.mermaidCache.size} katexCache:${this.katexCache.size}`);
+			logInfo('md-render', `codeCache:${this.codeCache.size} imageCache:${this.imageCache.size} mermaidCache:${this.mermaidCache.size} katexCache:${this.katexCache.size}`);
 			await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
 			const postMs = (performance.now() - tPost).toFixed(0);
 			const totalMs = (performance.now() - tMd).toFixed(0);
@@ -291,9 +292,9 @@ export class MarkdownPreviewer implements Previewer {
 			if (mermaidTasks.length) stats.push(`mermaid:${mermaidTasks.length}`);
 			if (imageTasks.length) stats.push(`img:${imageTasks.length}`);
 			if (mathCount) stats.push(`math:${mathCount}(bg)`);
-			console.log(`[md-render] ${fileName} total:${totalMs}ms md:${mdMs}ms post:${postMs}ms ${stats.join(' ')}`);
+			logInfo('md-render', `${fileName} total:${totalMs}ms md:${mdMs}ms post:${postMs}ms ${stats.join(' ')}`);
 		} catch (err) {
-			console.error('[MarkdownPreviewer] render failed:', err);
+			logError('MarkdownPreviewer', `render failed: ${err}`);
 			container.innerHTML = `<pre class="preview-plain"><code>${this.escapeHtml(text)}</code></pre>`;
 		}
 	}
@@ -451,9 +452,9 @@ export class MarkdownPreviewer implements Previewer {
 			const codeCached = codeBlocks.length - highlightTasks.length;
 			const imgCached = images.length - imageTasks.length;
 			const katexCached = placeholders.length - (container.querySelectorAll('.math-placeholder').length);
-			console.log(`[md-update] ${filePath.split(/[/\\]/).pop() || filePath} total:${totalMs}ms code:${codeBlocks.length}(cached:${codeCached}) img:${images.length}(cached:${imgCached}) katex:${placeholders.length}(cached:${katexCached}) katexCache.size:${this.katexCache.size}`);
+			logInfo('md-update', `${filePath.split(/[/\\]/).pop() || filePath} total:${totalMs}ms code:${codeBlocks.length}(cached:${codeCached}) img:${images.length}(cached:${imgCached}) katex:${placeholders.length}(cached:${katexCached}) katexCache.size:${this.katexCache.size}`);
 		} catch (err) {
-			console.error('[MarkdownPreviewer] update failed:', err);
+			logError('MarkdownPreviewer', `update failed: ${err}`);
 		}
 	}
 
@@ -478,7 +479,7 @@ export class MarkdownPreviewer implements Previewer {
 			}
 		}
 
-		console.log(`[md-KaTeX] cached:${cachedCount} uncached:${uncached.length} katexCache.size:${this.katexCache.size}`);
+		logInfo('md-KaTeX', `cached:${cachedCount} uncached:${uncached.length} katexCache.size:${this.katexCache.size}`);
 
 		if (uncached.length === 0) return;
 
@@ -584,7 +585,7 @@ export class MarkdownPreviewer implements Previewer {
 			const blob = new Blob([bytes.buffer]);
 			img.src = URL.createObjectURL(blob);
 		} catch (err) {
-			console.warn('[MarkdownPreviewer] Failed to load image:', resolvedPath, err);
+			logWarn('MarkdownPreviewer', `Failed to load image: ${resolvedPath} ${err}`);
 		}
 	}
 
@@ -594,7 +595,7 @@ export class MarkdownPreviewer implements Previewer {
 		const placeholders = Array.from(container.querySelectorAll<HTMLElement>('.math-placeholder'));
 		if (placeholders.length === 0) return;
 
-		console.log(`[md-render-KaTeX] starting ${placeholders.length} formulas`);
+		logInfo('md-render-KaTeX', `starting ${placeholders.length} formulas`);
 
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -632,7 +633,7 @@ export class MarkdownPreviewer implements Previewer {
 				await new Promise<void>(resolve => setTimeout(resolve, 0));
 			}
 		}
-		console.log(`[md-render-KaTeX] done ${kaCached}/${placeholders.length} formulas, katexCache.size:${this.katexCache.size}`);
+		logInfo('md-render-KaTeX', `done ${kaCached}/${placeholders.length} formulas, katexCache.size:${this.katexCache.size}`);
 	}
 
 	private parseFrontmatter(text: string): { data: Record<string, any>; content: string } | null {

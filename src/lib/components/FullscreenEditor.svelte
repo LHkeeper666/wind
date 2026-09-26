@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { EditorView } from 'codemirror';
+  import { logError } from '$lib/utils/log';
   import { EditorState, Compartment } from '@codemirror/state';
   import {
     keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
@@ -525,7 +526,7 @@
       isModified = false;
       onSave(content);
     } catch (error) {
-      console.error('Failed to save file:', error);
+      logError('FullscreenEditor', `Failed to save file: ${error}`);
     }
   }
 

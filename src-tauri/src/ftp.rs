@@ -6,6 +6,8 @@ use suppaftp::tokio::AsyncRustlsFtpStream;
 use suppaftp::types::FileType;
 use tokio::sync::Mutex;
 
+use log::{info, warn, error, debug};
+
 use crate::app_paths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +32,7 @@ pub struct FtpManager {
 impl FtpManager {
     pub fn new() -> Self {
         let config_path = app_paths::config_file("ftp-connections.json");
-        eprintln!("[FTP] Manager initialized, config path: {}", config_path.display());
+        info!("[FTP] Manager initialized, config path: {}", config_path.display());
         FtpManager {
             sessions: HashMap::new(),
             configs: HashMap::new(),
@@ -41,59 +43,59 @@ impl FtpManager {
     pub fn load_on_startup(&mut self) {
         let legacy_path = app_paths::legacy_roaming_file("ftp-connections.json");
         if let Err(error) = app_paths::migrate_legacy_file(&self.config_path, &legacy_path) {
-            eprintln!("[FTP] Failed to migrate stored connections: {}", error);
+            error!("[FTP] Failed to migrate stored connections: {}", error);
         }
         match self.load_configs_from_file() {
             Ok(configs) => {
                 let count = configs.len();
                 for config in configs {
-                    eprintln!("[FTP] Loaded stored connection: {} ({}@{})", config.name, config.user, config.host);
+                    info!("[FTP] Loaded stored connection: {} ({}@{})", config.name, config.user, config.host);
                     self.configs.insert(config.name.clone(), config);
                 }
                 if count > 0 {
-                    eprintln!("[FTP] Restored {} stored connection(s) from {}", count, self.config_path.display());
+                    info!("[FTP] Restored {} stored connection(s) from {}", count, self.config_path.display());
                 }
             }
             Err(e) => {
-                eprintln!("[FTP] Failed to load stored connections: {}", e);
+                error!("[FTP] Failed to load stored connections: {}", e);
             }
         }
     }
 
     pub async fn connect(&mut self, name: &str, host: &str, port: u16, user: &str, password: &str) -> Result<(), String> {
         if self.sessions.contains_key(name) {
-            eprintln!("[FTP] connect '{}': already connected", name);
+            warn!("[FTP] connect '{}': already connected", name);
             return Err(format!("Connection '{}' already exists", name));
         }
 
-        eprintln!("[FTP] connect '{}': {}:{} as {}", name, host, port, user);
+        info!("[FTP] connect '{}': {}:{} as {}", name, host, port, user);
         let addr = format!("{}:{}", host, port);
         let mut client = AsyncRustlsFtpStream::connect(&addr)
             .await
             .map_err(|e| {
-                eprintln!("[FTP] connect '{}': TCP connect failed: {}", name, e);
+                error!("[FTP] connect '{}': TCP connect failed: {}", name, e);
                 format!("Failed to connect to {}: {}", addr, e)
             })?;
 
         client.login(user, password)
             .await
             .map_err(|e| {
-                eprintln!("[FTP] connect '{}': login failed: {}", name, e);
+                error!("[FTP] connect '{}': login failed: {}", name, e);
                 format!("Login failed: {}", e)
             })?;
 
         // Enable UTF-8 for non-ASCII paths (Chinese, etc.)
         if let Err(e) = client.opts("UTF8", Some("ON")).await {
-            eprintln!("[FTP] connect '{}': OPTS UTF8 ON failed (ignored): {}", name, e);
+            warn!("[FTP] connect '{}': OPTS UTF8 ON failed (ignored): {}", name, e);
         }
 
         // Force binary transfer mode to prevent file corruption
         client.transfer_type(FileType::Binary).await.map_err(|e| {
-            eprintln!("[FTP] connect '{}': TYPE I failed: {}", name, e);
+            error!("[FTP] connect '{}': TYPE I failed: {}", name, e);
             format!("Failed to set binary transfer mode: {}", e)
         })?;
 
-        eprintln!("[FTP] connect '{}': authenticated successfully", name);
+        info!("[FTP] connect '{}': authenticated successfully", name);
 
         let config = FtpConnectionConfig {
             name: name.to_string(),
@@ -107,21 +109,21 @@ impl FtpManager {
         self.sessions.insert(name.to_string(), Arc::new(Mutex::new(session)));
         self.configs.insert(name.to_string(), config);
         self.persist_configs()?;
-        eprintln!("[FTP] connect '{}': session stored, config persisted", name);
+        info!("[FTP] connect '{}': session stored, config persisted", name);
         Ok(())
     }
 
     pub async fn disconnect(&mut self, name: &str) -> Result<(), String> {
-        eprintln!("[FTP] disconnect '{}': closing session", name);
+        info!("[FTP] disconnect '{}': closing session", name);
         if let Some(session) = self.sessions.remove(name) {
             let mut ftp = session.lock().await;
             if let Err(e) = ftp.client.quit().await {
-                eprintln!("[FTP] disconnect '{}': QUIT error (ignored): {}", name, e);
+                warn!("[FTP] disconnect '{}': QUIT error (ignored): {}", name, e);
             }
         }
         self.configs.remove(name);
         self.persist_configs()?;
-        eprintln!("[FTP] disconnect '{}': removed, config persisted", name);
+        info!("[FTP] disconnect '{}': removed, config persisted", name);
         Ok(())
     }
 
@@ -160,13 +162,13 @@ impl FtpManager {
             .await
             .map_err(|e| format!("Login failed: {}", e))?;
         if let Err(e) = client.opts("UTF8", Some("ON")).await {
-            eprintln!("[FTP] independent session: OPTS UTF8 ON failed (ignored): {}", e);
+            warn!("[FTP] independent session: OPTS UTF8 ON failed (ignored): {}", e);
         }
         client.transfer_type(FileType::Binary).await.map_err(|e| {
-            eprintln!("[FTP] independent session: TYPE I failed: {}", e);
+            error!("[FTP] independent session: TYPE I failed: {}", e);
             format!("Failed to set binary transfer mode: {}", e)
         })?;
-        eprintln!("[FTP] created independent session for '{name}'");
+        info!("[FTP] created independent session for '{name}'");
         Ok(Arc::new(Mutex::new(FtpSession { client })))
     }
 
@@ -176,28 +178,28 @@ impl FtpManager {
             .ok_or_else(|| format!("No config for connection '{}'", name))?
             .clone();
 
-        eprintln!("[FTP] reconnect '{}': {}:{} as {}", name, config.host, config.port, config.user);
+        info!("[FTP] reconnect '{}': {}:{} as {}", name, config.host, config.port, config.user);
         let addr = format!("{}:{}", config.host, config.port);
         let mut client = AsyncRustlsFtpStream::connect(&addr)
             .await
             .map_err(|e| {
-                eprintln!("[FTP] reconnect '{}': TCP connect failed: {}", name, e);
+                error!("[FTP] reconnect '{}': TCP connect failed: {}", name, e);
                 format!("Failed to reconnect to {}: {}", addr, e)
             })?;
 
         client.login(&config.user, &config.password)
             .await
             .map_err(|e| {
-                eprintln!("[FTP] reconnect '{}': login failed: {}", name, e);
+                error!("[FTP] reconnect '{}': login failed: {}", name, e);
                 format!("Re-login failed: {}", e)
             })?;
 
         client.transfer_type(FileType::Binary).await.map_err(|e| {
-            eprintln!("[FTP] reconnect '{}': TYPE I failed: {}", name, e);
+            error!("[FTP] reconnect '{}': TYPE I failed: {}", name, e);
             format!("Failed to set binary transfer mode: {}", e)
         })?;
 
-        eprintln!("[FTP] reconnect '{}': re-authenticated", name);
+        info!("[FTP] reconnect '{}': re-authenticated", name);
         self.sessions.insert(name.to_string(), Arc::new(Mutex::new(FtpSession { client })));
         Ok(())
     }
@@ -210,13 +212,13 @@ impl FtpManager {
             match ftp.client.noop().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    eprintln!("[FTP] ensure_connected '{}': NOOP failed (session stale): {}", name, e);
+                    warn!("[FTP] ensure_connected '{}': NOOP failed (session stale): {}", name, e);
                     drop(ftp);
                     self.sessions.remove(name);
                 }
             }
         }
-        eprintln!("[FTP] ensure_connected '{}': reconnecting from stored config", name);
+        info!("[FTP] ensure_connected '{}': reconnecting from stored config", name);
         self.reconnect(name).await
     }
 
@@ -230,13 +232,13 @@ impl FtpManager {
             .map_err(|e| format!("Failed to serialize configs: {}", e))?;
         std::fs::write(&self.config_path, json)
             .map_err(|e| format!("Failed to write config file: {}", e))?;
-        eprintln!("[FTP] persist: {} connection(s) saved to {}", configs.len(), self.config_path.display());
+        debug!("[FTP] persist: {} connection(s) saved to {}", configs.len(), self.config_path.display());
         Ok(())
     }
 
     fn load_configs_from_file(&self) -> Result<Vec<FtpConnectionConfig>, String> {
         if !self.config_path.exists() {
-            eprintln!("[FTP] load_configs: no config file at {}", self.config_path.display());
+            debug!("[FTP] load_configs: no config file at {}", self.config_path.display());
             return Ok(Vec::new());
         }
         let content = std::fs::read_to_string(&self.config_path)
@@ -246,7 +248,7 @@ impl FtpManager {
         }
         let configs: Vec<FtpConnectionConfig> = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse config file: {}", e))?;
-        eprintln!("[FTP] load_configs: read {} connection(s)", configs.len());
+        debug!("[FTP] load_configs: read {} connection(s)", configs.len());
         Ok(configs)
     }
 }
@@ -355,7 +357,7 @@ pub async fn list_dir_recursive(
     let lines = match client.mlsd(Some(path)).await {
         Ok(lines) => lines,
         Err(e) => {
-            eprintln!("[FTP] list_dir_recursive: MLSD failed ({}), falling back to LIST", e);
+            warn!("[FTP] list_dir_recursive: MLSD failed ({}), falling back to LIST", e);
             client.list(Some(path)).await
                 .map_err(|e2| format!("Failed to list directory '{}': MLSD: {}, LIST: {}", path, e, e2))?
         }

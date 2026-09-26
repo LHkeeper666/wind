@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as TokioMutex;
 
+use log::{info, error};
+
 use crate::app_paths;
 use tokio::task::JoinHandle;
 
@@ -46,7 +48,7 @@ impl TransferScheduler {
         let history_path = app_paths::state_file("transfer-history.json");
         let legacy_history_path = app_paths::legacy_roaming_file("transfer-history.json");
         if let Err(error) = app_paths::migrate_legacy_file(&history_path, &legacy_history_path) {
-            eprintln!("[transfer] Failed to migrate history: {}", error);
+            error!("[transfer] Failed to migrate history: {}", error);
         }
 
         let mut scheduler = TransferScheduler {
@@ -77,7 +79,7 @@ impl TransferScheduler {
     }
 
     pub fn enqueue(&mut self, tasks: Vec<EnqueueTask>, sched: Arc<TokioMutex<TransferScheduler>>) -> Vec<u64> {
-        eprintln!("[transfer] enqueue: {} task(s)", tasks.len());
+        info!("[transfer] enqueue: {} task(s)", tasks.len());
         let batch_id = self.next_batch_id();
         let mut ids = Vec::new();
 
@@ -439,7 +441,7 @@ impl TransferScheduler {
         move_mode: bool,
         skip_rel_paths: Vec<String>,
     ) -> Result<(u64, Vec<u64>), String> {
-        eprintln!("[transfer] enqueue_ftp_folder_download: conn={conn_name} remote={remote_dir_path} → local={local_target_dir}");
+        info!("[transfer] enqueue_ftp_folder_download: conn={conn_name} remote={remote_dir_path} → local={local_target_dir}");
 
         // 1. Get independent FTP session and list recursively
         let mgr = self.ftp_manager.lock().await;
@@ -455,7 +457,7 @@ impl TransferScheduler {
         drop(ftp);
 
         let entry_count = entries.len();
-        eprintln!("[transfer] list_dir_recursive returned {entry_count} entries for {remote_dir_path}");
+        info!("[transfer] list_dir_recursive returned {entry_count} entries for {remote_dir_path}");
 
         // 2. Separate dirs and files; pre-create local directories
         let remote_base = remote_dir_path.trim_end_matches('/');
@@ -522,7 +524,7 @@ impl TransferScheduler {
         move_mode: bool,
         skip_rel_paths: Vec<String>,
     ) -> Result<(u64, Vec<u64>), String> {
-        eprintln!("[transfer] enqueue_ftp_folder_upload: local={local_dir_path} → conn={conn_name} remote={remote_target_dir}");
+        info!("[transfer] enqueue_ftp_folder_upload: local={local_dir_path} → conn={conn_name} remote={remote_target_dir}");
 
         let local_base = Path::new(local_dir_path);
         if !local_base.is_dir() {
@@ -534,7 +536,7 @@ impl TransferScheduler {
         walk_local_dir(&local_base.to_path_buf(), local_base, &mut entries)
             .map_err(|e| format!("Failed to scan local directory: {e}"))?;
 
-        eprintln!("[transfer] local walk returned {} entries for {local_dir_path}", entries.len());
+        info!("[transfer] local walk returned {} entries for {local_dir_path}", entries.len());
 
         // 2. Get independent FTP session and pre-create remote directories
         let mgr = self.ftp_manager.lock().await;

@@ -1,3 +1,5 @@
+use log::{info, warn, debug};
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -236,11 +238,11 @@ fn load_pdfium(app_handle: &tauri::AppHandle) -> Result<Pdfium, String> {
         if lib_path.exists() {
             match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dir)) {
                 Ok(bindings) => {
-                    eprintln!("[pdf] Loaded pdfium from: {:?}", dir);
+                    info!("[pdf] Loaded pdfium from: {:?}", dir);
                     return Ok(Pdfium::new(bindings));
                 }
                 Err(e) => {
-                    eprintln!("[pdf] Failed from {:?}: {:?}", dir, e);
+                    warn!("[pdf] Failed from {:?}: {:?}", dir, e);
                 }
             }
         }
@@ -343,7 +345,7 @@ pub fn render_pdf_page(
     let b64 = STANDARD.encode(&jpeg_data);
     let t_encode = t_encode_start.elapsed();
 
-    eprintln!("[pdf-perf-rs] page={} scale={:.1} render={:.1}ms encode={:.1}ms total={:.1}ms size={}x{} b64={}KB",
+    debug!("[pdf-perf-rs] page={} scale={:.1} render={:.1}ms encode={:.1}ms total={:.1}ms size={}x{} b64={}KB",
         page, render_scale, t_render.as_millis(), t_encode.as_millis(),
         t_total.elapsed().as_millis(), width, height, b64.len() / 1024);
 
@@ -410,7 +412,7 @@ pub fn render_pdf_tile(
 
     let jpeg_data = encode_jpeg(&rgba_bytes, bounds.width, bounds.height)?;
     let data = STANDARD.encode(&jpeg_data);
-    eprintln!(
+    debug!(
         "[pdf-tile] page={} scale={:.3} tile={}x{}+{},{} output={}x{} total={}ms",
         request.page,
         request.scale,
@@ -597,7 +599,7 @@ pub fn get_pdf_outline(
             let title = bookmark.title().unwrap_or_default();
             let (page, x, y) = extract_dest_coords(&bookmark, document);
             let children = collect_outline_children(&bookmark, document);
-            eprintln!("[pdf] outline item #{}: title=\"{}\" page={} children={}", count, title, page, children.len());
+            debug!("[pdf] outline item #{}: title=\"{}\" page={} children={}", count, title, page, children.len());
             items.push(PdfOutlineItem {
                 title,
                 page,
@@ -607,7 +609,7 @@ pub fn get_pdf_outline(
             });
             current = bookmark.next_sibling();
         }
-        eprintln!("[pdf] get_pdf_outline: total {} items", count);
+        debug!("[pdf] get_pdf_outline: total {} items", count);
         Ok(items)
     })
 }

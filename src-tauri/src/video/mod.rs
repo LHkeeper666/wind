@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use log::{error, info, warn};
+
 use crate::tool_cache;
 
 static FFMPEG_CHECKED: AtomicBool = AtomicBool::new(false);
@@ -317,12 +319,12 @@ fn run_video_server(file_path: String, stop_flag: Arc<AtomicBool>, port: u16) {
     let server = match tiny_http::Server::http(format!("127.0.0.1:{}", port)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[video-server] Failed to start server: {}", e);
+            error!("[video-server] Failed to start server: {}", e);
             return;
         }
     };
 
-    eprintln!(
+    info!(
         "[video-server] Started on port {} serving: {}",
         port, file_path
     );
@@ -336,7 +338,7 @@ fn run_video_server(file_path: String, stop_flag: Arc<AtomicBool>, port: u16) {
             Ok(Some(req)) => req,
             Ok(None) => continue,
             Err(e) => {
-                eprintln!("[video-server] recv error: {}", e);
+                warn!("[video-server] recv error: {}", e);
                 break;
             }
         };
@@ -457,7 +459,7 @@ fn run_video_server(file_path: String, stop_flag: Arc<AtomicBool>, port: u16) {
         }
     }
 
-    eprintln!("[video-server] Stopped");
+    info!("[video-server] Stopped");
 }
 
 #[tauri::command]
@@ -504,7 +506,7 @@ pub fn start_video_server(path: String) -> Result<String, String> {
         handle: Some(handle),
     });
 
-    eprintln!("[video-server] Returning URL: {}", url);
+    info!("[video-server] Returning URL: {}", url);
     Ok(url)
 }
 

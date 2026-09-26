@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { logInfo } from './log';
 
 export interface PdfPageData {
   data: string; // base64-encoded image
@@ -449,7 +450,7 @@ export async function fetchPdfPage(
     scale: actualScale,
   });
   const t1 = performance.now();
-  console.log(`[pdf-perf] fetchPdfPage p${pageNum} scale=${actualScale} invoke=${(t1 - t0).toFixed(1)}ms data=${result.width}x${result.height} base64=${(result.data.length / 1024).toFixed(0)}KB`);
+  logInfo('pdf-perf', `fetchPdfPage p${pageNum} scale=${actualScale} invoke=${(t1 - t0).toFixed(1)}ms data=${result.width}x${result.height} base64=${(result.data.length / 1024).toFixed(0)}KB`);
   if (shouldCommit()) cache.set(pageNum, result);
   return result;
 }

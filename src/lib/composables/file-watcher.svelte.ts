@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { logError } from '$lib/utils/log';
 
 interface FileWatcherDeps {
   getFilePath: () => string | null;
@@ -23,7 +24,7 @@ export function createFileWatcher(deps: FileWatcherDeps): FileWatcherAPI {
 
   function startWatching(path: string) {
     stopWatching();
-    invoke('start_watch_file', { path }).catch(e => console.error('[FileWatcher] start_watch_file error:', e));
+    invoke('start_watch_file', { path }).catch(e => logError('FileWatcher', `start_watch_file error: ${e}`));
   }
 
   function stopWatching() {

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { CompletionSource, Completion } from '@codemirror/autocomplete';
+import { logError } from '../utils/log';
 
 interface ApiMember {
   name: string;
@@ -37,7 +38,7 @@ async function loadPackageApi(packageName: string): Promise<PackageApi | null> {
     })
     .catch((err) => {
       pendingRequests.delete(packageName);
-      console.error(`[python-completion] Failed to load API for ${packageName}:`, err);
+      logError('python-completion', `Failed to load API for ${packageName}: ${err}`);
       return null;
     });
 

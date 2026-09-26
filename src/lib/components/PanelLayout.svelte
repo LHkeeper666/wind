@@ -4,6 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy, tick } from 'svelte';
   import { layout, columnWidths } from '$lib/stores/layout';
+  import { logInfo, logDebug, logError } from '$lib/utils/log';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
   import { vimOptions } from '$lib/utils/vim-options';
@@ -104,7 +105,7 @@
     if (!import.meta.env.DEV || typeof performance === 'undefined') return;
     performance.mark(name);
     const measure = performance.measure(name, start, name);
-    if (measure.duration > 16) console.debug(`[PanelLayout] ${name}: ${measure.duration.toFixed(1)}ms`);
+    if (measure.duration > 16) logDebug('PanelLayout', `${name}: ${measure.duration.toFixed(1)}ms`);
   }
 
   // Toast notification
@@ -268,7 +269,7 @@
         }
       }, 100);
     } catch (error) {
-      console.error('Failed to get home directory:', error);
+      logError('PanelLayout', `Failed to get home directory: ${error}`);
     }
 
     fileOpUnlistens.push(transfer.onTerminal((event, outcome) => {
@@ -396,7 +397,7 @@
       projectScrollOffset: projectTree?.scrollOffset ?? 0,
     });
     const t4 = performance.now();
-    console.log(`[tab-perf] saveCurrentTabState total=${(t4-t0).toFixed(1)}ms snapshot=${(t1-t0).toFixed(1)}ms cache=${(t2-t1).toFixed(1)}ms projectTree=${(t3-t2).toFixed(1)}ms saveStore=${(t4-t3).toFixed(1)}ms`);
+    logInfo('tab-perf', `saveCurrentTabState total=${(t4-t0).toFixed(1)}ms snapshot=${(t1-t0).toFixed(1)}ms cache=${(t2-t1).toFixed(1)}ms projectTree=${(t3-t2).toFixed(1)}ms saveStore=${(t4-t3).toFixed(1)}ms`);
   }
 
   function handleTabNew() {
@@ -429,7 +430,7 @@
     const t2 = performance.now();
     restoreTabAndFocus();
     const t3 = performance.now();
-    console.log(`[tab-perf] handleTabSwitch total=${(t3-t0).toFixed(1)}ms save=${(t1-t0).toFixed(1)}ms switch=${(t2-t1).toFixed(1)}ms restore=${(t3-t2).toFixed(1)}ms`);
+    logInfo('tab-perf', `handleTabSwitch total=${(t3-t0).toFixed(1)}ms save=${(t1-t0).toFixed(1)}ms switch=${(t2-t1).toFixed(1)}ms restore=${(t3-t2).toFixed(1)}ms`);
   }
 
   async function synchronizeProjectTreeWatcher(): Promise<void> {
@@ -521,12 +522,12 @@
     // effects that changed it (e.g. tab rename callback → layout subscription)
     layout.setActiveColumn(actualPanel);
     const t3 = performance.now();
-    console.log(`[tab-perf] restoreTabContent total=${(t3-t0).toFixed(1)}ms deactivate=${(t1-t0).toFixed(1)}ms setColumn=${(t2-t1).toFixed(1)}ms restoreState=${(t3-t2).toFixed(1)}ms`);
+    logInfo('tab-perf', `restoreTabContent total=${(t3-t0).toFixed(1)}ms deactivate=${(t1-t0).toFixed(1)}ms setColumn=${(t2-t1).toFixed(1)}ms restoreState=${(t3-t2).toFixed(1)}ms`);
     if (import.meta.env.DEV) performance.mark('tab-focus-restore-start');
     const tickStart = performance.now();
     void tick().then(() => {
       const tickDone = performance.now();
-      console.log(`[tab-perf] tick-wait=${(tickDone-tickStart).toFixed(1)}ms`);
+      logInfo('tab-perf', `tick-wait=${(tickDone-tickStart).toFixed(1)}ms`);
       if (tab.projectMode) {
         void currentDirectoryPanel?.setProjectMode(true, {
           enabled: true,
@@ -544,13 +545,13 @@
       }
       focusPanelNow(actualPanel);
       const focusDone = performance.now();
-      console.log(`[tab-perf] focusPanel=${(focusDone-tickDone).toFixed(1)}ms`);
+      logInfo('tab-perf', `focusPanel=${(focusDone-tickDone).toFixed(1)}ms`);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
       setTimeout(() => {
         const syncStart = performance.now();
         if (import.meta.env.DEV) performance.mark('directory-sync-schedule-start');
         void refreshCoordinator?.synchronizeActivePanels().finally(() => {
-          console.log(`[tab-perf] syncPanels=${(performance.now()-syncStart).toFixed(1)}ms`);
+          logInfo('tab-perf', `syncPanels=${(performance.now()-syncStart).toFixed(1)}ms`);
           if (import.meta.env.DEV) tracePerformance('directory-sync-schedule', 'directory-sync-schedule-start');
         });
       }, 0);
@@ -760,7 +761,7 @@
       floatingTerminal.focus();
       const _ft1 = performance.now();
       if (_ft1 - _ft0 > 1) {
-        console.log(`[tab-perf] focusPanelNow terminal.focus=${(_ft1-_ft0).toFixed(1)}ms`);
+        logInfo('tab-perf', `focusPanelNow terminal.focus=${(_ft1-_ft0).toFixed(1)}ms`);
       }
     } else if (panel === 'parent' && parentDirectoryPanel) {
       parentDirectoryPanel.focus();
