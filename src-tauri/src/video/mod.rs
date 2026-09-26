@@ -22,6 +22,10 @@ struct VideoServerState {
 
 static VIDEO_SERVER: Mutex<Option<VideoServerState>> = Mutex::new(None);
 
+// Holds the current ffmpeg child process so a new request can cancel the previous one.
+// Uses std::sync::Mutex since we only hold it briefly (spawn + store, or take + kill).
+static LAST_FFMPEG: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
+
 // --- Thumbnail types and commands ---
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,7 +100,7 @@ fn parse_meta_from_stderr(stderr: &str) -> (f64, u32, u32) {
 }
 
 #[tauri::command]
-pub fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
+pub async fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
     let file_path = std::path::Path::new(&path);
 
     if !file_path.exists() {
@@ -109,30 +113,31 @@ pub fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
 
     let file_size = fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
 
-    let path_clone = path.clone();
-
     let ffmpeg = tool_cache::ffmpeg_path()
         .ok_or_else(|| "ffmpeg not found. Run 'winget install ffmpeg' to install.".to_string())?;
-    let mut cmd = tool_cache::background_command(&ffmpeg);
+
+    // Cancel any previous ffmpeg process still running.
+    {
+        let mut last = LAST_FFMPEG.lock().unwrap();
+        if let Some(prev) = last.take() {
+            drop(prev); // dropping tokio::process::Child sends SIGKILL / TerminateProcess
+        }
+    }
+
+    // Spawn ffmpeg: -threads 2 limits CPU, grab first frame (always a keyframe, no seek cost).
+    let mut cmd = tokio::process::Command::from(tool_cache::background_command(&ffmpeg));
     cmd.args([
-        "-ss",
-        "10",
-        "-i",
-        &path_clone,
-        "-frames:v",
-        "1",
-        "-f",
-        "image2pipe",
-        "-v",
-        "quiet",
-        "-c:v",
-        "mjpeg",
-        "-vf",
-        "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
+        "-threads", "2",
+        "-i", &path,
+        "-frames:v", "1",
+        "-f", "image2pipe",
+        "-v", "quiet",
+        "-c:v", "mjpeg",
+        "-vf", "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
         "-",
     ]);
 
-    let mut child = cmd
+    let child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -141,75 +146,101 @@ pub fn get_video_thumbnail(path: String) -> Result<VideoThumbnail, String> {
             format!("Failed to run ffmpeg: {}", e)
         })?;
 
-    let mut stdout = child.stdout.take().unwrap();
-    let handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        stdout.read_to_end(&mut buf).map(|_| buf)
-    });
-
-    let jpeg_data = match handle.join() {
-        Ok(Ok(buf)) => buf,
-        Ok(Err(e)) => return Err(format!("Failed to read ffmpeg output: {}", e)),
-        Err(_) => return Err("ffmpeg process panicked".to_string()),
-    };
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to wait on ffmpeg: {}", e))?;
-
-    let stderr_str = String::from_utf8_lossy(&output.stderr);
-    let (duration, mut width, mut height) = parse_meta_from_stderr(&stderr_str);
-
-    let jpeg_data = if jpeg_data.is_empty() || jpeg_data.len() < 100 {
-        let mut cmd2 = tool_cache::background_command(&ffmpeg);
-        cmd2.args([
-            "-ss",
-            "1",
-            "-i",
-            &path,
-            "-frames:v",
-            "1",
-            "-f",
-            "image2pipe",
-            "-v",
-            "quiet",
-            "-c:v",
-            "mjpeg",
-            "-vf",
-            "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
-            "-",
-        ]);
-
-        let output2 = cmd2.output().map_err(|e| {
-            tool_cache::invalidate("ffmpeg");
-            format!("Failed to run ffmpeg retry: {}", e)
-        })?;
-
-        let stderr2 = String::from_utf8_lossy(&output2.stderr);
-        if duration == 0.0 {
-            let (d2, w2, h2) = parse_meta_from_stderr(&stderr2);
-            if d2 > 0.0 {
-                width = w2;
-                height = h2;
-            }
-        }
-
-        output2.stdout
-    } else {
-        jpeg_data
-    };
-
-    if jpeg_data.is_empty() {
-        return Err("Failed to extract video frame: empty output".to_string());
+    // Store so the next request can cancel us.
+    {
+        let mut last = LAST_FFMPEG.lock().unwrap();
+        *last = Some(child);
     }
 
-    Ok(VideoThumbnail {
-        data: STANDARD.encode(&jpeg_data),
-        width,
-        height,
-        duration_seconds: duration,
-        file_size,
+    // Wait with 5-second timeout. Take ownership from the mutex so we can await.
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let child = {
+            let mut last = LAST_FFMPEG.lock().unwrap();
+            last.take()
+        };
+        if let Some(c) = child {
+            c.wait_with_output().await
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "ffmpeg process gone"))
+        }
     })
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            let (duration, mut width, mut height) = parse_meta_from_stderr(&stderr_str);
+
+            let mut jpeg_data = output.stdout;
+
+            if jpeg_data.is_empty() || jpeg_data.len() < 100 {
+                // Retry at 10s in case first frame is black/empty.
+                let mut cmd2 = tool_cache::background_command(&ffmpeg);
+                cmd2.args([
+                    "-threads", "2",
+                    "-ss", "10",
+                    "-i", &path,
+                    "-frames:v", "1",
+                    "-f", "image2pipe",
+                    "-v", "quiet",
+                    "-c:v", "mjpeg",
+                    "-vf", "scale='if(gte(iw,ih),1200,-2):if(gte(ih,iw),1200,-2):flags=lanczos'",
+                    "-",
+                ]);
+
+                match cmd2.output() {
+                    Ok(output2) => {
+                        let stderr2 = String::from_utf8_lossy(&output2.stderr);
+                        if duration == 0.0 {
+                            let (d2, w2, h2) = parse_meta_from_stderr(&stderr2);
+                            if d2 > 0.0 {
+                                width = w2;
+                                height = h2;
+                            }
+                        }
+                        jpeg_data = output2.stdout;
+                    }
+                    Err(e) => {
+                        tool_cache::invalidate("ffmpeg");
+                        return Err(format!("Failed to run ffmpeg retry: {}", e));
+                    }
+                }
+            }
+
+            if jpeg_data.is_empty() {
+                return Ok(VideoThumbnail {
+                    data: String::new(),
+                    width: 0,
+                    height: 0,
+                    duration_seconds: 0.0,
+                    file_size,
+                });
+            }
+
+            Ok(VideoThumbnail {
+                data: STANDARD.encode(&jpeg_data),
+                width,
+                height,
+                duration_seconds: duration,
+                file_size,
+            })
+        }
+        Ok(Err(e)) => Err(format!("Failed to wait on ffmpeg: {}", e)),
+        Err(_) => {
+            // Timeout — kill and return metadata-only result.
+            let mut last = LAST_FFMPEG.lock().unwrap();
+            if let Some(prev) = last.take() {
+                drop(prev);
+            }
+            Ok(VideoThumbnail {
+                data: String::new(),
+                width: 0,
+                height: 0,
+                duration_seconds: 0.0,
+                file_size,
+            })
+        }
+    }
 }
 
 // --- Video HTTP streaming server ---

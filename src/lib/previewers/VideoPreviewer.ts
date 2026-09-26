@@ -85,6 +85,10 @@ export class VideoPreviewer implements Previewer {
 
     try {
       const meta: VideoMeta = JSON.parse(content);
+      if (!meta.data) {
+        this.renderNoThumbnail(container, meta);
+        return;
+      }
       this.renderThumbnail(container, meta);
     } catch {
       this.renderFallback(container, '视频预览解析失败');
@@ -211,6 +215,39 @@ export class VideoPreviewer implements Previewer {
     const hint = document.createElement('p');
     hint.innerHTML = '运行 <kbd style="background:var(--bg-secondary);padding:1px 6px;border:1px solid var(--border);">winget install ffmpeg</kbd> 安装';
     hint.style.cssText = 'font-size:12px;margin:0;';
+    div.appendChild(hint);
+
+    container.appendChild(div);
+  }
+
+  private renderNoThumbnail(container: HTMLElement, meta: VideoMeta): void {
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;color:var(--text-muted);font-family:var(--font-mono);padding:24px;';
+
+    const icon = document.createElement('div');
+    icon.textContent = '🎬';
+    icon.style.fontSize = '32px';
+    icon.style.marginBottom = '12px';
+    div.appendChild(icon);
+
+    const fileName = container.dataset.filePath?.split(/[/\\]/).pop() || '';
+    if (fileName) {
+      const name = document.createElement('p');
+      name.textContent = fileName;
+      name.style.cssText = 'color:var(--text-primary);font-size:14px;margin:0 0 8px;';
+      div.appendChild(name);
+    }
+
+    const parts: string[] = [];
+    parts.push(formatSize(meta.file_size));
+    const msg = document.createElement('p');
+    msg.textContent = parts.join(' · ');
+    msg.style.margin = '0 0 8px';
+    div.appendChild(msg);
+
+    const hint = document.createElement('p');
+    hint.textContent = '缩略图生成超时 (8K/高分辨率视频)';
+    hint.style.cssText = 'font-size:12px;margin:0;color:#d79921;';
     div.appendChild(hint);
 
     container.appendChild(div);
