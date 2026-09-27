@@ -363,10 +363,10 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     if (l.fullscreenTerminalOpen) {
       layout.closeFullscreenTerminal();
       layout.hideTerminal();
-      deps.focusPanel(l.activeColumn);
+      deps.focusPanel(get(layout).activeColumn);
     } else if (l.terminalVisible) {
       layout.hideTerminal();
-      deps.focusPanel(l.activeColumn);
+      deps.focusPanel(get(layout).activeColumn);
     } else {
       layout.showTerminal();
       deps.focusPanel('terminal');

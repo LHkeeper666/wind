@@ -8,6 +8,7 @@
     onSelect = (index: number) => {},
     onToggle = (node: TreeNode) => {},
     onDblClick = (node: TreeNode, event: MouseEvent) => {},
+    onRefocus = () => {},
     cutPaths = new Set<string>(),
     isTreeNodeSelected = (node: TreeNode) => false,
     type = 'current',
@@ -18,6 +19,7 @@
     onSelect: (index: number) => void;
     onToggle: (node: TreeNode) => void;
     onDblClick: (node: TreeNode, event: MouseEvent) => void;
+    onRefocus?: () => void;
     cutPaths: Set<string>;
     isTreeNodeSelected: (node: TreeNode) => boolean;
     type: 'parent' | 'current';
@@ -37,6 +39,7 @@
     event.preventDefault();
     event.stopPropagation();
     onToggle(node);
+    setTimeout(() => onRefocus(), 0);
   }
 </script>
 
@@ -161,7 +164,7 @@
     margin-right: 0;
     position: relative;
     border: 0;
-    padding: 0;
+    padding: 4px 0;
     background: transparent;
   }
 

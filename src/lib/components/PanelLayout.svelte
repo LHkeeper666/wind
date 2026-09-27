@@ -3,6 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { layout, columnWidths } from '$lib/stores/layout';
   import { logInfo, logDebug, logError } from '$lib/utils/log';
   import { theme } from '$lib/stores/theme';
@@ -721,7 +722,7 @@
 
   function handleCloseTerminal() {
     layout.hideTerminal();
-    focusPanel($layout.activeColumn);
+    focusPanel(get(layout).activeColumn);
   }
 
   function handleCloseImageViewer() {
@@ -820,7 +821,7 @@
     }
     if (!windowReady) return;
     const hadPanelFocus = isPanelFocused();
-    focusPanelNow($layout.activeColumn);
+    focusPanel($layout.activeColumn);
     if (!hadPanelFocus) {
       showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
     }
@@ -1006,7 +1007,7 @@
       onkeydown={() => {}}
       role="region"
       aria-label="Preview/Editor"
-      tabindex="-1"
+      tabindex="0"
     >
       {#if $layout.recycleBinMode && recycleBinPreviewItem}
         <div class="recycle-preview-info">

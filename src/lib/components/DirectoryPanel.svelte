@@ -1289,9 +1289,10 @@
           visibleNodes={projectTree.getTreeVisibleNodes()}
           selectedIndex={selectedIndex}
           showHidden={showHidden}
-          onSelect={selectByIndex}
+          onSelect={(idx) => { selectByIndex(idx); refocusPanel(); }}
           onToggle={projectTree.toggleTreeNode}
           onDblClick={(node, event) => handleItemDblClick(node.entry, event, projectTree.getTreeVisibleNodes().indexOf(node))}
+          onRefocus={refocusPanel}
           cutPaths={cutPaths}
           isTreeNodeSelected={(node) => isTreeNodeSelected(selectionState, node.entry.path)}
           type={type}
