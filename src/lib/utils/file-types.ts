@@ -26,7 +26,7 @@ export const CODE_EXTENSIONS = new Set([
 ]);
 
 export const ARCHIVE_EXTENSIONS = new Set([
-  'zip', 'tar', 'gz', 'tgz', '7z',
+  'zip', 'tar', 'gz', 'tgz', '7z', 'rar',
 ]);
 
 /**
@@ -79,7 +79,8 @@ export function isVideoFile(path: string): boolean {
 export function isArchiveFile(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.tar.gz')
-    || lower.endsWith('.tgz') || lower.endsWith('.7z');
+    || lower.endsWith('.tgz') || lower.endsWith('.7z')
+    || lower.endsWith('.rar') || /\.r\d{2}$/.test(lower) || /\.part\d+\.rar$/.test(lower);
 }
 
 /**

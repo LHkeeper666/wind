@@ -13,6 +13,7 @@ export function getArchiveFormat(name: string): ArchiveFormat {
   if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'tar.gz';
   if (lower.endsWith('.tar')) return 'tar';
   if (lower.endsWith('.7z')) return '7z';
+  if (lower.endsWith('.rar') || /\.r\d{2}$/.test(lower) || /\.part\d+\.rar$/.test(lower)) return 'rar';
   return 'zip';
 }
 
@@ -23,6 +24,10 @@ export function stripArchiveExtension(filename: string): string {
   if (lower.endsWith('.tar')) return filename.slice(0, -4);
   if (lower.endsWith('.zip')) return filename.slice(0, -4);
   if (lower.endsWith('.7z')) return filename.slice(0, -3);
+  // RAR: handle .partN.rar (e.g., archive.part1.rar → archive)
+  const partMatch = filename.match(/^(.+)\.part\d+\.rar$/i);
+  if (partMatch) return partMatch[1];
+  if (lower.endsWith('.rar')) return filename.slice(0, -4);
   return filename;
 }
 

@@ -1,6 +1,6 @@
 import { writable, derived } from 'svelte/store';
 
-export type ArchiveFormat = 'zip' | 'tar' | 'tar.gz' | '7z';
+export type ArchiveFormat = 'zip' | 'tar' | 'tar.gz' | '7z' | 'rar';
 
 export interface ArchiveState {
   archivePath: string;

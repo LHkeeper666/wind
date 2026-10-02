@@ -1,5 +1,6 @@
 mod encoding;
 mod password;
+mod rar;
 mod seven_z;
 mod shared;
 mod tar;
@@ -7,12 +8,26 @@ mod zip;
 
 use crate::FileEntry;
 
+fn is_rar_extension(lower: &str) -> bool {
+    if lower.ends_with(".rar") {
+        return true;
+    }
+    // Match .rXX pattern (e.g., .r00, .r01, .r99)
+    if let Some(rest) = lower.strip_suffix(|c: char| c.is_ascii_digit()) {
+        if let Some(rest2) = rest.strip_suffix(|c: char| c.is_ascii_digit()) {
+            return rest2.ends_with(".r");
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
     Zip,
     Tar,
     TarGz,
     SevenZ,
+    Rar,
 }
 
 impl ArchiveFormat {
@@ -26,6 +41,8 @@ impl ArchiveFormat {
             Some(ArchiveFormat::Zip)
         } else if lower.ends_with(".7z") {
             Some(ArchiveFormat::SevenZ)
+        } else if is_rar_extension(&lower) {
+            Some(ArchiveFormat::Rar)
         } else {
             None
         }
@@ -49,6 +66,7 @@ pub fn list_entries(
         ArchiveFormat::Tar => tar::list_entries(archive_path, internal_path),
         ArchiveFormat::TarGz => tar::list_gz_entries(archive_path, internal_path),
         ArchiveFormat::SevenZ => seven_z::list_entries(archive_path, internal_path, password.as_deref()),
+        ArchiveFormat::Rar => rar::list_entries(archive_path, internal_path, password.as_deref()),
     }
 }
 
@@ -65,6 +83,7 @@ pub fn read_file_bytes(
         ArchiveFormat::Tar => tar::read_file(archive_path, internal_path),
         ArchiveFormat::TarGz => tar::read_gz_file(archive_path, internal_path),
         ArchiveFormat::SevenZ => seven_z::read_file(archive_path, internal_path, password.as_deref()),
+        ArchiveFormat::Rar => rar::read_file(archive_path, internal_path, password.as_deref()),
     }
 }
 
@@ -82,6 +101,7 @@ pub fn extract_files(
         ArchiveFormat::Tar => tar::extract_files(archive_path, internal_paths, dest_dir),
         ArchiveFormat::TarGz => tar::extract_gz_files(archive_path, internal_paths, dest_dir),
         ArchiveFormat::SevenZ => seven_z::extract_files(archive_path, internal_paths, dest_dir, password.as_deref()),
+        ArchiveFormat::Rar => rar::extract_files(archive_path, internal_paths, dest_dir, password.as_deref()),
     }
 }
 
@@ -99,6 +119,7 @@ pub fn extract_all(
         ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir, skip_paths),
         ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir, skip_paths),
         ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
+        ArchiveFormat::Rar => rar::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
     }
 }
 

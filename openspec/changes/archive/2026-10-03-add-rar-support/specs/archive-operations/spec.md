@@ -1,8 +1,5 @@
-# archive-operations Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change archive-browsing-and-management. Update Purpose after archive.
-## Requirements
 ### Requirement: Visible password prompt for archive extraction
 The system SHALL provide a visible password input when an encrypted `zip`, `7z`, or `rar` archive requires credentials for extraction.
 
@@ -74,28 +71,6 @@ The system SHALL allow users to rename entries within a ZIP archive using the `r
 - **THEN** the system shows a toast "Rename is only supported for ZIP archives"
 - **AND** no action is taken
 
-### Requirement: Compress selected files into ZIP archive
-The system SHALL allow users to create a ZIP archive from selected files and directories using the `c` key in normal directory mode.
-
-#### Scenario: Compress single file
-- **WHEN** user selects a file and presses `c`
-- **THEN** the system prompts for an archive name (defaulting to the file name with .zip extension)
-- **AND** upon confirmation, creates a ZIP archive containing the file in the current directory
-- **AND** displays progress in the Transfer Manager
-
-#### Scenario: Compress multiple files
-- **WHEN** user selects multiple files and presses `c`
-- **THEN** the system prompts for an archive name
-- **AND** upon confirmation, creates a ZIP archive containing all selected files and directories
-
-#### Scenario: Compress shortcut unavailable in archive mode
-- **WHEN** user presses `c` in archive mode
-- **THEN** the key is ignored (no compression within archives)
-
-#### Scenario: Default archive name
-- **WHEN** the prompt for archive name appears
-- **THEN** the default name is derived from the selected file/directory name, or "archive.zip" if multiple items are selected
-
 ### Requirement: Extract entire archive to current directory
 
 The system SHALL extract an archive into a newly created subdirectory named after the archive file (without extension), with conflict detection when the subdirectory already contains files.
@@ -161,54 +136,6 @@ The system SHALL allow users to mark an archive for later extraction using the `
 - **WHEN** extracting via `E` + `p`
 - **THEN** the same subdirectory creation rules as `e` extraction apply
 
-### Requirement: E/y/x mutual exclusion
-The system SHALL treat extract mark (`E`), yank (`y`), and cut (`x`) as mutually exclusive operations, where marking one clears the others.
-
-#### Scenario: E clears yank mark
-- **WHEN** user has files yanked and presses `E` on an archive
-- **THEN** the yank mark is cleared and replaced with the extract mark
-
-#### Scenario: y clears extract mark
-- **WHEN** user has an archive marked for extraction and presses `y` on files
-- **THEN** the extract mark is cleared and replaced with the yank mark
-
-#### Scenario: x clears extract mark
-- **WHEN** user has an archive marked for extraction and presses `x` on files
-- **THEN** the extract mark is cleared and replaced with the cut mark
-
-#### Scenario: Status bar reflects current mark type
-- **WHEN** an extract mark is active
-- **THEN** the status bar shows "Archive marked for extraction"
-- **WHEN** a compress mark is active
-- **THEN** the status bar shows "N files marked for compression"
-- **WHEN** a yank mark is active
-- **THEN** the status bar shows "N files yanked"
-- **WHEN** a cut mark is active
-- **THEN** the status bar shows "N files cut"
-
-### Requirement: Mark files for compression
-The system SHALL allow users to mark selected files for compression using the `C` key, then press `p` to open a compress dialog at the target directory.
-
-#### Scenario: Mark files with C key
-- **WHEN** user selects files and presses `C` in normal directory mode
-- **THEN** the system marks the files for compression
-- **AND** shows a toast "N files marked for compression. Press p to compress."
-- **AND** clears any existing yank/cut/extract marks
-
-#### Scenario: Compress marked files with p key
-- **WHEN** user has files marked for compression and presses `p`
-- **THEN** the system shows a dialog prompting for archive name
-- **AND** the default name is derived from the single file name or "archive.zip" for multiple files
-- **AND** upon confirmation, creates a ZIP archive in the current directory
-
-#### Scenario: Compress mark shortcut unavailable in archive mode
-- **WHEN** user presses `C` in archive mode
-- **THEN** the key is ignored
-
-#### Scenario: C/y/x/E mutual exclusion
-- **WHEN** user has a yank/cut/extract mark active and presses `C`
-- **THEN** the previous mark is cleared and replaced with the compress mark
-
 ### Requirement: Create files and directories inside ZIP archive
 The system SHALL allow users to create new files and directories within a ZIP archive using the `a` and `a/` keys. This operation is only available for ZIP archives.
 
@@ -232,4 +159,3 @@ The system SHALL allow users to create new files and directories within a ZIP ar
 #### Scenario: Create entry fails if already exists
 - **WHEN** user tries to create an entry with a name that already exists in the archive
 - **THEN** the system shows an error toast "Entry already exists"
-

@@ -15,7 +15,8 @@ export class ArchivePreviewer implements Previewer {
   match(filePath: string): boolean {
     const lower = filePath.toLowerCase();
     return lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.tar.gz')
-      || lower.endsWith('.tgz') || lower.endsWith('.7z');
+      || lower.endsWith('.tgz') || lower.endsWith('.7z')
+      || lower.endsWith('.rar') || /\.r\d{2}$/.test(lower) || /\.part\d+\.rar$/.test(lower);
   }
 
   async render(_content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
