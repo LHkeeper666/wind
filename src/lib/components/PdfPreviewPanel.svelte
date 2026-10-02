@@ -781,6 +781,10 @@
       if (zoomSession && scrollEl) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
       zoomSession = undefined;
       clearLinkCache();
+      for (const pageNum of Array.from(renderedPages)) {
+        const slot = scrollEl?.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
+        if (slot) destroyPage(pageNum, slot);
+      }
       renderedPages.clear();
       loadedLinks.clear();
       renderGeneration++;
