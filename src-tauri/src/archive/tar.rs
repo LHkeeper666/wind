@@ -170,6 +170,7 @@ fn extract_all_impl<R: Read>(
     archive: &mut tar::Archive<R>,
     path: &str,
     dest_dir: &str,
+    skip_paths: Option<&std::collections::HashSet<String>>,
 ) -> Result<u64, String> {
     let entries = archive
         .entries()
@@ -179,6 +180,12 @@ fn extract_all_impl<R: Read>(
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let path_str = decode_tar_name(path, &entry);
+        let norm = path_str.replace('\\', "/").trim_end_matches('/').to_string();
+        if let Some(skip) = skip_paths {
+            if skip.contains(&norm) && !entry.header().entry_type().is_dir() {
+                continue;
+            }
+        }
         let dest = Path::new(dest_dir).join(&path_str);
 
         if entry.header().entry_type().is_dir() {
@@ -203,15 +210,15 @@ fn extract_all_impl<R: Read>(
     Ok(total_bytes)
 }
 
-pub(crate) fn extract_all(path: &str, dest_dir: &str) -> Result<u64, String> {
+pub(crate) fn extract_all(path: &str, dest_dir: &str, skip_paths: Option<&std::collections::HashSet<String>>) -> Result<u64, String> {
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let mut archive = tar::Archive::new(file);
-    extract_all_impl(&mut archive, path, dest_dir)
+    extract_all_impl(&mut archive, path, dest_dir, skip_paths)
 }
 
-pub(crate) fn extract_gz_all(path: &str, dest_dir: &str) -> Result<u64, String> {
+pub(crate) fn extract_gz_all(path: &str, dest_dir: &str, skip_paths: Option<&std::collections::HashSet<String>>) -> Result<u64, String> {
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
-    extract_all_impl(&mut archive, path, dest_dir)
+    extract_all_impl(&mut archive, path, dest_dir, skip_paths)
 }

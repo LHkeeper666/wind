@@ -47,12 +47,15 @@ pub async fn extract_archive(
     archive_path: String,
     dest_dir: String,
     password: Option<String>,
+    skip_paths: Option<Vec<String>>,
 ) -> Result<(), String> {
     let archive_path_clone = archive_path.clone();
     let dest_dir_clone = dest_dir.clone();
     let password_clone = password.clone();
+    let skip_set: Option<std::collections::HashSet<String>> =
+        skip_paths.map(|v| v.into_iter().collect());
     let total_bytes = tokio::task::spawn_blocking(move || {
-        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone)
+        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone, skip_set.as_ref())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?

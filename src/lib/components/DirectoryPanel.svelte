@@ -49,10 +49,12 @@
     readArchiveFile,
     extractArchiveFiles,
     extractArchive,
+    stripArchiveExtension,
     deleteArchiveEntries,
     markArchiveForExtraction,
     enterArchive,
   } from '$lib/utils/archive-browser';
+  import { promptConflictStream } from '$lib/composables/dialog-state.svelte';
   import ProjectTreePanel from './ProjectTreePanel.svelte';
   import { createDirectorySortFilter } from '$lib/composables/directory-sort-filter.svelte';
   import { createProjectTree } from '$lib/composables/project-tree.svelte';
@@ -820,13 +822,89 @@
   }
 
   async function handleExtractHere(archivePath: string) {
-    // Extract to the directory containing the archive file
-    const destDir = archivePath.replace(/[\\/][^\\/]*$/, '') || path;
+    const parentDir = archivePath.replace(/[\\/][^\\/]*$/, '') || path;
+    const archiveFileName = archivePath.replace(/^.*[\\/]/, '');
+    const subDirName = stripArchiveExtension(archiveFileName);
+    const destDir = `${parentDir}${parentDir.includes('/') ? '/' : '\\'}${subDirName}`;
+
     try {
-      const extracted = await extractArchive(
-        archivePath,
-        destDir
-      );
+      // Create subdirectory if it doesn't exist
+      try {
+        await invoke('create_file', { path: destDir, isDir: true });
+      } catch {
+        // Already exists — continue
+      }
+
+      // Collect archive entry paths recursively
+      async function collectArchivePaths(internalPath: string): Promise<string[]> {
+        const entries = await readArchiveDirectory(archivePath, internalPath);
+        if (!entries) return [];
+        const paths: string[] = [];
+        for (const e of entries) {
+          const relPath = internalPath ? `${internalPath}/${e.name}` : e.name;
+          if (e.is_dir) {
+            paths.push(...await collectArchivePaths(relPath));
+          } else {
+            paths.push(relPath.replace(/\\/g, '/'));
+          }
+        }
+        return paths;
+      }
+
+      // Collect existing file paths in destination directory recursively
+      async function collectExistingPaths(dirPath: string, basePath: string): Promise<string[]> {
+        const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>(
+          'read_directory', { path: dirPath }
+        );
+        const paths: string[] = [];
+        for (const e of entries) {
+          const relPath = basePath ? `${basePath}/${e.name}` : e.name;
+          if (e.is_dir) {
+            paths.push(...await collectExistingPaths(e.path, relPath));
+          } else {
+            paths.push(relPath.replace(/\\/g, '/'));
+          }
+        }
+        return paths;
+      }
+
+      // Check for conflicts
+      const archivePaths = await collectArchivePaths('');
+      let existingPaths: string[];
+      try {
+        existingPaths = await collectExistingPaths(destDir, '');
+      } catch {
+        existingPaths = [];
+      }
+
+      const existingSet = new Set(existingPaths);
+      const conflicts = archivePaths.filter(p => existingSet.has(p));
+
+      let skipPaths: string[] | undefined;
+
+      if (conflicts.length > 0) {
+        let applyToAll: 'overwrite' | 'skip' | null = null;
+        for (const conflictPath of conflicts) {
+          const choice = applyToAll ?? await promptConflictStream(conflictPath);
+          if (choice === 'overwrite-all') {
+            applyToAll = 'overwrite';
+          } else if (choice === 'skip-all') {
+            applyToAll = 'skip';
+            if (!skipPaths) skipPaths = [];
+            skipPaths.push(conflictPath);
+          } else if (choice === 'skip') {
+            if (!skipPaths) skipPaths = [];
+            skipPaths.push(conflictPath);
+          } else if (choice === 'abort') {
+            panelElement?.focus();
+            return;
+          }
+          // 'overwrite' — do nothing, file will be overwritten by extract
+        }
+        panelElement?.focus();
+      }
+
+      const extracted = await extractArchive(archivePath, destDir, skipPaths);
       if (extracted === null) return;
       onToast('Archive extracted');
       refresh();

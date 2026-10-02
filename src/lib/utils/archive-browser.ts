@@ -16,6 +16,16 @@ export function getArchiveFormat(name: string): ArchiveFormat {
   return 'zip';
 }
 
+export function stripArchiveExtension(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.tar.gz')) return filename.slice(0, -7);
+  if (lower.endsWith('.tgz')) return filename.slice(0, -4);
+  if (lower.endsWith('.tar')) return filename.slice(0, -4);
+  if (lower.endsWith('.zip')) return filename.slice(0, -4);
+  if (lower.endsWith('.7z')) return filename.slice(0, -3);
+  return filename;
+}
+
 export function createArchiveState(archivePath: string, internalPath: string = ''): ArchiveState {
   return {
     archivePath,
@@ -66,11 +76,12 @@ export async function extractArchiveFiles(
 
 export async function extractArchive(
   archivePath: string,
-  destDir: string
+  destDir: string,
+  skipPaths?: string[]
 ): Promise<number | null> {
   return invokeArchiveWithOptionalPassword(
     'extract_archive',
-    { archivePath, destDir },
+    { archivePath, destDir, skipPaths: skipPaths ?? null },
     'password'
   );
 }

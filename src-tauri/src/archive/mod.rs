@@ -89,15 +89,16 @@ pub fn extract_all(
     archive_path: &str,
     dest_dir: &str,
     password: Option<String>,
+    skip_paths: Option<&std::collections::HashSet<String>>,
 ) -> Result<u64, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
     let password = password::resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => zip::extract_all(archive_path, dest_dir, password.as_deref()),
-        ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir),
-        ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir),
-        ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref()),
+        ArchiveFormat::Zip => zip::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
+        ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir, skip_paths),
+        ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir, skip_paths),
+        ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
     }
 }
 

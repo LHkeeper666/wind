@@ -147,7 +147,7 @@ pub(crate) fn extract_files(
     Ok(())
 }
 
-pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>) -> Result<u64, String> {
+pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
@@ -156,6 +156,15 @@ pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>) ->
 
     reader
         .for_each_entries(|entry, reader| {
+            let norm = entry.name.replace('\\', "/").trim_end_matches('/').to_string();
+            if let Some(skip) = skip_paths {
+                if skip.contains(&norm) && !entry.is_directory {
+                    if !entry.is_directory {
+                        std::io::copy(reader, &mut std::io::sink()).map_err(sevenz_rust::Error::io)?;
+                    }
+                    return Ok(true);
+                }
+            }
             let dest = Path::new(dest_dir).join(&entry.name);
             if entry.is_directory {
                 fs::create_dir_all(&dest)?;

@@ -97,26 +97,44 @@ The system SHALL allow users to create a ZIP archive from selected files and dir
 - **THEN** the default name is derived from the selected file/directory name, or "archive.zip" if multiple items are selected
 
 ### Requirement: Extract entire archive to current directory
-The system SHALL allow users to extract an entire archive to the current directory using the `e` key in normal directory mode.
 
-#### Scenario: Extract archive with e key
+The system SHALL extract an archive into a newly created subdirectory named after the archive file (without extension), with conflict detection when the subdirectory already contains files.
+
+#### Scenario: Extract archive with e key to new subdirectory
 - **WHEN** user presses `e` on an archive file in the current panel
-- **THEN** the system extracts the entire archive to the current directory
+- **THEN** the system creates a subdirectory named after the archive (without full extension) in the current directory
+- **AND** extracts the entire archive into that subdirectory
 - **AND** displays progress in the Transfer Manager
+
+#### Scenario: Extract archive to existing empty subdirectory
+- **WHEN** the target subdirectory already exists but is empty
+- **THEN** the system extracts directly into the existing subdirectory without prompting
+
+#### Scenario: Extract archive to existing non-empty subdirectory without conflicts
+- **WHEN** the target subdirectory exists and contains files, but none share paths with archive entries
+- **THEN** the system extracts directly into the subdirectory without prompting
+
+#### Scenario: Extract archive with conflicts in target subdirectory
+- **WHEN** the target subdirectory exists and contains files that share paths with archive entries
+- **THEN** the system shows the streaming conflict dialog for each conflicting file
+- **AND** offers options: Overwrite, Skip, All Overwrite, Ignore All, Cancel
+- **AND** extracts with the user's resolution applied (skipped files are excluded)
 
 #### Scenario: Extract encrypted archive with e key
-- **WHEN** user presses `e` on an encrypted `zip` or `7z` archive file in the current panel
-- **THEN** the system shows the password prompt if the backend reports that credentials are required
-- **AND** after a correct password, the system extracts the entire archive to the current directory
-- **AND** displays progress in the Transfer Manager
+- **WHEN** user presses `e` on an encrypted `zip` or `7z` archive file
+- **THEN** the system shows the password prompt if required
+- **AND** after correct password, proceeds with subdirectory creation and extraction
+- **AND** conflict detection occurs after password is resolved
 
-#### Scenario: Extract archive creates subdirectory
-- **WHEN** the archive contains multiple top-level entries
-- **THEN** the system extracts into a subdirectory named after the archive (without extension)
+#### Scenario: Subdirectory name derivation
+- **WHEN** extracting an archive file
+- **THEN** the subdirectory name is the archive filename with the full extension stripped
+- **AND** supported extensions: `.tar.gz`, `.tgz`, `.tar`, `.zip`, `.7z`
 
-#### Scenario: Extract archive with single top-level directory
-- **WHEN** the archive contains exactly one top-level directory
-- **THEN** the system extracts the contents of that directory directly to the target
+#### Scenario: Archive extraction skip_paths support
+- **WHEN** the backend `extract_archive` command receives a `skip_paths` parameter
+- **THEN** the extraction skips all entries whose relative paths are in the skip set
+- **AND** skipped files are not written to the destination
 
 ### Requirement: Mark archive for extract-to-path
 The system SHALL allow users to mark an archive for later extraction using the `E` key, then navigate to a target directory and press `p` to extract there.
@@ -214,3 +232,4 @@ The system SHALL allow users to create new files and directories within a ZIP ar
 #### Scenario: Create entry fails if already exists
 - **WHEN** user tries to create an entry with a name that already exists in the archive
 - **THEN** the system shows an error toast "Entry already exists"
+

@@ -350,7 +350,7 @@ pub(crate) fn extract_files(
     Ok(())
 }
 
-pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>) -> Result<u64, String> {
+pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>) -> Result<u64, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
@@ -371,6 +371,13 @@ pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>) ->
     for i in 0..archive.len() {
         let mut entry = read_zip_entry(&mut archive, path, i, password)?;
         let entry_path = decode_cd_entry_name(&cd_entries, i, &entry, path);
+
+        let norm = entry_path.replace('\\', "/").trim_end_matches('/').to_string();
+        if let Some(skip) = skip_paths {
+            if skip.contains(&norm) && !entry.is_dir() {
+                continue;
+            }
+        }
 
         let dest = Path::new(dest_dir).join(&entry_path);
         if entry.is_dir() {
