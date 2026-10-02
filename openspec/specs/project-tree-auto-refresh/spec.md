@@ -4,7 +4,7 @@
 TBD - created by archiving change add-project-tree-auto-refresh. Update Purpose after archive.
 ## Requirements
 ### Requirement: 项目树自动刷新受影响分支
-系统 SHALL 在当前可见 Tab 的本地项目树模式中递归监听项目根目录，并对文件系统变更仅刷新受影响的已加载目录分支。
+系统 SHALL 在当前可见 Tab 的本地项目树模式中递归监听项目根目录，并对文件系统变更仅刷新受影响的已加载目录分支。监听 MUST 使用不锁定目录的后端实现（`FILE_SHARE_DELETE` 共享模式）。
 
 #### Scenario: 已展开目录发生变更
 - **WHEN** 已展开目录中有文件被外部创建、删除、修改或重命名
@@ -20,6 +20,11 @@ TBD - created by archiving change add-project-tree-auto-refresh. Update Purpose 
 - **WHEN** 用户退出项目模式、切换 Tab 或切换项目树根
 - **THEN** 系统停止旧根目录的监听
 - **AND** 仅为新的当前可见本地项目树启动监听
+
+#### Scenario: 监听期间外部删除子目录
+- **WHEN** 用户在 Windows 资源管理器中删除被监听项目树中的子目录
+- **THEN** 删除操作 SHALL 成功，不报"资源被占用"错误
+- **AND** 项目树在收到变更通知后刷新受影响分支
 
 ### Requirement: 自动刷新忽略高频生成目录
 系统 MUST 按大小写不敏感的目录名忽略 `.git`、`target`、`node_modules` 内的自动刷新事件，且 MUST 不隐藏这些目录或阻止手动刷新。
