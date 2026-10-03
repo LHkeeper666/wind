@@ -83,6 +83,28 @@ The system SHALL maintain an `ArchiveState` in the layout store that tracks the 
 - **THEN** the nested archive file is previewed as a regular file, not entered
 - **AND** `archiveState` remains unchanged
 
+### Requirement: Per-tab archive state isolation
+The system SHALL maintain independent `archiveState` per tab, so that browsing an archive in one tab does not affect other tabs.
+
+#### Scenario: Archive state saved on tab switch
+- **WHEN** user switches away from a tab that is browsing an archive
+- **THEN** the tab's `archiveState` (archive path, internal path, format) is saved into the tab snapshot
+
+#### Scenario: Archive state restored on tab switch back
+- **WHEN** user switches back to a tab that was browsing an archive
+- **THEN** the tab's `archiveState` is restored from the snapshot
+- **AND** the panel displays the archive directory listing at the saved internal path
+
+#### Scenario: Archive state cleared when switching to non-archive tab
+- **WHEN** user switches from an archive-browsing tab to a tab with no archive state
+- **THEN** the layout `archiveState` is set to null
+- **AND** the panel displays the normal directory listing
+
+#### Scenario: DirectoryPanel path effect defers to archive effect
+- **WHEN** `archiveState` is non-null during a tab switch
+- **THEN** the DirectoryPanel path effect does NOT load directory content from cache
+- **AND** the archive effect loads the correct archive content
+
 ### Requirement: Archive format detection
 The system SHALL automatically detect the archive format from the file extension.
 

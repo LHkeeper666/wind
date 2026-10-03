@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { layout } from './layout';
+import { layout, type ArchiveState } from './layout';
 
 export interface TabState {
   id: number;
@@ -35,6 +35,7 @@ export interface TabState {
   projectExpandedPaths: string[];
   projectSelectedPath: string | null;
   projectScrollOffset: number;
+  archiveState: ArchiveState | null;
 }
 
 interface TabsState {
@@ -78,6 +79,7 @@ function getDefaultTab(id: number): TabState {
     projectExpandedPaths: [],
     projectSelectedPath: null,
     projectScrollOffset: 0,
+    archiveState: null,
   };
 }
 
@@ -291,6 +293,7 @@ function createTabsStore() {
           projectExpandedPaths: extra?.projectExpandedPaths ?? newTabs[idx].projectExpandedPaths,
           projectSelectedPath: extra?.projectSelectedPath ?? newTabs[idx].projectSelectedPath,
           projectScrollOffset: extra?.projectScrollOffset ?? newTabs[idx].projectScrollOffset,
+          archiveState: layoutState.archiveState,
         };
         return { ...state, tabs: newTabs };
       });

@@ -319,33 +319,42 @@
     isFocused = false;
   }
 
-  // Load directory content when path changes
+  function sameArchive(a: ArchiveState | null, b: ArchiveState | null): boolean {
+    return a !== null && b !== null &&
+      a.archivePath === b.archivePath &&
+      a.internalPath === b.internalPath &&
+      a.format === b.format;
+  }
+
+  // Load directory content when path changes (skip if archive mode — archive effect handles it)
   let prevPath: string = '';
   $effect.pre(() => {
     if (path && path !== prevPath) {
       prevPath = path;
-      selectedIndex = -1;
-      selectedPathInternal = null;
-      clearSelection();
-      untrack(() => loadDirectory(path, false));
+      if (!archiveState) {
+        selectedIndex = -1;
+        selectedPathInternal = null;
+        clearSelection();
+        untrack(() => loadDirectory(path, false));
+      }
     }
   });
 
   // Load archive directory when archiveState changes
-  let prevArchiveKey: string = '';
+  let prevArchiveState: ArchiveState | null = null;
   $effect.pre(() => {
     if (archiveState) {
-      const key = `${archiveState.archivePath}::${archiveState.internalPath}`;
-      if (key !== prevArchiveKey) {
-        prevArchiveKey = key;
+      if (!sameArchive(archiveState, prevArchiveState)) {
+        prevArchiveState = { ...archiveState };
+        const key = `${archiveState.archivePath}::${archiveState.internalPath}`;
         selectedIndex = -1;
         selectedPathInternal = null;
         clearSelection();
         untrack(() => loadDirectory(key, false));
       }
-    } else if (prevArchiveKey !== '') {
+    } else if (prevArchiveState !== null) {
       // Exited archive mode: reload the original directory
-      prevArchiveKey = '';
+      prevArchiveState = null;
       selectedIndex = -1;
       selectedPathInternal = null;
       clearSelection();

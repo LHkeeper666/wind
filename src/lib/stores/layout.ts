@@ -141,7 +141,7 @@ function createLayoutStore() {
           fullscreenTerminalOpen: partial.fullscreenTerminalOpen,
           leftMode: partial.leftMode ?? state.leftMode,
           leftPath: partial.leftPath ?? state.leftPath,
-          archiveState: partial.archiveState ?? state.archiveState,
+          archiveState: partial.archiveState !== undefined ? partial.archiveState : state.archiveState,
         };
       });
     },

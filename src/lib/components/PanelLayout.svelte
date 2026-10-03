@@ -518,6 +518,7 @@
       fullscreenTerminalOpen: tab.fullscreenTerminalOpen,
       leftMode: tab.leftMode || 'auto',
       leftPath: tab.leftPath || '',
+      archiveState: tab.archiveState ?? null,
     });
     // Re-assert activeColumn — restoreTabState may have triggered reactive
     // effects that changed it (e.g. tab rename callback → layout subscription)
