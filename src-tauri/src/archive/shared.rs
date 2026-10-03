@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::FileEntry;
@@ -49,6 +49,7 @@ pub(crate) fn collect_entries_at_path(
     all_paths: &[String],
     all_dirs: &HashSet<String>,
     internal: &str,
+    size_map: Option<&HashMap<String, u64>>,
 ) -> Vec<FileEntry> {
     let mut entries: Vec<FileEntry> = Vec::new();
     let mut seen = HashSet::new();
@@ -71,11 +72,12 @@ pub(crate) fn collect_entries_at_path(
 
         let is_dir = all_dirs.contains(&full_internal)
             || is_dir_in_entries(all_paths, &full_internal, internal);
+        let size = size_map.and_then(|m| m.get(&full_internal).copied());
         entries.push(FileEntry {
             name,
             path: full_internal,
             is_dir,
-            size: None,
+            size,
             is_hidden: false,
             modified: None,
             created: None,

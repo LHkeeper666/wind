@@ -1,9 +1,11 @@
-use std::collections::{HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::FileEntry;
+
+use super::ExtractProgress;
 
 use super::encoding::{decode_name, detect_archive_encoding};
 use super::password::{
@@ -218,6 +220,7 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 
     let mut all_paths: Vec<String> = Vec::new();
     let mut all_dirs = HashSet::new();
+    let mut size_map: HashMap<String, u64> = HashMap::new();
 
     for i in 0..archive.len() {
         let entry = archive
@@ -241,6 +244,7 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
         if entry.is_dir() {
             all_dirs.insert(norm.trim_end_matches('/').to_string());
         } else {
+            size_map.insert(norm.trim_end_matches('/').to_string(), entry.size());
             all_paths.push(norm);
             // Collect parent directories
             let mut parent = Path::new(&entry_path).parent();
@@ -255,7 +259,27 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
         }
     }
 
-    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal)))
+    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal), Some(&size_map)))
+}
+
+pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+
+    if let Some(password) = password {
+        validate_zip_password(&mut archive, path, password)?;
+    } else if zip_entry_requires_password(&mut archive)?.is_some() {
+        return Err(password_required_error(path));
+    }
+
+    let mut total: u64 = 0;
+    for i in 0..archive.len() {
+        let entry = archive.by_index_raw(i).map_err(|e| map_zip_error(path, e))?;
+        if !entry.is_dir() {
+            total += entry.size();
+        }
+    }
+    Ok(total)
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
@@ -299,6 +323,7 @@ pub(crate) fn extract_files(
     internal_paths: &[String],
     dest_dir: &str,
     password: Option<&str>,
+    on_progress: &ExtractProgress,
 ) -> Result<(), String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
@@ -338,19 +363,23 @@ pub(crate) fn extract_files(
                 }
                 let mut out = File::create(&dest)
                     .map_err(|e| format!("Failed to create file: {}", e))?;
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| format!("Failed to read entry: {}", e))?;
-                out.write_all(&buf)
-                    .map_err(|e| format!("Failed to write: {}", e))?;
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                    if n == 0 { break; }
+                    out.write_all(&buf[..n])
+                        .map_err(|e| format!("Failed to write: {}", e))?;
+                    if !on_progress(n as u64) {
+                        return Err("Cancelled".to_string());
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>) -> Result<u64, String> {
+pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
     let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
@@ -390,13 +419,17 @@ pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, sk
             }
             let mut out =
                 File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read entry: {}", e))?;
-            total_bytes += buf.len() as u64;
-            out.write_all(&buf)
-                .map_err(|e| format!("Failed to write: {}", e))?;
+            let mut buf = vec![0u8; 65536];
+            loop {
+                let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                if n == 0 { break; }
+                out.write_all(&buf[..n])
+                    .map_err(|e| format!("Failed to write: {}", e))?;
+                total_bytes += n as u64;
+                if !on_progress(n as u64) {
+                    return Err("Cancelled".to_string());
+                }
+            }
         }
     }
     Ok(total_bytes)

@@ -4,7 +4,7 @@ import { get } from 'svelte/store';
 import { layout } from '$lib/stores/layout';
 import { clipboard } from '$lib/stores/clipboard';
 import { transfer } from '$lib/stores/transfer';
-import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+import { invokeArchiveWithOptionalPassword, getCachedArchivePassword } from '$lib/utils/archive-password';
 import { promptConflict, promptConflictStream, setScanningConflicts } from '$lib/composables/dialog-state.svelte';
 import {
   setCompressMarkPaths, setCompressDialogValue, setCompressDialogVisible,
@@ -136,15 +136,23 @@ export async function handlePaste(
     const archivePath = layoutVal.markPaths[0];
     const destDir = getOperationDirectory();
     try {
-      const extracted = await invokeArchiveWithOptionalPassword<number>(
-        'extract_archive',
-        { archivePath, destDir },
+      // Validate by listing archive root (handles password dialog/retry)
+      const result = await invokeArchiveWithOptionalPassword<unknown>(
+        'read_archive_directory',
+        { archivePath, internalPath: '' },
         'password'
       );
-      if (extracted === null) return;
-      deps.showToast('Archive extracted');
+      if (result === null) return;
+      const password = getCachedArchivePassword(archivePath);
+      const id = await transfer.enqueueExtract({
+        archivePath,
+        destDir,
+        password: password || undefined,
+      });
+      if (id === null) return;
+      deps.showToast('Archive extraction queued');
       layout.clearMark();
-      await deps.refreshPanels([destDir]);
+      deps.onOpenTransfer();
     } catch (e) {
       deps.showToast(`Extract failed: ${e}`);
     }
@@ -175,20 +183,25 @@ export async function handlePaste(
     const destDir = getOperationDirectory();
     const internalPaths = state.entries.map((e: any) => e.path);
     try {
-      const extracted = await invokeArchiveWithOptionalPassword<number>(
-        'extract_archive_files',
-        {
-          archivePath: state.archivePath,
-          internalPaths,
-          destDir,
-        },
+      // Validate by listing archive root (handles password dialog/retry)
+      const result = await invokeArchiveWithOptionalPassword<unknown>(
+        'read_archive_directory',
+        { archivePath: state.archivePath, internalPath: '' },
         'password'
       );
-      if (extracted === null) return;
-      deps.showToast(`${state.entries.length} ${state.entries.length === 1 ? 'file' : 'files'} extracted from archive`);
+      if (result === null) return;
+      const password = getCachedArchivePassword(state.archivePath);
+      const id = await transfer.enqueueExtract({
+        archivePath: state.archivePath,
+        destDir,
+        password: password || undefined,
+        internalPaths,
+      });
+      if (id === null) return;
+      deps.showToast(`${state.entries.length} ${state.entries.length === 1 ? 'file' : 'files'} extraction queued`);
       clipboard.clear();
       layout.clearMark();
-      await deps.refreshPanels([destDir]);
+      deps.onOpenTransfer();
     } catch (e) {
       deps.showToast(`Extract failed: ${e}`);
     }

@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
 use crate::FileEntry;
 
+use super::ExtractProgress;
 use super::password::{
     password_incorrect_error, password_required_error, remember_archive_password,
 };
@@ -47,11 +48,13 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 
     let mut all_paths: Vec<String> = Vec::new();
     let mut all_dirs = HashSet::new();
+    let mut size_map: HashMap<String, u64> = HashMap::new();
     for entry in &reader.archive().files {
         let norm = entry.name.replace('\\', "/");
         if entry.is_directory {
             all_dirs.insert(norm.trim_end_matches('/').to_string());
         } else {
+            size_map.insert(norm.trim_end_matches('/').to_string(), entry.size);
             all_paths.push(norm);
             let mut parent = Path::new(&entry.name).parent();
             while let Some(p) = parent {
@@ -66,7 +69,20 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
     }
 
     remember_archive_password(path, password);
-    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal)))
+    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal), Some(&size_map)))
+}
+
+pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
+
+    let total: u64 = reader.archive().files.iter()
+        .filter(|e| !e.is_directory)
+        .map(|e| e.size)
+        .sum();
+    Ok(total)
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
@@ -105,6 +121,7 @@ pub(crate) fn extract_files(
     internal_paths: &[String],
     dest_dir: &str,
     password: Option<&str>,
+    on_progress: &ExtractProgress,
 ) -> Result<(), String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -115,6 +132,7 @@ pub(crate) fn extract_files(
         .map(|p| normalize_internal(p))
         .collect();
     let mut remaining_targets = target_set.clone();
+    let progress = on_progress.clone();
 
     reader
         .for_each_entries(|entry, reader| {
@@ -131,10 +149,16 @@ pub(crate) fn extract_files(
                     if let Some(parent) = dest.parent() {
                         fs::create_dir_all(parent)?;
                     }
-                    let mut buf = Vec::new();
-                    reader.read_to_end(&mut buf)?;
                     let mut out = File::create(&dest)?;
-                    out.write_all(&buf)?;
+                    let mut buf = vec![0u8; 65536];
+                    loop {
+                        let n = reader.read(&mut buf).map_err(sevenz_rust::Error::io)?;
+                        if n == 0 { break; }
+                        out.write_all(&buf[..n]).map_err(sevenz_rust::Error::io)?;
+                        if !progress(n as u64) {
+                            return Ok(false);
+                        }
+                    }
                     remaining_targets.remove(&norm);
                 }
             } else if !entry.is_directory {
@@ -147,12 +171,13 @@ pub(crate) fn extract_files(
     Ok(())
 }
 
-pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>) -> Result<u64, String> {
+pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;
     let mut total_bytes: u64 = 0;
+    let progress = on_progress.clone();
 
     reader
         .for_each_entries(|entry, reader| {
@@ -172,11 +197,17 @@ pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, sk
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let mut buf = Vec::new();
-                reader.read_to_end(&mut buf)?;
-                total_bytes += buf.len() as u64;
                 let mut out = File::create(&dest)?;
-                out.write_all(&buf)?;
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    let n = reader.read(&mut buf).map_err(sevenz_rust::Error::io)?;
+                    if n == 0 { break; }
+                    out.write_all(&buf[..n]).map_err(sevenz_rust::Error::io)?;
+                    total_bytes += n as u64;
+                    if !progress(n as u64) {
+                        return Ok(false);
+                    }
+                }
             }
             Ok(true)
         })

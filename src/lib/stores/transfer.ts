@@ -8,7 +8,7 @@ import { logError } from '$lib/utils/log';
 export interface TransferEntry {
   id: number;
   batchId: number;
-  opType: 'copy' | 'move' | 'delete' | 'ftp-download' | 'ftp-upload';
+  opType: 'copy' | 'move' | 'delete' | 'ftp-download' | 'ftp-upload' | 'extract';
   source: string;
   destination: string;
   totalBytes: number;
@@ -52,6 +52,7 @@ function opTypeLabel(opType: string): string {
     case 'delete': return 'Delete';
     case 'ftp-download': return 'FTP Download';
     case 'ftp-upload': return 'FTP Upload';
+    case 'extract': return 'Extract';
     default: return opType;
   }
 }
@@ -91,6 +92,8 @@ interface EnqueueTask {
   conn_name?: string;
   skip_rel_paths?: string[];
   permanent?: boolean;
+  password?: string;
+  internal_paths?: string[];
 }
 
 function createTransferStore() {
@@ -225,6 +228,28 @@ function createTransferStore() {
     }
   }
 
+  async function enqueueExtract(opts: {
+    archivePath: string;
+    destDir: string;
+    password?: string;
+    internalPaths?: string[];
+    skipPaths?: string[];
+  }): Promise<number | null> {
+    try {
+      const id = await invoke<number>('extract_enqueue', {
+        archivePath: opts.archivePath,
+        destDir: opts.destDir,
+        password: opts.password,
+        internalPaths: opts.internalPaths,
+        skipPaths: opts.skipPaths,
+      });
+      return id;
+    } catch (e) {
+      logError('transfer', `extract enqueue failed: ${e}`);
+      return null;
+    }
+  }
+
   async function cancelTransfer(id: number) {
     try {
       await invoke('transfer_cancel', { id });
@@ -347,6 +372,7 @@ function createTransferStore() {
   return {
     subscribe,
     enqueueTransfers,
+    enqueueExtract,
     cancelTransfer,
     cancelAllTransfers,
     retryTransfer,

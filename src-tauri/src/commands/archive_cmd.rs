@@ -1,6 +1,8 @@
 use tauri::Emitter;
 
 use crate::FileEntry;
+use crate::AppState;
+use crate::transfer::TransferScheduler;
 
 #[tauri::command]
 pub async fn read_archive_directory(
@@ -36,7 +38,7 @@ pub fn extract_archive_files(
     dest_dir: String,
     password: Option<String>,
 ) -> Result<(), String> {
-    crate::archive::extract_files(&archive_path, &internal_paths, &dest_dir, password)?;
+    crate::archive::extract_files(&archive_path, &internal_paths, &dest_dir, password, &crate::archive::no_progress())?;
     let _ = app.emit("directory-changed", vec![dest_dir]);
     Ok(())
 }
@@ -55,7 +57,7 @@ pub async fn extract_archive(
     let skip_set: Option<std::collections::HashSet<String>> =
         skip_paths.map(|v| v.into_iter().collect());
     let total_bytes = tokio::task::spawn_blocking(move || {
-        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone, skip_set.as_ref())
+        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone, skip_set.as_ref(), &crate::archive::no_progress())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -142,4 +144,29 @@ pub fn archive_create_entry(
     is_dir: bool,
 ) -> Result<(), String> {
     crate::archive::create_entry(&archive_path, &internal_path, is_dir)
+}
+
+/// Enqueue an archive extraction task through the TransferScheduler.
+/// Returns the task ID immediately. The extraction runs in the background
+/// with progress reported via transfer-progress events.
+#[tauri::command]
+pub async fn extract_enqueue(
+    state: tauri::State<'_, AppState>,
+    archive_path: String,
+    dest_dir: String,
+    password: Option<String>,
+    internal_paths: Option<Vec<String>>,
+    skip_paths: Option<Vec<String>>,
+) -> Result<u64, String> {
+    let sched = state.transfer_scheduler.clone();
+    let id = TransferScheduler::enqueue_extract(
+        sched,
+        archive_path,
+        dest_dir,
+        password,
+        internal_paths,
+        skip_paths,
+    )
+    .await;
+    Ok(id)
 }

@@ -256,7 +256,14 @@ pub async fn transfer_set_local_slots(n: usize, state: tauri::State<'_, AppState
 }
 
 #[tauri::command]
-pub async fn transfer_get_slots(state: tauri::State<'_, AppState>) -> Result<(usize, usize), String> {
+pub async fn transfer_set_extract_slots(n: usize, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.set_extract_max_slots(n);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn transfer_get_slots(state: tauri::State<'_, AppState>) -> Result<(usize, usize, usize), String> {
     let scheduler = state.transfer_scheduler.lock().await;
     Ok(scheduler.get_slot_config())
 }

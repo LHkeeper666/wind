@@ -203,8 +203,8 @@
       case 'done': return '✓';
       case 'failed': return '✕';
       case 'cancelled': return '⊘';
-      case 'running': return entry.opType.includes('download') || entry.opType === 'copy' ? '↓' : '↑';
-      case 'queued': return '○';
+      case 'running': return entry.opType === 'extract' ? '📦' : entry.opType.includes('download') || entry.opType === 'copy' ? '↓' : '↑';
+      case 'queued': return entry.opType === 'extract' ? '📦' : '○';
     }
   }
 
@@ -314,7 +314,11 @@
                   <span class="eta-text">ETA {formatElapsed(entry.etaSecs * 1000)}</span>
                 {/if}
               {:else if entry.status === 'queued'}
-                <span class="size-text">{transfer.util.formatSize(entry.totalBytes)}</span>
+                {#if entry.totalBytes > 0}
+                  <span class="size-text">{transfer.util.formatSize(entry.totalBytes)}</span>
+                {:else}
+                  <span class="size-text scanning-text">scanning...</span>
+                {/if}
                 <span class="queued-label">queued</span>
               {:else if entry.status === 'done'}
                 <span class="done-size">{transfer.util.formatSize(entry.totalBytes)}</span>
@@ -627,6 +631,11 @@
     font-size: 11px;
     font-style: italic;
     flex-shrink: 0;
+  }
+
+  .scanning-text {
+    color: var(--text-muted);
+    font-style: italic;
   }
 
   .drop-indicator {

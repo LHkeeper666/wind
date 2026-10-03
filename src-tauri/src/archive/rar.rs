@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
 use crate::FileEntry;
 
+use super::ExtractProgress;
 use super::password::{
     password_incorrect_error, password_required_error, remember_archive_password,
 };
@@ -37,6 +38,7 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 
     let mut all_paths: Vec<String> = Vec::new();
     let mut all_dirs = HashSet::new();
+    let mut size_map: HashMap<String, u64> = HashMap::new();
 
     for entry in listing {
         let entry = entry.map_err(|e| map_unrar_error(path, e))?;
@@ -45,6 +47,8 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
         if entry.is_directory() {
             all_dirs.insert(path_str.trim_end_matches('/').to_string());
         } else {
+            let norm = path_str.trim_end_matches('/').to_string();
+            size_map.insert(norm, entry.unpacked_size as u64);
             all_paths.push(path_str.clone());
             let mut parent = Path::new(&path_str).parent();
             while let Some(p) = parent {
@@ -59,7 +63,22 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
     }
 
     remember_archive_password(path, password);
-    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal)))
+    Ok(collect_entries_at_path(&all_paths, &all_dirs, &normalize_internal(internal), Some(&size_map)))
+}
+
+pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
+    let archive = open_rar_archive(path, password).as_first_part();
+    let listing = archive.open_for_listing().map_err(|e| map_unrar_error(path, e))?;
+
+    let mut total: u64 = 0;
+    for entry in listing {
+        let entry = entry.map_err(|e| map_unrar_error(path, e))?;
+        if !entry.is_directory() {
+            total += entry.unpacked_size as u64;
+        }
+    }
+    remember_archive_password(path, password);
+    Ok(total)
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
@@ -97,6 +116,7 @@ pub(crate) fn extract_files(
     internal_paths: &[String],
     dest_dir: &str,
     password: Option<&str>,
+    on_progress: &ExtractProgress,
 ) -> Result<(), String> {
     let archive = open_rar_archive(path, password).as_first_part();
     let mut open_archive = archive
@@ -130,7 +150,12 @@ pub(crate) fn extract_files(
                 }
                 let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
                 let mut out = File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
-                out.write_all(&data).map_err(|e| format!("Failed to write file: {}", e))?;
+                for chunk in data.chunks(65536) {
+                    out.write_all(chunk).map_err(|e| format!("Failed to write file: {}", e))?;
+                    if !on_progress(chunk.len() as u64) {
+                        return Err("Cancelled".to_string());
+                    }
+                }
                 remaining_targets.remove(&norm);
                 open_archive = archive_after_read;
             }
@@ -148,6 +173,7 @@ pub(crate) fn extract_all(
     dest_dir: &str,
     password: Option<&str>,
     skip_paths: Option<&HashSet<String>>,
+    on_progress: &ExtractProgress,
 ) -> Result<u64, String> {
     let archive = open_rar_archive(path, password).as_first_part();
     let mut open_archive = archive
@@ -183,7 +209,12 @@ pub(crate) fn extract_all(
             let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
             total_bytes += data.len() as u64;
             let mut out = File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
-            out.write_all(&data).map_err(|e| format!("Failed to write file: {}", e))?;
+            for chunk in data.chunks(65536) {
+                out.write_all(chunk).map_err(|e| format!("Failed to write file: {}", e))?;
+                if !on_progress(chunk.len() as u64) {
+                    return Err("Cancelled".to_string());
+                }
+            }
             open_archive = archive_after_read;
         }
     }

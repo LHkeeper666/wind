@@ -41,6 +41,8 @@ pub struct TransferScheduler {
     ftp_max_per_conn: usize,
     local_slots_used: usize,
     local_max_slots: usize,
+    extract_slots_used: usize,
+    extract_max_slots: usize,
 }
 
 impl TransferScheduler {
@@ -64,6 +66,8 @@ impl TransferScheduler {
             ftp_max_per_conn: 2, // Each transfer uses create_independent() for its own TCP connection
             local_slots_used: 0,
             local_max_slots: 2,
+            extract_slots_used: 0,
+            extract_max_slots: 2,
         };
 
         scheduler.load_history();
@@ -122,6 +126,8 @@ impl TransferScheduler {
                 cancel_flag: None,
                 skip_rel_paths: task.skip_rel_paths.clone(),
                 permanent: task.permanent,
+                password: task.password.clone(),
+                internal_paths: task.internal_paths.clone(),
             };
             // Emit queued event so frontend creates the entry immediately
             let _ = self.app.emit("transfer-progress", serde_json::json!({
@@ -140,6 +146,111 @@ impl TransferScheduler {
 
         self.dispatch_pending(sched);
         ids
+    }
+
+    /// Enqueue an extraction task. Emits queued event immediately with total_bytes=0,
+    /// then spawns a background scan to compute actual total_bytes and dispatch.
+    pub async fn enqueue_extract(
+        sched: Arc<TokioMutex<TransferScheduler>>,
+        archive_path: String,
+        dest_dir: String,
+        password: Option<String>,
+        internal_paths: Option<Vec<String>>,
+        skip_paths: Option<Vec<String>>,
+    ) -> u64 {
+        // Phase 1: create task with total_bytes=0 and emit queued event
+        let id;
+        let batch_id;
+        let app;
+        {
+            let mut s = sched.lock().await;
+            id = s.next_id();
+            batch_id = s.next_batch_id();
+            app = s.app.clone();
+
+            let entry = TransferTask {
+                id,
+                batch_id,
+                op_type: TransferType::Extract,
+                status: TaskStatus::Queued,
+                source: archive_path.clone(),
+                destination: dest_dir.clone(),
+                total_bytes: 0,
+                bytes_done: 0,
+                conn_name: None,
+                cancel_flag: None,
+                skip_rel_paths: skip_paths.clone().unwrap_or_default(),
+                permanent: false,
+                password: password.clone(),
+                internal_paths: internal_paths.clone(),
+            };
+
+            let _ = app.emit("transfer-progress", serde_json::json!({
+                "id": entry.id,
+                "batch_id": entry.batch_id,
+                "op_type": entry.op_type,
+                "status": "queued",
+                "bytes_done": 0,
+                "total_bytes": 0u64,
+                "speed_bps": 0,
+                "source": entry.source,
+                "destination": entry.destination,
+            }));
+
+            s.queue.push_back(entry);
+        }
+
+        // Phase 2: spawn blocking scan for total_bytes
+        let sched_clone = sched.clone();
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let scan_result = tokio::task::spawn_blocking({
+                let archive_path = archive_path.clone();
+                let password = password.clone();
+                let internal_paths = internal_paths.clone();
+                move || -> Result<u64, String> {
+                    use crate::archive;
+                    let total = if let Some(ref paths) = internal_paths {
+                        archive::files_uncompressed_size(&archive_path, paths, password)?
+                    } else {
+                        archive::total_uncompressed_size(&archive_path, password)?
+                    };
+                    info!("[transfer] extract scan: total_bytes={}", total);
+                    Ok(total)
+                }
+            }).await;
+
+            let total_bytes = scan_result.unwrap_or_else(|e| {
+                log::warn!("[transfer] extract scan join error: {}", e);
+                Ok(0u64)
+            }).unwrap_or_else(|e| {
+                log::warn!("[transfer] extract scan error: {}", e);
+                0
+            });
+
+            // Update task total_bytes and emit updated progress
+            let mut s = sched_clone.lock().await;
+            if let Some(task) = s.queue.iter_mut().find(|t| t.id == id) {
+                task.total_bytes = total_bytes;
+            }
+            // Also check if it's already been dispatched to active
+            let _ = app_clone.emit("transfer-progress", serde_json::json!({
+                "id": id,
+                "batch_id": batch_id,
+                "op_type": "extract",
+                "status": "queued",
+                "bytes_done": 0,
+                "total_bytes": total_bytes,
+                "speed_bps": 0,
+                "source": archive_path,
+                "destination": dest_dir,
+            }));
+
+            // Try to dispatch — the task might be ready for a slot now
+            s.dispatch_pending(sched_clone.clone());
+        });
+
+        id
     }
 
     pub fn cancel(&mut self, id: u64, sched: Arc<TokioMutex<TransferScheduler>>) -> bool {
@@ -241,6 +352,7 @@ impl TransferScheduler {
             self.take_slot(&task);
             task.status = TaskStatus::Running;
             task.cancel_flag = Some(Arc::new(AtomicBool::new(false)));
+            info!("[transfer] dispatching task {}: total_bytes={}", task.id, task.total_bytes);
             self.emit_progress(&task, 0);
 
             let app = self.app.clone();
@@ -300,6 +412,9 @@ impl TransferScheduler {
                 }
                 true
             }
+            TransferType::Extract => {
+                self.extract_slots_used < self.extract_max_slots
+            }
         }
     }
 
@@ -310,6 +425,9 @@ impl TransferScheduler {
                     .or_else(|| extract_ftp_conn(&task.destination))
                     .unwrap_or_default();
                 *self.ftp_conn_slots.entry(conn).or_insert(0) += 1;
+            }
+            TransferType::Extract => {
+                self.extract_slots_used += 1;
             }
             _ => {
                 self.local_slots_used += 1;
@@ -329,6 +447,9 @@ impl TransferScheduler {
                         self.ftp_conn_slots.remove(&conn);
                     }
                 }
+            }
+            TransferType::Extract => {
+                self.extract_slots_used = self.extract_slots_used.saturating_sub(1);
             }
             _ => {
                 self.local_slots_used = self.local_slots_used.saturating_sub(1);
@@ -426,8 +547,12 @@ impl TransferScheduler {
         self.local_max_slots = n.max(1).min(8);
     }
 
-    pub fn get_slot_config(&self) -> (usize, usize) {
-        (self.ftp_max_per_conn, self.local_max_slots)
+    pub fn set_extract_max_slots(&mut self, n: usize) {
+        self.extract_max_slots = n.max(1).min(8);
+    }
+
+    pub fn get_slot_config(&self) -> (usize, usize, usize) {
+        (self.ftp_max_per_conn, self.local_max_slots, self.extract_max_slots)
     }
 
     // ── FTP folder transfer ──
@@ -501,6 +626,8 @@ impl TransferScheduler {
                 conn_name: Some(conn_name.to_string()),
                 skip_rel_paths: Vec::new(),
                 permanent: false,
+                password: None,
+                internal_paths: None,
             }
         }).collect();
 
@@ -606,6 +733,8 @@ impl TransferScheduler {
                     conn_name: Some(conn_name.to_string()),
                     skip_rel_paths: Vec::new(),
                     permanent: false,
+                    password: None,
+                    internal_paths: None,
                 }
             })
             .collect();

@@ -6,7 +6,18 @@ mod shared;
 mod tar;
 mod zip;
 
+use std::sync::Arc;
+
 use crate::FileEntry;
+
+/// Callback for extraction progress. Receives bytes extracted by the current file.
+/// Returns `true` to continue, `false` to cancel.
+pub type ExtractProgress = Arc<dyn Fn(u64) -> bool + Send + Sync>;
+
+/// Returns a no-op progress callback that always continues.
+pub fn no_progress() -> ExtractProgress {
+    Arc::new(|_| true)
+}
 
 fn is_rar_extension(lower: &str) -> bool {
     if lower.ends_with(".rar") {
@@ -87,21 +98,56 @@ pub fn read_file_bytes(
     }
 }
 
+/// Compute total uncompressed size of all files in the archive (no path filtering).
+pub fn total_uncompressed_size(
+    archive_path: &str,
+    password: Option<String>,
+) -> Result<u64, String> {
+    let format = ArchiveFormat::from_path(archive_path)
+        .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = password::resolve_archive_password(archive_path, password);
+    match format {
+        ArchiveFormat::Zip => zip::total_uncompressed_size(archive_path, password.as_deref()),
+        ArchiveFormat::Tar => tar::total_uncompressed_size(archive_path),
+        ArchiveFormat::TarGz => tar::total_gz_uncompressed_size(archive_path),
+        ArchiveFormat::SevenZ => seven_z::total_uncompressed_size(archive_path, password.as_deref()),
+        ArchiveFormat::Rar => rar::total_uncompressed_size(archive_path, password.as_deref()),
+    }
+}
+
+/// Compute total uncompressed size of specific files in the archive.
+pub fn files_uncompressed_size(
+    archive_path: &str,
+    internal_paths: &[String],
+    password: Option<String>,
+) -> Result<u64, String> {
+    // Use list_entries to get sizes, then filter by internal_paths
+    let entries = list_entries(archive_path, "", password)?;
+    let target: std::collections::HashSet<String> = internal_paths.iter()
+        .map(|p| p.replace('\\', "/").trim_end_matches('/').to_string())
+        .collect();
+    Ok(entries.iter()
+        .filter(|e| !e.is_dir && target.contains(&e.path.replace('\\', "/").trim_end_matches('/').to_string()))
+        .map(|e| e.size.unwrap_or(0))
+        .sum())
+}
+
 pub fn extract_files(
     archive_path: &str,
     internal_paths: &[String],
     dest_dir: &str,
     password: Option<String>,
+    on_progress: &ExtractProgress,
 ) -> Result<(), String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
     let password = password::resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => zip::extract_files(archive_path, internal_paths, dest_dir, password.as_deref()),
-        ArchiveFormat::Tar => tar::extract_files(archive_path, internal_paths, dest_dir),
-        ArchiveFormat::TarGz => tar::extract_gz_files(archive_path, internal_paths, dest_dir),
-        ArchiveFormat::SevenZ => seven_z::extract_files(archive_path, internal_paths, dest_dir, password.as_deref()),
-        ArchiveFormat::Rar => rar::extract_files(archive_path, internal_paths, dest_dir, password.as_deref()),
+        ArchiveFormat::Zip => zip::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
+        ArchiveFormat::Tar => tar::extract_files(archive_path, internal_paths, dest_dir, on_progress),
+        ArchiveFormat::TarGz => tar::extract_gz_files(archive_path, internal_paths, dest_dir, on_progress),
+        ArchiveFormat::SevenZ => seven_z::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
+        ArchiveFormat::Rar => rar::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
     }
 }
 
@@ -110,16 +156,17 @@ pub fn extract_all(
     dest_dir: &str,
     password: Option<String>,
     skip_paths: Option<&std::collections::HashSet<String>>,
+    on_progress: &ExtractProgress,
 ) -> Result<u64, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
     let password = password::resolve_archive_password(archive_path, password);
     match format {
-        ArchiveFormat::Zip => zip::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
-        ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir, skip_paths),
-        ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir, skip_paths),
-        ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
-        ArchiveFormat::Rar => rar::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths),
+        ArchiveFormat::Zip => zip::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),
+        ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir, skip_paths, on_progress),
+        ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir, skip_paths, on_progress),
+        ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),
+        ArchiveFormat::Rar => rar::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),
     }
 }
 

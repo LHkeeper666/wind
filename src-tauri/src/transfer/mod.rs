@@ -1,4 +1,5 @@
 mod conflict;
+mod extract;
 mod ftp;
 mod helpers;
 mod local;
@@ -24,6 +25,7 @@ pub enum TransferType {
     Delete,
     FtpDownload,
     FtpUpload,
+    Extract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +55,12 @@ pub struct TransferTask {
     pub skip_rel_paths: Vec<String>,
     #[serde(skip)]
     pub permanent: bool,
+    /// Archive password for Extract tasks.
+    #[serde(skip)]
+    pub password: Option<String>,
+    /// Internal paths for partial extraction (y+p from archive browser).
+    #[serde(skip)]
+    pub internal_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +90,12 @@ pub struct EnqueueTask {
     pub skip_rel_paths: Vec<String>,
     #[serde(default)]
     pub permanent: bool,
+    /// Archive password for Extract tasks.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Internal paths for partial extraction (y+p from archive browser).
+    #[serde(default)]
+    pub internal_paths: Option<Vec<String>>,
 }
 
 // ── Transfer execution ──
@@ -109,6 +123,9 @@ async fn execute_transfer(
             } else {
                 local::execute_local_delete(task, cancel_flag, app).await
             }
+        }
+        TransferType::Extract => {
+            extract::execute_extract(task, cancel_flag, app).await
         }
     };
 

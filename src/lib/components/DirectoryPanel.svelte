@@ -12,7 +12,7 @@
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
   import { directoryCache } from '$lib/utils/directory-cache';
-  import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+  import { invokeArchiveWithOptionalPassword, getCachedArchivePassword } from '$lib/utils/archive-password';
   import { directoryKeyId, normalizeDirectoryKey, type DirectoryKey } from '$lib/utils/directory-refresh';
   import {
     getCollapseSelectionTarget,
@@ -47,8 +47,6 @@
     getArchiveParentPath,
     readArchiveDirectory,
     readArchiveFile,
-    extractArchiveFiles,
-    extractArchive,
     stripArchiveExtension,
     deleteArchiveEntries,
     markArchiveForExtraction,
@@ -758,32 +756,6 @@
     }
   }
 
-  async function handleArchiveExtract() {
-    if (!archiveState) return;
-    const entries = getEntriesToOperate(
-      selectionState,
-      files,
-      displayFiles,
-      selectedIndex,
-      projectTree.getProjectMode(),
-      projectTree.findTreeNode
-    );
-    if (entries.length === 0) return;
-    const internalPaths = entries.map(e => e.path);
-    const destDir = archiveState.archivePath.replace(/[\\/][^\\/]*$/, "");
-    try {
-      const extracted = await extractArchiveFiles(
-        archiveState.archivePath,
-        internalPaths,
-        destDir
-      );
-      if (extracted === null) return;
-      onToast(`${entries.length} ${entries.length === 1 ? 'file' : 'files'} extracted`);
-    } catch (e) {
-      onToast(`Extract failed: ${e}`);
-    }
-  }
-
   async function handleArchiveDelete() {
     if (!archiveState) return;
     if (archiveState.format !== 'zip') {
@@ -904,10 +876,16 @@
         panelElement?.focus();
       }
 
-      const extracted = await extractArchive(archivePath, destDir, skipPaths);
-      if (extracted === null) return;
-      onToast('Archive extracted');
-      refresh();
+      const password = getCachedArchivePassword(archivePath);
+      const taskId = await transfer.enqueueExtract({
+        archivePath,
+        destDir,
+        password: password || undefined,
+        skipPaths,
+      });
+      if (taskId === null) return;
+      onToast('Archive extraction queued');
+      window.dispatchEvent(new Event('transfer:open'));
     } catch (e) {
       onToast(`Extract failed: ${e}`);
     }
@@ -977,7 +955,6 @@
       case 'r': event.preventDefault(); handleArchiveRename(); break;
       case 'D': event.preventDefault(); handleDelete(true); break;
       case 'd': event.preventDefault(); handleArchiveDelete(); break;
-      case 'x': event.preventDefault(); handleArchiveExtract(); break;
       case 'i': event.preventDefault(); dialogs.toggleFileInfo(); break;
       case 'f': event.preventDefault(); dialogs.startFilter('wildcard'); break;
       case 'o': event.preventDefault(); openSelectedFile(); break;
