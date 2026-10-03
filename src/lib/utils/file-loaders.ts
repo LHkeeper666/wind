@@ -220,6 +220,23 @@ export async function loadTextOrBinary(
 
   const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
 
+  // Known binary extensions: skip text read entirely, go straight to binary
+  if (!isTextFile(ctx.path)) {
+    try {
+      const base64 = usePartial
+        ? await invoke<string>('read_binary_file_partial', { path: ctx.path, maxBytes: MAX_PREVIEW_SIZE })
+        : await invoke<string>('read_binary_file', { path: ctx.path });
+      if (!checkGen()) return { aborted: true };
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+    } catch {
+      if (!checkGen()) return { aborted: true };
+      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+    }
+  }
+
   try {
     const newContent = usePartial
       ? await invoke<string>('read_file_partial', { path: ctx.path, maxBytes: MAX_PREVIEW_SIZE })
