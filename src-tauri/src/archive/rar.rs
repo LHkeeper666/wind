@@ -31,7 +31,7 @@ fn map_unrar_error(path: &str, err: unrar::error::UnrarError) -> String {
 // ── RAR Operations ──────────────────────────────────────────────────
 
 pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
-    let archive = open_rar_archive(path, password).as_first_part();
+    let archive = open_rar_archive(path, password);
     let listing = archive
         .open_for_listing()
         .map_err(|e| map_unrar_error(path, e))?;
@@ -67,7 +67,7 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 }
 
 pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
-    let archive = open_rar_archive(path, password).as_first_part();
+    let archive = open_rar_archive(path, password);
     let listing = archive.open_for_listing().map_err(|e| map_unrar_error(path, e))?;
 
     let mut total: u64 = 0;
@@ -82,7 +82,7 @@ pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Res
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
-    let archive = open_rar_archive(path, password).as_first_part();
+    let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
         .map_err(|e| map_unrar_error(path, e))?;
@@ -118,7 +118,7 @@ pub(crate) fn extract_files(
     password: Option<&str>,
     on_progress: &ExtractProgress,
 ) -> Result<(), String> {
-    let archive = open_rar_archive(path, password).as_first_part();
+    let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
         .map_err(|e| map_unrar_error(path, e))?;
@@ -175,7 +175,7 @@ pub(crate) fn extract_all(
     skip_paths: Option<&HashSet<String>>,
     on_progress: &ExtractProgress,
 ) -> Result<u64, String> {
-    let archive = open_rar_archive(path, password).as_first_part();
+    let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
         .map_err(|e| map_unrar_error(path, e))?;
