@@ -424,22 +424,36 @@ pub async fn ftp_mkdir(path: String, state: tauri::State<'_, AppState>) -> Resul
     drop(mgr);
 
     let mut ftp = session.lock().await;
-    // Use custom_command to accept both 250 and 257 (Android servers return 250)
-    match ftp
-        .client
-        .custom_command(
-            format!("MKD {}", remote_path),
-            &[
-                suppaftp::Status::RequestedFileActionOk,
-                suppaftp::Status::PathCreated,
-            ],
-        )
-        .await
-    {
+    // Accept 250/257/200 — Android FTP servers return 250 for MKD
+    let mkd_ok = &[
+        suppaftp::Status::RequestedFileActionOk,
+        suppaftp::Status::PathCreated,
+        suppaftp::Status::CommandOk,
+    ];
+    // Try absolute MKD first; if it fails, CWD to parent and use relative MKD
+    // (Android FTP servers often reject absolute MKD on protected paths)
+    match ftp.client.custom_command(format!("MKD {}", remote_path), mkd_ok).await {
         Ok(_) => info!("[FTP] mkdir: created {}", remote_path),
         Err(e) => {
-            error!("[FTP] mkdir: FAILED {} — {}", remote_path, e);
-            return Err(format!("Failed to create directory: {}", e));
+            warn!("[FTP] mkdir absolute failed ({}), trying CWD + relative MKD", e);
+            // Extract parent and dir name
+            let (parent, dirname) = match remote_path.rfind('/') {
+                Some(pos) if pos > 0 => (&remote_path[..pos], &remote_path[pos + 1..]),
+                Some(_) => ("/", &remote_path[1..]),
+                None => return Err(format!("Failed to create directory: {}", e)),
+            };
+            if dirname.is_empty() {
+                return Err(format!("Failed to create directory: {}", e));
+            }
+            ftp.client.cwd(parent).await
+                .map_err(|e2| format!("CWD '{}' failed: {}", parent, e2))?;
+            match ftp.client.custom_command(format!("MKD {}", dirname), mkd_ok).await {
+                Ok(_) => info!("[FTP] mkdir: created {} via relative path (parent={})", dirname, parent),
+                Err(e2) => {
+                    error!("[FTP] mkdir: FAILED {} (absolute: {}, relative: {})", remote_path, e, e2);
+                    return Err(format!("Failed to create directory '{}': {}", remote_path, e2));
+                }
+            }
         }
     }
     Ok(())

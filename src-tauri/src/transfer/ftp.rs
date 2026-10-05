@@ -113,6 +113,7 @@ pub async fn execute_ftp_download(
     }
 
     file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+    let _ = ftp.client.quit().await;
     Ok(done)
 }
 
@@ -164,7 +165,7 @@ pub async fn execute_ftp_upload(
 
     let put_result = ftp.client.put_file(remote_path, &mut reader).await;
 
-    match put_result {
+    let result = match put_result {
         Ok(_) => Ok(reader.done),
         Err(e) => {
             if reader.cancel_flag.load(Ordering::Relaxed) {
@@ -176,7 +177,9 @@ pub async fn execute_ftp_upload(
                 Err(format!("FTP upload failed: {}", e))
             }
         }
-    }
+    };
+    let _ = ftp.client.quit().await;
+    result
 }
 
 pub async fn execute_ftp_delete(
@@ -207,7 +210,7 @@ pub async fn execute_ftp_delete(
     }
 
     // Try rm (file), fall back to rmdir (directory)
-    match ftp.client.rm(remote_path).await {
+    let result = match ftp.client.rm(remote_path).await {
         Ok(_) => {
             let _ = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
@@ -232,7 +235,9 @@ pub async fn execute_ftp_delete(
             }));
             Ok(1)
         }
-    }
+    };
+    let _ = ftp.client.quit().await;
+    result
 }
 
 struct ProgressAsyncReader {
@@ -286,6 +291,24 @@ impl AsyncRead for ProgressAsyncReader {
     }
 }
 
+/// Helper: MKD accepting 250/257/200 (Android FTP servers return 250 for MKD).
+async fn mkd_compat(
+    client: &mut suppaftp::tokio::AsyncRustlsFtpStream,
+    path: &str,
+) -> Result<(), suppaftp::FtpError> {
+    client
+        .custom_command(
+            format!("MKD {}", path),
+            &[
+                suppaftp::Status::RequestedFileActionOk,
+                suppaftp::Status::PathCreated,
+                suppaftp::Status::CommandOk,
+            ],
+        )
+        .await
+        .map(|_| ())
+}
+
 /// Ensure a remote directory path exists on the FTP server, creating
 /// intermediate directories as needed.
 pub async fn ensure_remote_dir(
@@ -294,28 +317,61 @@ pub async fn ensure_remote_dir(
 ) -> Result<(), String> {
     let path = remote_path.trim_end_matches('/');
     // Try creating the full path directly
-    match client.mkdir(path).await {
+    match mkd_compat(client, path).await {
         Ok(_) => return Ok(()),
-        Err(e) => warn!("[transfer] MKD '{}' direct failed, building by segments: {}", path, e),
+        Err(e) => {
+            // CWD to check if directory already exists (550 can mean either)
+            if client.cwd(path).await.is_ok() {
+                return Ok(());
+            }
+            warn!("[transfer] MKD '{}' direct failed, building by segments: {}", path, e);
+        }
     }
 
     // Build directory path segment by segment
+    // Android FTP servers often reject absolute MKD on protected paths but allow
+    // relative MKD after CWD into the parent directory
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let mut built = String::new();
     for seg in segments {
         built.push('/');
         built.push_str(seg);
-        match client.mkdir(&built).await {
-            Ok(_) => continue,
-            Err(e) => {
-                // File exists / dir already exists → ok
-                let err_str = e.to_string();
-                if err_str.contains("550") || err_str.contains("521") || err_str.contains("exist") {
+        // Try absolute MKD first
+        match mkd_compat(client, &built).await {
+            Ok(_) => {
+                let _ = client.cwd(&built).await;
+                continue;
+            }
+            Err(_) => {
+                // MKD failed — could be "already exists" (550) or real error.
+                // Use CWD to probe: if CWD succeeds, directory exists.
+                if client.cwd(&built).await.is_ok() {
                     continue;
                 }
-                return Err(format!("MKD '{}' failed: {}", built, e));
+                // Try relative MKD after CWD to parent
+                let parent = if built.len() > seg.len() + 1 {
+                    &built[..built.len() - seg.len() - 1]
+                } else {
+                    "/"
+                };
+                let _ = client.cwd(parent).await;
+                match mkd_compat(client, seg).await {
+                    Ok(_) => {
+                        let _ = client.cwd(&built).await;
+                        continue;
+                    }
+                    Err(e2) => {
+                        // Check if it was created (some servers return error but still create)
+                        if client.cwd(&built).await.is_ok() {
+                            continue;
+                        }
+                        return Err(format!("MKD '{}' failed: {}", built, e2));
+                    }
+                }
             }
         }
     }
+    // Restore to root
+    let _ = client.cwd("/").await;
     Ok(())
 }
