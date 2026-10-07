@@ -60,8 +60,18 @@ pub fn read_file_partial(path: String, max_bytes: u64) -> Result<String, String>
     Ok(decode_text(&buffer))
 }
 
-/// Decode bytes to String: strict UTF-8 first, then chardetng + encoding_rs
+/// Decode bytes to String: UTF-16 BOM first, then strict UTF-8, then chardetng + encoding_rs
 pub fn decode_text(bytes: &[u8]) -> String {
+    // UTF-16 LE BOM (FF FE)
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (decoded, _) = encoding_rs::UTF_16LE.decode_without_bom_handling(&bytes[2..]);
+        return decoded.into_owned();
+    }
+    // UTF-16 BE BOM (FE FF)
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (decoded, _) = encoding_rs::UTF_16BE.decode_without_bom_handling(&bytes[2..]);
+        return decoded.into_owned();
+    }
     // Strip UTF-8 BOM if present (EF BB BF)
     let bytes = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         &bytes[3..]
@@ -355,4 +365,50 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     }
 
     fs::write(file_path, content).map_err(|e| format!("Failed to write file: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_utf16_le_with_bom() {
+        // "hello" in UTF-16 LE with BOM: FF FE 68 00 65 00 6C 00 6C 00 6F 00
+        let bytes: &[u8] = &[0xFF, 0xFE, 0x68, 0x00, 0x65, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F, 0x00];
+        let result = decode_text(bytes);
+        assert_eq!(result, "hello");
+        assert!(!result.contains('\0'));
+    }
+
+    #[test]
+    fn decode_utf16_be_with_bom() {
+        // "hello" in UTF-16 BE with BOM: FE FF 00 68 00 65 00 6C 00 6C 00 6F
+        let bytes: &[u8] = &[0xFE, 0xFF, 0x00, 0x68, 0x00, 0x65, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F];
+        let result = decode_text(bytes);
+        assert_eq!(result, "hello");
+        assert!(!result.contains('\0'));
+    }
+
+    #[test]
+    fn decode_utf8_with_bom() {
+        let bytes: &[u8] = &[0xEF, 0xBB, 0xBF, 0x68, 0x65, 0x6C, 0x6C, 0x6F];
+        let result = decode_text(bytes);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn decode_utf8_no_bom() {
+        let bytes: &[u8] = b"hello world";
+        let result = decode_text(bytes);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn decode_utf16_le_chinese() {
+        // "你好" in UTF-16 LE with BOM
+        let bytes: &[u8] = &[0xFF, 0xFE, 0x60, 0x4F, 0x7D, 0x59];
+        let result = decode_text(bytes);
+        assert_eq!(result, "你好");
+        assert!(!result.contains('\0'));
+    }
 }
