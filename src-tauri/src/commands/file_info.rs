@@ -52,13 +52,18 @@ pub struct FileInfo {
 
 #[tauri::command]
 pub fn get_file_info(path: String) -> Result<FileInfo, String> {
+    log::debug!("[file_info] get_file_info: {}", path);
     let file_path = Path::new(&path);
     if !file_path.exists() {
+        log::error!("[file_info] get_file_info failed: file does not exist: {}", path);
         return Err(format!("File does not exist: {}", path));
     }
 
     let metadata =
-        fs::metadata(&path).map_err(|e| format!("Failed to get file metadata: {}", e))?;
+        fs::metadata(&path).map_err(|e| {
+            log::error!("[file_info] get_file_info failed: {}", e);
+            format!("Failed to get file metadata: {}", e)
+        })?;
 
     let name = file_path
         .file_name()

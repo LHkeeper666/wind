@@ -4,20 +4,27 @@ use std::path::Path;
 
 #[tauri::command]
 pub fn delete_file(path: String) -> Result<(), String> {
+    log::info!("[file_ops] delete_file: {}", path);
     let file_path = Path::new(&path);
 
     if !file_path.exists() {
+        log::error!("[file_ops] delete_file failed: path does not exist: {}", path);
         return Err(format!("Path does not exist: {}", path));
     }
 
-    trash::delete(file_path).map_err(|e| format!("Failed to move to trash: {}", e))
+    trash::delete(file_path).map_err(|e| {
+        log::error!("[file_ops] delete_file failed: {}", e);
+        format!("Failed to move to trash: {}", e)
+    })
 }
 
 #[tauri::command]
 pub fn rename_file(old_path: String, new_name: String) -> Result<String, String> {
+    log::info!("[file_ops] rename_file: {} -> {}", old_path, new_name);
     let old = Path::new(&old_path);
 
     if !old.exists() {
+        log::error!("[file_ops] rename_file failed: path does not exist: {}", old_path);
         return Err(format!("Path does not exist: {}", old_path));
     }
 
@@ -28,13 +35,17 @@ pub fn rename_file(old_path: String, new_name: String) -> Result<String, String>
     let new_path = parent.join(&new_name);
 
     if new_path.exists() {
+        log::error!("[file_ops] rename_file failed: destination already exists: {}", new_name);
         return Err(format!(
             "A file or directory with name '{}' already exists",
             new_name
         ));
     }
 
-    fs::rename(old, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
+    fs::rename(old, &new_path).map_err(|e| {
+        log::error!("[file_ops] rename_file failed: {}", e);
+        format!("Failed to rename: {}", e)
+    })?;
 
     Ok(new_path.to_string_lossy().to_string())
 }
@@ -47,6 +58,7 @@ pub struct RenameEntry {
 
 #[tauri::command]
 pub fn batch_rename(entries: Vec<RenameEntry>) -> Result<Vec<String>, String> {
+    log::info!("[file_ops] batch_rename: {} entries", entries.len());
     let mut errors = Vec::new();
     let mut renamed = Vec::new();
 
@@ -80,6 +92,7 @@ pub fn batch_rename(entries: Vec<RenameEntry>) -> Result<Vec<String>, String> {
     if errors.is_empty() {
         Ok(renamed)
     } else {
+        log::error!("[file_ops] batch_rename failed: {}", errors.join("; "));
         Err(errors.join("; "))
     }
 }
@@ -101,14 +114,19 @@ pub fn delete_temp_file(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn create_file(path: String, is_dir: bool) -> Result<(), String> {
+    log::info!("[file_ops] create_file: {} (is_dir={})", path, is_dir);
     let file_path = Path::new(&path);
 
     if file_path.exists() {
+        log::error!("[file_ops] create_file failed: path already exists: {}", path);
         return Err(format!("A file or directory already exists at: {}", path));
     }
 
     if is_dir {
-        fs::create_dir_all(file_path).map_err(|e| format!("Failed to create directory: {}", e))
+        fs::create_dir_all(file_path).map_err(|e| {
+            log::error!("[file_ops] create_file failed: {}", e);
+            format!("Failed to create directory: {}", e)
+        })
     } else {
         // Create parent directories if they don't exist
         if let Some(parent) = file_path.parent() {
@@ -117,6 +135,9 @@ pub fn create_file(path: String, is_dir: bool) -> Result<(), String> {
                     .map_err(|e| format!("Failed to create parent directories: {}", e))?;
             }
         }
-        fs::write(file_path, "").map_err(|e| format!("Failed to create file: {}", e))
+        fs::write(file_path, "").map_err(|e| {
+            log::error!("[file_ops] create_file failed: {}", e);
+            format!("Failed to create file: {}", e)
+        })
     }
 }

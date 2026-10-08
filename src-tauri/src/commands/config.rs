@@ -6,12 +6,21 @@ pub fn read_config() -> Result<serde_json::Value, String> {
     let path = app_paths::config_file("windrc.json");
     let legacy_path = app_paths::legacy_roaming_file("windrc.json");
     app_paths::migrate_legacy_file(&path, &legacy_path)
-        .map_err(|e| format!("Failed to migrate config: {}", e))?;
+        .map_err(|e| {
+            log::error!("[config] read_config failed: migrate error: {}", e);
+            format!("Failed to migrate config: {}", e)
+        })?;
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
+    let content = fs::read_to_string(&path).map_err(|e| {
+        log::error!("[config] read_config failed: path={}, error={}", path.display(), e);
+        format!("Failed to read config: {}", e)
+    })?;
+    serde_json::from_str(&content).map_err(|e| {
+        log::error!("[config] read_config failed: parse error: {}", e);
+        format!("Failed to parse config: {}", e)
+    })
 }
 
 #[tauri::command]
@@ -20,8 +29,17 @@ pub fn write_config(options: serde_json::Value) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| "Failed to determine config directory".to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        log::error!("[config] write_config failed: create dir error: {}", e);
+        format!("Failed to create config dir: {}", e)
+    })?;
     let content = serde_json::to_string_pretty(&options)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(path, content).map_err(|e| format!("Failed to write config: {}", e))
+        .map_err(|e| {
+            log::error!("[config] write_config failed: serialize error: {}", e);
+            format!("Failed to serialize config: {}", e)
+        })?;
+    fs::write(&path, content).map_err(|e| {
+        log::error!("[config] write_config failed: path={}, error={}", path.display(), e);
+        format!("Failed to write config: {}", e)
+    })
 }

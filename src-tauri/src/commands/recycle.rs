@@ -11,8 +11,12 @@ pub struct TrashItemDto {
 
 #[tauri::command]
 pub fn list_recycle_bin() -> Result<Vec<TrashItemDto>, String> {
+    log::info!("[recycle] list_recycle_bin");
     use trash::os_limited;
-    let items = os_limited::list().map_err(|e| format!("Failed to list recycle bin: {}", e))?;
+    let items = os_limited::list().map_err(|e| {
+        log::error!("[recycle] list_recycle_bin failed: {}", e);
+        format!("Failed to list recycle bin: {}", e)
+    })?;
     let mut result = Vec::with_capacity(items.len());
     for item in &items {
         let size = os_limited::metadata(item)
@@ -31,30 +35,46 @@ pub fn list_recycle_bin() -> Result<Vec<TrashItemDto>, String> {
 
 #[tauri::command]
 pub fn restore_recycle_items(ids: Vec<String>) -> Result<(), String> {
+    log::info!("[recycle] restore_recycle_items: {} items", ids.len());
     use trash::os_limited;
-    let all_items = os_limited::list().map_err(|e| format!("Failed to list recycle bin: {}", e))?;
+    let all_items = os_limited::list().map_err(|e| {
+        log::error!("[recycle] restore_recycle_items failed: {}", e);
+        format!("Failed to list recycle bin: {}", e)
+    })?;
     let to_restore: Vec<_> = all_items
         .into_iter()
         .filter(|item| ids.contains(&item.id.to_string_lossy().to_string()))
         .collect();
     if to_restore.is_empty() {
+        log::error!("[recycle] restore_recycle_items failed: no matching items found");
         return Err("No matching items found in recycle bin".to_string());
     }
-    os_limited::restore_all(to_restore).map_err(|e| format!("Failed to restore: {}", e))
+    os_limited::restore_all(to_restore).map_err(|e| {
+        log::error!("[recycle] restore_recycle_items failed: {}", e);
+        format!("Failed to restore: {}", e)
+    })
 }
 
 #[tauri::command]
 pub fn purge_recycle_items(ids: Vec<String>) -> Result<(), String> {
+    log::info!("[recycle] purge_recycle_items: {} items", ids.len());
     use trash::os_limited;
-    let all_items = os_limited::list().map_err(|e| format!("Failed to list recycle bin: {}", e))?;
+    let all_items = os_limited::list().map_err(|e| {
+        log::error!("[recycle] purge_recycle_items failed: {}", e);
+        format!("Failed to list recycle bin: {}", e)
+    })?;
     let to_purge: Vec<_> = all_items
         .into_iter()
         .filter(|item| ids.contains(&item.id.to_string_lossy().to_string()))
         .collect();
     if to_purge.is_empty() {
+        log::error!("[recycle] purge_recycle_items failed: no matching items found");
         return Err("No matching items found in recycle bin".to_string());
     }
-    os_limited::purge_all(&to_purge).map_err(|e| format!("Failed to purge: {}", e))
+    os_limited::purge_all(&to_purge).map_err(|e| {
+        log::error!("[recycle] purge_recycle_items failed: {}", e);
+        format!("Failed to purge: {}", e)
+    })
 }
 
 #[tauri::command]

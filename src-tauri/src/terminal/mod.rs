@@ -33,6 +33,7 @@ impl TerminalManager {
     }
 
     pub fn spawn(&self, tab_id: u32, shell: &str, cwd: Option<&str>, cols: u16, rows: u16) -> Result<(), String> {
+        log::debug!("[terminal] spawn: tab_id={}, shell={}", tab_id, shell);
         // Kill existing instance for this tab if any
         self.kill(tab_id);
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -46,7 +47,10 @@ impl TerminalManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| format!("Failed to create PTY: {}", e))?;
+            .map_err(|e| {
+                log::error!("[terminal] spawn failed: {}", e);
+                format!("Failed to create PTY: {}", e)
+            })?;
 
         // Build command based on shell type
         let mut cmd = match shell {
@@ -150,26 +154,36 @@ impl TerminalManager {
     }
 
     pub fn write_input(&self, tab_id: u32, data: &str) -> Result<(), String> {
+        log::debug!("[terminal] write_input: tab_id={}, len={}", tab_id, data.len());
         let instances = self.instances.lock().unwrap();
         if let Some(instance) = instances.get(&tab_id) {
             let mut writer = instance.writer.lock().unwrap();
             if let Some(ref mut writer) = *writer {
                 writer
                     .write_all(data.as_bytes())
-                    .map_err(|e| format!("Failed to write to PTY: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[terminal] write_input failed: {}", e);
+                        format!("Failed to write to PTY: {}", e)
+                    })?;
                 writer
                     .flush()
-                    .map_err(|e| format!("Failed to flush PTY: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[terminal] write_input flush failed: {}", e);
+                        format!("Failed to flush PTY: {}", e)
+                    })?;
                 Ok(())
             } else {
+                log::error!("[terminal] write_input failed: no PTY writer available for tab {}", tab_id);
                 Err("No PTY writer available".to_string())
             }
         } else {
+            log::error!("[terminal] write_input failed: no terminal instance for tab {}", tab_id);
             Err(format!("No terminal instance for tab {}", tab_id))
         }
     }
 
     pub fn resize(&self, tab_id: u32, cols: u32, rows: u32) -> Result<(), String> {
+        log::debug!("[terminal] resize: tab_id={}, cols={}, rows={}", tab_id, cols, rows);
         let instances = self.instances.lock().unwrap();
         if let Some(instance) = instances.get(&tab_id) {
             let pty_pair = instance.pty_pair.lock().unwrap();
@@ -182,17 +196,23 @@ impl TerminalManager {
                         pixel_width: 0,
                         pixel_height: 0,
                     })
-                    .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[terminal] resize failed: {}", e);
+                        format!("Failed to resize PTY: {}", e)
+                    })?;
                 Ok(())
             } else {
+                log::error!("[terminal] resize failed: no PTY available for tab {}", tab_id);
                 Err("No PTY available".to_string())
             }
         } else {
+            log::error!("[terminal] resize failed: no terminal instance for tab {}", tab_id);
             Err(format!("No terminal instance for tab {}", tab_id))
         }
     }
 
     pub fn kill(&self, tab_id: u32) {
+        log::debug!("[terminal] kill: tab_id={}", tab_id);
         let mut instances = self.instances.lock().unwrap();
         if let Some(instance) = instances.remove(&tab_id) {
             // Kill child process

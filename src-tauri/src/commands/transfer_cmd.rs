@@ -7,6 +7,7 @@ pub async fn transfer_enqueue(
     tasks: Vec<crate::transfer::EnqueueTask>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<u64>, String> {
+    log::info!("[transfer_cmd] transfer_enqueue: {} tasks", tasks.len());
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
     Ok(scheduler.enqueue(tasks, sched.clone()))
@@ -14,6 +15,7 @@ pub async fn transfer_enqueue(
 
 #[tauri::command]
 pub async fn transfer_cancel(id: u64, state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    log::info!("[transfer_cmd] transfer_cancel: id={}", id);
     let sched = state.transfer_scheduler.clone();
     let mut scheduler = sched.lock().await;
     Ok(scheduler.cancel(id, sched.clone()))
@@ -21,6 +23,7 @@ pub async fn transfer_cancel(id: u64, state: tauri::State<'_, AppState>) -> Resu
 
 #[tauri::command]
 pub async fn transfer_cancel_all(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    log::info!("[transfer_cmd] transfer_cancel_all");
     let mut scheduler = state.transfer_scheduler.lock().await;
     Ok(scheduler.cancel_all())
 }
@@ -30,6 +33,7 @@ pub async fn scan_transfer_conflicts(
     tasks: Vec<crate::transfer::EnqueueTask>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    log::info!("[transfer_cmd] scan_transfer_conflicts: {} tasks", tasks.len());
     tokio::task::spawn_blocking(move || {
         for task in &tasks {
             if task.op_type != crate::transfer::TransferType::Copy
@@ -56,11 +60,15 @@ pub async fn scan_ftp_upload_conflicts(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    log::info!("[transfer_cmd] scan_ftp_upload_conflicts: {} sources to {}:{}/{}", sources.len(), conn_name, remote_dir, "");
     let mgr = state.ftp_manager.lock().await;
     let session = mgr
         .create_independent(&conn_name)
         .await
-        .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
+        .map_err(|e| {
+            log::error!("[transfer_cmd] scan_ftp_upload_conflicts failed: {}", e);
+            format!("Failed to create FTP session for conflict scan: {e}")
+        })?;
     drop(mgr);
 
     let mut ftp = session.lock().await;
@@ -146,11 +154,15 @@ pub async fn scan_ftp_download_conflicts(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    log::info!("[transfer_cmd] scan_ftp_download_conflicts: {} files, {} dirs from {}", files.len(), dirs.len(), conn_name);
     let mgr = state.ftp_manager.lock().await;
     let session = mgr
         .create_independent(&conn_name)
         .await
-        .map_err(|e| format!("Failed to create FTP session for conflict scan: {e}"))?;
+        .map_err(|e| {
+            log::error!("[transfer_cmd] scan_ftp_download_conflicts failed: {}", e);
+            format!("Failed to create FTP session for conflict scan: {e}")
+        })?;
     drop(mgr);
 
     let mut ftp = session.lock().await;

@@ -24,7 +24,10 @@ fn map_unrar_error(path: &str, err: unrar::error::UnrarError) -> String {
     match err.code {
         unrar::error::Code::MissingPassword => password_required_error(path),
         unrar::error::Code::BadPassword => password_incorrect_error(path),
-        _ => format!("Failed to read rar: {}", err),
+        _ => {
+            log::error!("[archive] rar operation failed: {}", err);
+            format!("Failed to read rar: {}", err)
+        }
     }
 }
 
@@ -141,17 +144,29 @@ pub(crate) fn extract_files(
         if target_set.contains(&norm) {
             let dest = Path::new(dest_dir).join(header.entry().filename.as_path());
             if header.entry().is_directory() {
-                fs::create_dir_all(&dest).map_err(|e| format!("Failed to create dir: {}", e))?;
+                fs::create_dir_all(&dest).map_err(|e| {
+                    log::error!("[archive] extract_files failed: {}", e);
+                    format!("Failed to create dir: {}", e)
+                })?;
                 remaining_targets.remove(&norm);
                 open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
             } else {
                 if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+                    fs::create_dir_all(parent).map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to create dir: {}", e)
+                    })?;
                 }
                 let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
-                let mut out = File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
+                let mut out = File::create(&dest).map_err(|e| {
+                    log::error!("[archive] extract_files failed: {}", e);
+                    format!("Failed to create file: {}", e)
+                })?;
                 for chunk in data.chunks(65536) {
-                    out.write_all(chunk).map_err(|e| format!("Failed to write file: {}", e))?;
+                    out.write_all(chunk).map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to write file: {}", e)
+                    })?;
                     if !on_progress(chunk.len() as u64) {
                         return Err("Cancelled".to_string());
                     }
@@ -200,17 +215,29 @@ pub(crate) fn extract_all(
 
         let dest = Path::new(dest_dir).join(header.entry().filename.as_path());
         if header.entry().is_directory() {
-            fs::create_dir_all(&dest).map_err(|e| format!("Failed to create dir: {}", e))?;
+            fs::create_dir_all(&dest).map_err(|e| {
+                log::error!("[archive] extract_all failed: {}", e);
+                format!("Failed to create dir: {}", e)
+            })?;
             open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
         } else {
             if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+                fs::create_dir_all(parent).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to create dir: {}", e)
+                })?;
             }
             let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
             total_bytes += data.len() as u64;
-            let mut out = File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
+            let mut out = File::create(&dest).map_err(|e| {
+                log::error!("[archive] extract_all failed: {}", e);
+                format!("Failed to create file: {}", e)
+            })?;
             for chunk in data.chunks(65536) {
-                out.write_all(chunk).map_err(|e| format!("Failed to write file: {}", e))?;
+                out.write_all(chunk).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to write file: {}", e)
+                })?;
                 if !on_progress(chunk.len() as u64) {
                     return Err("Cancelled".to_string());
                 }

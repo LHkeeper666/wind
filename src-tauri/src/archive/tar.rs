@@ -18,14 +18,20 @@ fn list_entries_impl<R: Read>(
 ) -> Result<Vec<FileEntry>, String> {
     let entries = archive
         .entries()
-        .map_err(|e| format!("Failed to read tar: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] list_entries failed: {}", e);
+            format!("Failed to read tar: {}", e)
+        })?;
 
     let mut all_paths: Vec<String> = Vec::new();
     let mut all_dirs = HashSet::new();
     let mut size_map: HashMap<String, u64> = HashMap::new();
 
     for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let entry = entry.map_err(|e| {
+            log::error!("[archive] list_entries failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/");
 
@@ -51,16 +57,25 @@ fn list_entries_impl<R: Read>(
 }
 
 pub(crate) fn list_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] list_entries failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive = tar::Archive::new(file);
     list_entries_impl(&mut archive, path, internal)
 }
 
 fn total_size_impl<R: Read>(archive: &mut tar::Archive<R>) -> Result<u64, String> {
-    let entries = archive.entries().map_err(|e| format!("Failed to read tar: {}", e))?;
+    let entries = archive.entries().map_err(|e| {
+        log::error!("[archive] total_uncompressed_size failed: {}", e);
+        format!("Failed to read tar: {}", e)
+    })?;
     let mut total: u64 = 0;
     for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let entry = entry.map_err(|e| {
+            log::error!("[archive] total_uncompressed_size failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         if !entry.header().entry_type().is_dir() {
             total += entry.header().size().unwrap_or(0);
         }
@@ -69,20 +84,29 @@ fn total_size_impl<R: Read>(archive: &mut tar::Archive<R>) -> Result<u64, String
 }
 
 pub(crate) fn total_uncompressed_size(path: &str) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] total_uncompressed_size failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive = tar::Archive::new(file);
     total_size_impl(&mut archive)
 }
 
 pub(crate) fn total_gz_uncompressed_size(path: &str) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] total_gz_uncompressed_size failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     total_size_impl(&mut archive)
 }
 
 pub(crate) fn list_gz_entries(path: &str, internal: &str) -> Result<Vec<FileEntry>, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] list_gz_entries failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     list_entries_impl(&mut archive, path, internal)
@@ -95,11 +119,17 @@ fn read_file_impl<R: Read>(
 ) -> Result<Vec<u8>, String> {
     let entries = archive
         .entries()
-        .map_err(|e| format!("Failed to read tar: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] read_file failed: {}", e);
+            format!("Failed to read tar: {}", e)
+        })?;
     let internal = normalize_internal(internal);
 
     for entry in entries {
-        let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = entry.map_err(|e| {
+            log::error!("[archive] read_file failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         let path_str = decode_tar_name(path, &entry)
             .replace('\\', "/")
             .trim_end_matches('/')
@@ -111,7 +141,10 @@ fn read_file_impl<R: Read>(
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] read_file failed: {}", e);
+                    format!("Failed to read entry: {}", e)
+                })?;
             return Ok(buf);
         }
     }
@@ -119,13 +152,19 @@ fn read_file_impl<R: Read>(
 }
 
 pub(crate) fn read_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] read_file failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive = tar::Archive::new(file);
     read_file_impl(&mut archive, path, internal)
 }
 
 pub(crate) fn read_gz_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] read_gz_file failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     read_file_impl(&mut archive, path, internal)
@@ -145,9 +184,15 @@ fn extract_files_impl<R: Read>(
 
     let entries = archive
         .entries()
-        .map_err(|e| format!("Failed to read tar: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] extract_files failed: {}", e);
+            format!("Failed to read tar: {}", e)
+        })?;
     for entry in entries {
-        let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = entry.map_err(|e| {
+            log::error!("[archive] extract_files failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/").trim_end_matches('/').to_string();
 
@@ -155,20 +200,35 @@ fn extract_files_impl<R: Read>(
             let dest = Path::new(dest_dir).join(&path_str);
             if entry.header().entry_type().is_dir() {
                 fs::create_dir_all(&dest)
-                    .map_err(|e| format!("Failed to create directory: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to create directory: {}", e)
+                    })?;
             } else {
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                        .map_err(|e| {
+                            log::error!("[archive] extract_files failed: {}", e);
+                            format!("Failed to create parent dir: {}", e)
+                        })?;
                 }
                 let mut out = File::create(&dest)
-                    .map_err(|e| format!("Failed to create file: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to create file: {}", e)
+                    })?;
                 let mut buf = vec![0u8; 65536];
                 loop {
-                    let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                    let n = entry.read(&mut buf).map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to read entry: {}", e)
+                    })?;
                     if n == 0 { break; }
                     out.write_all(&buf[..n])
-                        .map_err(|e| format!("Failed to write: {}", e))?;
+                        .map_err(|e| {
+                            log::error!("[archive] extract_files failed: {}", e);
+                            format!("Failed to write: {}", e)
+                        })?;
                     if !on_progress(n as u64) {
                         return Err("Cancelled".to_string());
                     }
@@ -185,7 +245,10 @@ pub(crate) fn extract_files(
     dest_dir: &str,
     on_progress: &ExtractProgress,
 ) -> Result<(), String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_files failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive = tar::Archive::new(file);
     extract_files_impl(&mut archive, path, internal_paths, dest_dir, on_progress)
 }
@@ -196,7 +259,10 @@ pub(crate) fn extract_gz_files(
     dest_dir: &str,
     on_progress: &ExtractProgress,
 ) -> Result<(), String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_gz_files failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     extract_files_impl(&mut archive, path, internal_paths, dest_dir, on_progress)
@@ -211,11 +277,17 @@ fn extract_all_impl<R: Read>(
 ) -> Result<u64, String> {
     let entries = archive
         .entries()
-        .map_err(|e| format!("Failed to read tar: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] extract_all failed: {}", e);
+            format!("Failed to read tar: {}", e)
+        })?;
 
     let mut total_bytes: u64 = 0;
     for entry in entries {
-        let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let mut entry = entry.map_err(|e| {
+            log::error!("[archive] extract_all failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         let path_str = decode_tar_name(path, &entry);
         let norm = path_str.replace('\\', "/").trim_end_matches('/').to_string();
         if let Some(skip) = skip_paths {
@@ -227,20 +299,35 @@ fn extract_all_impl<R: Read>(
 
         if entry.header().entry_type().is_dir() {
             fs::create_dir_all(&dest)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to create directory: {}", e)
+                })?;
         } else {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_all failed: {}", e);
+                        format!("Failed to create parent dir: {}", e)
+                    })?;
             }
             let mut out =
-                File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
+                File::create(&dest).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to create file: {}", e)
+                })?;
             let mut buf = vec![0u8; 65536];
             loop {
-                let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                let n = entry.read(&mut buf).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to read entry: {}", e)
+                })?;
                 if n == 0 { break; }
                 out.write_all(&buf[..n])
-                    .map_err(|e| format!("Failed to write: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_all failed: {}", e);
+                        format!("Failed to write: {}", e)
+                    })?;
                 total_bytes += n as u64;
                 if !on_progress(n as u64) {
                     return Err("Cancelled".to_string());
@@ -252,13 +339,19 @@ fn extract_all_impl<R: Read>(
 }
 
 pub(crate) fn extract_all(path: &str, dest_dir: &str, skip_paths: Option<&std::collections::HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_all failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive = tar::Archive::new(file);
     extract_all_impl(&mut archive, path, dest_dir, skip_paths, on_progress)
 }
 
 pub(crate) fn extract_gz_all(path: &str, dest_dir: &str, skip_paths: Option<&std::collections::HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_gz_all failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
     extract_all_impl(&mut archive, path, dest_dir, skip_paths, on_progress)

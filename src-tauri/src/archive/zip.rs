@@ -30,9 +30,13 @@ fn map_zip_error(path: &str, err: zip::result::ZipError) -> String {
                 password_required_error(path)
             }
             zip::result::ZipError::InvalidPassword => password_incorrect_error(path),
-            _ => format!("Failed to read zip: {}", err),
+            _ => {
+                log::error!("[archive] zip password handling failed: {}", err);
+                format!("Failed to read zip: {}", err)
+            }
         }
     } else {
+        log::error!("[archive] zip operation failed: {}", err);
         format!("Failed to read zip: {}", err)
     }
 }
@@ -43,7 +47,10 @@ fn zip_entry_requires_password(archive: &mut zip::ZipArchive<File>) -> Result<Op
     for i in 0..archive.len() {
         let entry = archive
             .by_index_raw(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] zip_entry_requires_password failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         if entry.encrypted() {
             return Ok(Some(i));
         }
@@ -92,8 +99,14 @@ struct ZipCdEntry {
 /// Parse ZIP central directory to extract raw filename bytes and UTF-8 flags.
 /// Returns a Vec of ZipCdEntry.
 fn parse_zip_central_dir(path: &str) -> Result<Vec<ZipCdEntry>, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
-    let file_len = file.seek(SeekFrom::End(0)).map_err(|e| format!("Failed to seek: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] parse_zip_central_dir failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
+    let file_len = file.seek(SeekFrom::End(0)).map_err(|e| {
+        log::error!("[archive] parse_zip_central_dir failed: {}", e);
+        format!("Failed to seek: {}", e)
+    })?;
 
     let eocd_offset = find_eocd(&mut file, file_len)?;
     let cd_offset = read_cd_info(&mut file, eocd_offset)?;
@@ -103,7 +116,10 @@ fn parse_zip_central_dir(path: &str) -> Result<Vec<ZipCdEntry>, String> {
     }
 
     file.seek(SeekFrom::Start(cd_offset))
-        .map_err(|e| format!("Failed to seek to central directory: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] parse_zip_central_dir failed: {}", e);
+            format!("Failed to seek to central directory: {}", e)
+        })?;
 
     let mut entries = Vec::new();
     let cd_sig: u32 = 0x02014b50;
@@ -120,7 +136,10 @@ fn parse_zip_central_dir(path: &str) -> Result<Vec<ZipCdEntry>, String> {
 
         let mut header = [0u8; 42];
         file.read_exact(&mut header)
-            .map_err(|e| format!("Failed to read CD header: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] parse_zip_central_dir failed: {}", e);
+                format!("Failed to read CD header: {}", e)
+            })?;
 
         let gp_flag = u16::from_le_bytes([header[4], header[5]]);
         let name_len = u16::from_le_bytes([header[24], header[25]]) as usize;
@@ -131,15 +150,24 @@ fn parse_zip_central_dir(path: &str) -> Result<Vec<ZipCdEntry>, String> {
 
         let mut name_bytes = vec![0u8; name_len];
         file.read_exact(&mut name_bytes)
-            .map_err(|e| format!("Failed to read filename: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] parse_zip_central_dir failed: {}", e);
+                format!("Failed to read filename: {}", e)
+            })?;
 
         if extra_len > 0 {
             file.seek(SeekFrom::Current(extra_len as i64))
-                .map_err(|e| format!("Failed to skip extra field: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] parse_zip_central_dir failed: {}", e);
+                    format!("Failed to skip extra field: {}", e)
+                })?;
         }
         if comment_len > 0 {
             file.seek(SeekFrom::Current(comment_len as i64))
-                .map_err(|e| format!("Failed to skip comment: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] parse_zip_central_dir failed: {}", e);
+                    format!("Failed to skip comment: {}", e)
+                })?;
         }
 
         entries.push(ZipCdEntry {
@@ -155,11 +183,17 @@ fn find_eocd(file: &mut File, file_len: u64) -> Result<u64, String> {
     let search_start = if file_len > 65557 { file_len - 65557 } else { 0 };
     let search_len = file_len - search_start;
     file.seek(SeekFrom::Start(search_start))
-        .map_err(|e| format!("Failed to seek: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] find_eocd failed: {}", e);
+            format!("Failed to seek: {}", e)
+        })?;
 
     let mut buf = vec![0u8; search_len as usize];
     file.read_exact(&mut buf)
-        .map_err(|e| format!("Failed to read EOCD search area: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] find_eocd failed: {}", e);
+            format!("Failed to read EOCD search area: {}", e)
+        })?;
 
     let eocd_sig: u32 = 0x06054b50;
     for i in (0..buf.len().saturating_sub(4)).rev() {
@@ -173,10 +207,16 @@ fn find_eocd(file: &mut File, file_len: u64) -> Result<u64, String> {
 
 fn read_cd_info(file: &mut File, eocd_offset: u64) -> Result<u64, String> {
     file.seek(SeekFrom::Start(eocd_offset + 16))
-        .map_err(|e| format!("Failed to seek to CD info: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] read_cd_info failed: {}", e);
+            format!("Failed to seek to CD info: {}", e)
+        })?;
     let mut buf = [0u8; 4];
     file.read_exact(&mut buf)
-        .map_err(|e| format!("Failed to read CD offset: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] read_cd_info failed: {}", e);
+            format!("Failed to read CD offset: {}", e)
+        })?;
     Ok(u64::from(u32::from_le_bytes(buf)))
 }
 
@@ -207,9 +247,15 @@ fn decode_cd_entry_name(
 pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] list_entries failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] list_entries failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     if let Some(password) = password {
         validate_zip_password(&mut archive, path, password)?;
@@ -263,8 +309,14 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 }
 
 pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] total_uncompressed_size failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        log::error!("[archive] total_uncompressed_size failed: {}", e);
+        format!("Failed to read zip: {}", e)
+    })?;
 
     if let Some(password) = password {
         validate_zip_password(&mut archive, path, password)?;
@@ -285,9 +337,15 @@ pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Res
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] read_file failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] read_file failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let needs_password = zip_entry_requires_password(&mut archive)?;
     if needs_password.is_some() {
@@ -311,7 +369,10 @@ pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> R
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] read_file failed: {}", e);
+                    format!("Failed to read entry: {}", e)
+                })?;
             return Ok(buf);
         }
     }
@@ -327,9 +388,15 @@ pub(crate) fn extract_files(
 ) -> Result<(), String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_files failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] extract_files failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let needs_password = zip_entry_requires_password(&mut archive)?;
     if needs_password.is_some() {
@@ -355,20 +422,35 @@ pub(crate) fn extract_files(
             let dest = Path::new(dest_dir).join(&entry_path);
             if entry.is_dir() {
                 fs::create_dir_all(&dest)
-                    .map_err(|e| format!("Failed to create directory: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to create directory: {}", e)
+                    })?;
             } else {
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                        .map_err(|e| {
+                            log::error!("[archive] extract_files failed: {}", e);
+                            format!("Failed to create parent dir: {}", e)
+                        })?;
                 }
                 let mut out = File::create(&dest)
-                    .map_err(|e| format!("Failed to create file: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to create file: {}", e)
+                    })?;
                 let mut buf = vec![0u8; 65536];
                 loop {
-                    let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                    let n = entry.read(&mut buf).map_err(|e| {
+                        log::error!("[archive] extract_files failed: {}", e);
+                        format!("Failed to read entry: {}", e)
+                    })?;
                     if n == 0 { break; }
                     out.write_all(&buf[..n])
-                        .map_err(|e| format!("Failed to write: {}", e))?;
+                        .map_err(|e| {
+                            log::error!("[archive] extract_files failed: {}", e);
+                            format!("Failed to write: {}", e)
+                        })?;
                     if !on_progress(n as u64) {
                         return Err("Cancelled".to_string());
                     }
@@ -382,9 +464,15 @@ pub(crate) fn extract_files(
 pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
     let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_all failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] extract_all failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let needs_password = zip_entry_requires_password(&mut archive)?;
     if needs_password.is_some() {
@@ -411,20 +499,35 @@ pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, sk
         let dest = Path::new(dest_dir).join(&entry_path);
         if entry.is_dir() {
             fs::create_dir_all(&dest)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to create directory: {}", e)
+                })?;
         } else {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_all failed: {}", e);
+                        format!("Failed to create parent dir: {}", e)
+                    })?;
             }
             let mut out =
-                File::create(&dest).map_err(|e| format!("Failed to create file: {}", e))?;
+                File::create(&dest).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to create file: {}", e)
+                })?;
             let mut buf = vec![0u8; 65536];
             loop {
-                let n = entry.read(&mut buf).map_err(|e| format!("Failed to read entry: {}", e))?;
+                let n = entry.read(&mut buf).map_err(|e| {
+                    log::error!("[archive] extract_all failed: {}", e);
+                    format!("Failed to read entry: {}", e)
+                })?;
                 if n == 0 { break; }
                 out.write_all(&buf[..n])
-                    .map_err(|e| format!("Failed to write: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[archive] extract_all failed: {}", e);
+                        format!("Failed to write: {}", e)
+                    })?;
                 total_bytes += n as u64;
                 if !on_progress(n as u64) {
                     return Err("Cancelled".to_string());
@@ -441,19 +544,31 @@ pub(crate) fn delete_entries(path: &str, internal_paths: &[String]) -> Result<()
         .map(|p| normalize_internal(p))
         .collect();
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] delete_entries failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] delete_entries failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let tmp_path = format!("{}.tmp", path);
     let tmp_file = File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] delete_entries failed: {}", e);
+            format!("Failed to create temp file: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(tmp_file);
 
     for i in 0..archive.len() {
         let entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] delete_entries failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         let entry_path = entry
             .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
@@ -470,20 +585,35 @@ pub(crate) fn delete_entries(path: &str, internal_paths: &[String]) -> Result<()
                     &entry_path,
                     zip::write::SimpleFileOptions::default(),
                 )
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] delete_entries failed: {}", e);
+                    format!("Failed to copy directory: {}", e)
+                })?;
         } else {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy file entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] delete_entries failed: {}", e);
+                    format!("Failed to copy file entry: {}", e)
+                })?;
         }
     }
 
     let _ = writer
         .finish()
-        .map_err(|e| format!("Failed to finalize: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] delete_entries failed: {}", e);
+            format!("Failed to finalize: {}", e)
+        })?;
 
-    fs::remove_file(path).map_err(|e| format!("Failed to remove original: {}", e))?;
-    fs::rename(&tmp_path, path).map_err(|e| format!("Failed to rename: {}", e))?;
+    fs::remove_file(path).map_err(|e| {
+        log::error!("[archive] delete_entries failed: {}", e);
+        format!("Failed to remove original: {}", e)
+    })?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        log::error!("[archive] delete_entries failed: {}", e);
+        format!("Failed to rename: {}", e)
+    })?;
 
     Ok(())
 }
@@ -492,20 +622,32 @@ pub(crate) fn rename_entry(path: &str, old_path: &str, new_path: &str) -> Result
     let old_norm = normalize_internal(old_path);
     let new_norm = normalize_internal(new_path);
 
-    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file = File::open(path).map_err(|e| {
+        log::error!("[archive] rename_entry failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] rename_entry failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let tmp_path = format!("{}.tmp", path);
     let tmp_file = File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] rename_entry failed: {}", e);
+            format!("Failed to create temp file: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(tmp_file);
     let options = zip::write::SimpleFileOptions::default();
 
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] rename_entry failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         let entry_path = entry
             .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
@@ -521,27 +663,48 @@ pub(crate) fn rename_entry(path: &str, old_path: &str, new_path: &str) -> Result
         if entry.is_dir() {
             writer
                 .add_directory(write_path, options)
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] rename_entry failed: {}", e);
+                    format!("Failed to copy directory: {}", e)
+                })?;
         } else {
             writer
                 .start_file(write_path, options)
-                .map_err(|e| format!("Failed to start renamed entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] rename_entry failed: {}", e);
+                    format!("Failed to start renamed entry: {}", e)
+                })?;
             let mut buf = Vec::new();
             entry
                 .read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read entry data: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] rename_entry failed: {}", e);
+                    format!("Failed to read entry data: {}", e)
+                })?;
             writer
                 .write_all(&buf)
-                .map_err(|e| format!("Failed to write renamed entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] rename_entry failed: {}", e);
+                    format!("Failed to write renamed entry: {}", e)
+                })?;
         }
     }
 
     let _ = writer
         .finish()
-        .map_err(|e| format!("Failed to finalize: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] rename_entry failed: {}", e);
+            format!("Failed to finalize: {}", e)
+        })?;
 
-    fs::remove_file(path).map_err(|e| format!("Failed to remove original: {}", e))?;
-    fs::rename(&tmp_path, path).map_err(|e| format!("Failed to rename: {}", e))?;
+    fs::remove_file(path).map_err(|e| {
+        log::error!("[archive] rename_entry failed: {}", e);
+        format!("Failed to remove original: {}", e)
+    })?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        log::error!("[archive] rename_entry failed: {}", e);
+        format!("Failed to rename: {}", e)
+    })?;
 
     Ok(())
 }
@@ -559,13 +722,22 @@ pub(crate) fn add_files(
     };
 
     let file = File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to open archive: {}", e)
+        })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let tmp_path = format!("{}.tmp", archive_path);
     let tmp_file = File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to create temp file: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(tmp_file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -574,15 +746,24 @@ pub(crate) fn add_files(
     for i in 0..archive.len() {
         let entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] add_files failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         if entry.is_dir() {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to copy directory: {}", e)
+                })?;
         } else {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy file entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to copy file entry: {}", e)
+                })?;
         }
     }
 
@@ -597,7 +778,10 @@ pub(crate) fn add_files(
             let dir_prefix = format!("{}{}", prefix, dir_name);
             writer
                 .add_directory(&dir_prefix, options)
-                .map_err(|e| format!("Failed to add directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to add directory: {}", e)
+                })?;
             add_dir_to_zip(&mut writer, src_path, &dir_prefix, &options, &mut 0)?;
         } else {
             let name = src_path
@@ -607,26 +791,47 @@ pub(crate) fn add_files(
             let entry_path = format!("{}{}", prefix, name);
             writer
                 .start_file(&entry_path, options)
-                .map_err(|e| format!("Failed to add file to archive: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to add file to archive: {}", e)
+                })?;
             let mut f = File::open(src_path)
-                .map_err(|e| format!("Failed to open source file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to open source file: {}", e)
+                })?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read source file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to read source file: {}", e)
+                })?;
             writer
                 .write_all(&buf)
-                .map_err(|e| format!("Failed to write to archive: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_files failed: {}", e);
+                    format!("Failed to write to archive: {}", e)
+                })?;
         }
     }
 
     let _ = writer
         .finish()
-        .map_err(|e| format!("Failed to finalize: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to finalize: {}", e)
+        })?;
 
     fs::remove_file(archive_path)
-        .map_err(|e| format!("Failed to remove original: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to remove original: {}", e)
+        })?;
     fs::rename(&tmp_path, archive_path)
-        .map_err(|e| format!("Failed to rename: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_files failed: {}", e);
+            format!("Failed to rename: {}", e)
+        })?;
 
     Ok(())
 }
@@ -635,13 +840,22 @@ pub(crate) fn write_file(archive_path: &str, internal_path: &str, content: &[u8]
     let target = normalize_internal(internal_path);
 
     let file = File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to open archive: {}", e)
+        })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     let tmp_path = format!("{}.tmp", archive_path);
     let tmp_file = File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to create temp file: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(tmp_file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -650,7 +864,10 @@ pub(crate) fn write_file(archive_path: &str, internal_path: &str, content: &[u8]
     for i in 0..archive.len() {
         let entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] write_file failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         let entry_path = entry
             .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
@@ -661,18 +878,30 @@ pub(crate) fn write_file(archive_path: &str, internal_path: &str, content: &[u8]
             found = true;
             writer
                 .start_file(&entry_path, options)
-                .map_err(|e| format!("Failed to start updated entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] write_file failed: {}", e);
+                    format!("Failed to start updated entry: {}", e)
+                })?;
             writer
                 .write_all(content)
-                .map_err(|e| format!("Failed to write updated entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] write_file failed: {}", e);
+                    format!("Failed to write updated entry: {}", e)
+                })?;
         } else if entry.is_dir() {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] write_file failed: {}", e);
+                    format!("Failed to copy directory: {}", e)
+                })?;
         } else {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy file entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] write_file failed: {}", e);
+                    format!("Failed to copy file entry: {}", e)
+                })?;
         }
     }
 
@@ -682,12 +911,21 @@ pub(crate) fn write_file(archive_path: &str, internal_path: &str, content: &[u8]
 
     let _ = writer
         .finish()
-        .map_err(|e| format!("Failed to finalize: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to finalize: {}", e)
+        })?;
 
     fs::remove_file(archive_path)
-        .map_err(|e| format!("Failed to remove original: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to remove original: {}", e)
+        })?;
     fs::rename(&tmp_path, archive_path)
-        .map_err(|e| format!("Failed to rename: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] write_file failed: {}", e);
+            format!("Failed to rename: {}", e)
+        })?;
 
     Ok(())
 }
@@ -696,16 +934,25 @@ pub(crate) fn create_entry(archive_path: &str, internal_path: &str, is_dir: bool
     let target = normalize_internal(internal_path);
 
     let file = File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to open archive: {}", e)
+        })?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
+        zip::ZipArchive::new(file).map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to read zip: {}", e)
+        })?;
 
     // Check if entry already exists
     let target_with_slash = format!("{}/", target);
     for i in 0..archive.len() {
         let entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] create_entry failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         let entry_path = entry
             .enclosed_name()
             .map(|p| p.to_string_lossy().to_string())
@@ -718,7 +965,10 @@ pub(crate) fn create_entry(archive_path: &str, internal_path: &str, is_dir: bool
 
     let tmp_path = format!("{}.tmp", archive_path);
     let tmp_file =
-        File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+        File::create(&tmp_path).map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to create temp file: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(tmp_file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -727,15 +977,24 @@ pub(crate) fn create_entry(archive_path: &str, internal_path: &str, is_dir: bool
     for i in 0..archive.len() {
         let entry = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] create_entry failed: {}", e);
+                format!("Failed to read entry: {}", e)
+            })?;
         if entry.is_dir() {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy directory: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] create_entry failed: {}", e);
+                    format!("Failed to copy directory: {}", e)
+                })?;
         } else {
             writer
                 .raw_copy_file(entry)
-                .map_err(|e| format!("Failed to copy file entry: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] create_entry failed: {}", e);
+                    format!("Failed to copy file entry: {}", e)
+                })?;
         }
     }
 
@@ -743,24 +1002,42 @@ pub(crate) fn create_entry(archive_path: &str, internal_path: &str, is_dir: bool
     if is_dir {
         writer
             .add_directory(&target, options)
-            .map_err(|e| format!("Failed to create directory entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] create_entry failed: {}", e);
+                format!("Failed to create directory entry: {}", e)
+            })?;
     } else {
         writer
             .start_file(&target, options)
-            .map_err(|e| format!("Failed to create file entry: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] create_entry failed: {}", e);
+                format!("Failed to create file entry: {}", e)
+            })?;
         writer
             .write_all(&[])
-            .map_err(|e| format!("Failed to write empty file: {}", e))?;
+            .map_err(|e| {
+                log::error!("[archive] create_entry failed: {}", e);
+                format!("Failed to write empty file: {}", e)
+            })?;
     }
 
     let _ = writer
         .finish()
-        .map_err(|e| format!("Failed to finalize: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to finalize: {}", e)
+        })?;
 
     fs::remove_file(archive_path)
-        .map_err(|e| format!("Failed to remove original: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to remove original: {}", e)
+        })?;
     fs::rename(&tmp_path, archive_path)
-        .map_err(|e| format!("Failed to rename: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] create_entry failed: {}", e);
+            format!("Failed to rename: {}", e)
+        })?;
 
     Ok(())
 }
@@ -768,7 +1045,10 @@ pub(crate) fn create_entry(archive_path: &str, internal_path: &str, is_dir: bool
 pub(crate) fn compress_files(sources: &[String], dest_path: &str) -> Result<u64, String> {
     let dest = Path::new(dest_path);
     let file = File::create(dest)
-        .map_err(|e| format!("Failed to create archive: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] compress_files failed: {}", e);
+            format!("Failed to create archive: {}", e)
+        })?;
     let mut writer = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -790,22 +1070,37 @@ pub(crate) fn compress_files(sources: &[String], dest_path: &str) -> Result<u64,
                 .unwrap_or_else(|| source.clone());
             writer
                 .start_file(&name, options)
-                .map_err(|e| format!("Failed to add file to archive: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] compress_files failed: {}", e);
+                    format!("Failed to add file to archive: {}", e)
+                })?;
             let mut f = File::open(src_path)
-                .map_err(|e| format!("Failed to open source file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] compress_files failed: {}", e);
+                    format!("Failed to open source file: {}", e)
+                })?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read source file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] compress_files failed: {}", e);
+                    format!("Failed to read source file: {}", e)
+                })?;
             total_bytes += buf.len() as u64;
             writer
                 .write_all(&buf)
-                .map_err(|e| format!("Failed to write to archive: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] compress_files failed: {}", e);
+                    format!("Failed to write to archive: {}", e)
+                })?;
         }
     }
 
     writer
         .finish()
-        .map_err(|e| format!("Failed to finalize archive: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] compress_files failed: {}", e);
+            format!("Failed to finalize archive: {}", e)
+        })?;
     Ok(total_bytes)
 }
 
@@ -818,11 +1113,20 @@ fn add_dir_to_zip<W: Write + Seek>(
 ) -> Result<(), String> {
     writer
         .add_directory(prefix, *options)
-        .map_err(|e| format!("Failed to add directory: {}", e))?;
+        .map_err(|e| {
+            log::error!("[archive] add_dir_to_zip failed: {}", e);
+            format!("Failed to add directory: {}", e)
+        })?;
 
-    let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))?;
+    let entries = fs::read_dir(dir).map_err(|e| {
+        log::error!("[archive] add_dir_to_zip failed: {}", e);
+        format!("Failed to read directory: {}", e)
+    })?;
     for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let entry = entry.map_err(|e| {
+            log::error!("[archive] add_dir_to_zip failed: {}", e);
+            format!("Failed to read entry: {}", e)
+        })?;
         let path = entry.path();
         let name = path
             .file_name()
@@ -835,16 +1139,28 @@ fn add_dir_to_zip<W: Write + Seek>(
         } else {
             writer
                 .start_file(&rel, *options)
-                .map_err(|e| format!("Failed to add file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_dir_to_zip failed: {}", e);
+                    format!("Failed to add file: {}", e)
+                })?;
             let mut f =
-                File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
+                File::open(&path).map_err(|e| {
+                    log::error!("[archive] add_dir_to_zip failed: {}", e);
+                    format!("Failed to open file: {}", e)
+                })?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)
-                .map_err(|e| format!("Failed to read file: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_dir_to_zip failed: {}", e);
+                    format!("Failed to read file: {}", e)
+                })?;
             *total_bytes += buf.len() as u64;
             writer
                 .write_all(&buf)
-                .map_err(|e| format!("Failed to write: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[archive] add_dir_to_zip failed: {}", e);
+                    format!("Failed to write: {}", e)
+                })?;
         }
     }
     Ok(())

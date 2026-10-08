@@ -24,14 +24,20 @@ fn map_7z_error(path: &str, err: sevenz_rust::Error) -> String {
     match err {
         sevenz_rust::Error::PasswordRequired => password_required_error(path),
         sevenz_rust::Error::MaybeBadPassword(_) => password_incorrect_error(path),
-        other => format!("Failed to read 7z: {}", other),
+        other => {
+            log::error!("[archive] 7z operation failed: {}", other);
+            format!("Failed to read 7z: {}", other)
+        }
     }
 }
 
 // ── 7z Operations ──────────────────────────────────────────────────
 
 pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] list_entries failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;
@@ -73,7 +79,10 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 }
 
 pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] total_uncompressed_size failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;
@@ -86,7 +95,10 @@ pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Res
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] read_file failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;
@@ -123,7 +135,10 @@ pub(crate) fn extract_files(
     password: Option<&str>,
     on_progress: &ExtractProgress,
 ) -> Result<(), String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_files failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;
@@ -172,7 +187,10 @@ pub(crate) fn extract_files(
 }
 
 pub(crate) fn extract_all(path: &str, dest_dir: &str, password: Option<&str>, skip_paths: Option<&HashSet<String>>, on_progress: &ExtractProgress) -> Result<u64, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut file = File::open(path).map_err(|e| {
+        log::error!("[archive] extract_all failed: {}", e);
+        format!("Failed to open: {}", e)
+    })?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
         .map_err(|e| map_7z_error(path, e))?;

@@ -228,6 +228,7 @@ pub async fn search_files(
     recursive: Option<bool>,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<SearchResult>, String> {
+    log::info!("[search] search_files: path={}, pattern={}", root_path, pattern);
     let max = max_results.unwrap_or(50);
     let is_recursive = recursive.unwrap_or(true);
 
@@ -269,11 +270,15 @@ pub async fn search_files(
         }
     })
     .await
-    .map_err(|e| format!("Search task failed: {}", e))?
+    .map_err(|e| {
+        log::error!("[search] search_files failed: {}", e);
+        format!("Search task failed: {}", e)
+    })?
 }
 
 #[tauri::command]
 pub fn check_search_tools() -> serde_json::Value {
+    log::info!("[search] check_search_tools");
     let fd_available = get_fd_path().is_some();
     let rg_available = is_rg_available();
 
