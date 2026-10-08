@@ -519,7 +519,7 @@
       fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
-        .catch(() => {});
+        .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       return;
     }
 

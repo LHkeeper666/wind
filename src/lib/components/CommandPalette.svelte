@@ -4,6 +4,7 @@
   import { layout } from '$lib/stores/layout';
   import { tabs } from '$lib/stores/tabs';
   import { clipboard } from '$lib/stores/clipboard';
+  import { logError } from '$lib/utils/log';
 
   interface Command { name: string; action: () => void }
 
@@ -268,7 +269,8 @@
                 actions.onNavigate(resolved);
                 if (keepProjectTree) void actions.onSetProjectTreeRoot(resolved);
               }
-            }).catch(() => {
+            }).catch((e) => {
+              logError('CommandPalette', `cd command failed: ${arg}, error: ${e}`);
               actions.onShowToast(`E344: Can't find directory: ${arg}`);
             });
           }
@@ -332,7 +334,8 @@
             actions.onShowToast(`Reconnected to ${name}`);
             const ftpPath = `ftp://${name}/`;
             actions.onNavigate(ftpPath);
-          }).catch(() => {
+          }).catch((e) => {
+            logError('CommandPalette', `ftp connect command failed: ${name}, error: ${e}`);
             actions.onShowToast(`No stored connection '${name}'. Use: :ftp connect ${name} <host> [--port N]`);
           });
           visible = false;
@@ -359,9 +362,13 @@
             invoke('read_directory', { path: ftpPath }).then(() => {
               actions.onNavigate(ftpPath);
             }).catch((e: any) => {
+              logError('CommandPalette', `ftp connect list failed: ${name}, error: ${e}`);
               actions.onShowToast(`FTP connected but failed to list: ${e}`);
             });
-          }).catch((e: any) => actions.onShowToast(`Error: ${e}`));
+          }).catch((e: any) => {
+            logError('CommandPalette', `ftp connect command failed: ${name}, error: ${e}`);
+            actions.onShowToast(`Error: ${e}`);
+          });
         }
         visible = false;
         actions.focusPanel('current');
@@ -403,11 +410,13 @@
                 visible = false;
                 actions.focusPanel('preview');
               } else {
+                logError('CommandPalette', `e command failed: ${arg}, file not found`);
                 actions.onShowToast(`E344: Can't find: ${arg}`);
                 visible = false;
                 actions.focusPanel('current');
               }
-            }).catch(() => {
+            }).catch((e) => {
+              logError('CommandPalette', `e command failed: ${arg}, error: ${e}`);
               actions.onShowToast(`E344: Can't find: ${arg}`);
               visible = false;
               actions.focusPanel('current');

@@ -3,9 +3,7 @@
 ## Purpose
 
 为 Wind 提供前后端统一的结构化日志系统，支持文件输出、日志级别控制和自动清理，方便在 release 包中排查问题。
-
 ## Requirements
-
 ### Requirement: Rust 后端日志初始化
 应用启动时 SHALL 使用 `fern` + `log` crate 初始化日志系统，配置日志级别、文件输出目标和格式。Rust 代码 MUST 能通过 `log` 宏（`info!`/`warn!`/`error!`/`debug!`）输出日志。
 
@@ -27,6 +25,14 @@
 #### Scenario: 前端 error 日志
 - **WHEN** 前端调用 `logError('transfer', 'Download failed: timeout')`
 - **THEN** 日志文件中 SHALL 出现 `时间戳 ERROR [frontend] [transfer] Download failed: timeout`
+
+#### Scenario: 全局错误日志
+- **WHEN** 前端发生未捕获的异常或 Promise rejection
+- **THEN** 日志文件中 SHALL 出现 `时间戳 ERROR [frontend] [global-error] <错误详情>`，其中错误详情包含 message、source、lineno、colno、stack
+
+#### Scenario: 组件错误日志
+- **WHEN** 前端组件中的静默错误处理被触发（如 PreviewEditor 保存失败、CommandPalette 命令执行失败）
+- **THEN** 日志文件中 SHALL 出现 `时间戳 ERROR [frontend] [<组件名>] <错误详情>`
 
 ### Requirement: 日志级别控制
 默认日志级别 SHALL 为 Info。MUST 支持通过环境变量 `RUST_LOG=wind=debug` 切换为 Debug 级别。
@@ -63,3 +69,4 @@ SHALL 提供 `src/lib/utils/log.ts` 封装模块，导出 `logInfo`、`logWarn`�
 #### Scenario: 封装函数调用
 - **WHEN** 代码调用 `logInfo('pdf-perf', 'Page rendered: 45ms')`
 - **THEN** SHALL 调用 `invoke('frontend_log', { level: 'info', message: '[pdf-perf] Page rendered: 45ms' })`
+
