@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 use log::{error, info};
@@ -140,27 +141,45 @@ pub async fn cancel_folder_size(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn list_virtual_root(state: tauri::State<'_, AppState>) -> Result<Vec<FileEntry>, String> {
-    let mut entries = Vec::new();
-
-    // Local drives
-    for letter in b'A'..=b'Z' {
-        let drive = format!("{}:\\", letter as char);
-        if Path::new(&drive).exists() {
-            entries.push(FileEntry {
-                name: drive.clone(),
-                path: drive,
-                is_dir: true,
-                size: None,
-                is_hidden: false,
-                modified: None,
-                created: None,
-                children: None,
-            });
+    // Probe drive letters with per-drive timeout via channels.
+    // Prevents hanging on disconnected network-mapped drives.
+    let drive_entries = {
+        let (tx, rx) = mpsc::channel();
+        let mut handles = Vec::with_capacity(26);
+        for letter in b'A'..=b'Z' {
+            let drive = format!("{}:\\", letter as char);
+            let tx = tx.clone();
+            handles.push(std::thread::spawn(move || {
+                let exists = Path::new(&drive).exists();
+                let _ = tx.send((drive, exists));
+            }));
         }
-    }
+        drop(tx); // close sender so rx.recv() returns Err when all threads done
+
+        let mut entries = Vec::new();
+        // Wait up to 2s per drive for results; slow drives are skipped
+        while let Ok((drive, exists)) = rx.recv_timeout(Duration::from_secs(2)) {
+            if exists {
+                entries.push(FileEntry {
+                    name: drive.clone(),
+                    path: drive,
+                    is_dir: true,
+                    size: None,
+                    is_hidden: false,
+                    modified: None,
+                    created: None,
+                    children: None,
+                });
+            }
+        }
+        // Threads that are still blocked on exists() will be abandoned;
+        // they clean up when the OS times out the syscall.
+        entries
+    };
 
     // FTP connections
     let mgr = state.ftp_manager.lock().await;
+    let mut entries = drive_entries;
     for config in mgr.get_configs() {
         entries.push(FileEntry {
             name: format!("[FTP] {}", config.name),
@@ -224,30 +243,29 @@ pub async fn read_directory(
                     Ok(entry) => {
                         let file_name = entry.file_name().to_string_lossy().to_string();
                         let file_path = entry.path().to_string_lossy().to_string();
-                        let is_dir = entry.path().is_dir();
+                        // Single metadata call instead of 5 separate ones
+                        let meta = entry.metadata().ok();
+                        let is_dir = meta.as_ref().map_or(false, |m| m.is_dir());
                         let size = if is_dir {
                             None
                         } else {
-                            entry.metadata().ok().map(|m| m.len())
+                            meta.as_ref().map(|m| m.len())
                         };
                         let is_hidden = file_name.starts_with('.')
-                            || entry
-                                .metadata()
+                            || meta
+                                .as_ref()
                                 .map(|m| {
                                     use std::os::windows::fs::MetadataExt;
-                                    m.file_attributes() & 0x2 != 0 // FILE_ATTRIBUTE_HIDDEN
+                                    m.file_attributes() & 0x2 != 0
                                 })
                                 .unwrap_or(false);
-
-                        let modified = entry
-                            .metadata()
-                            .ok()
+                        let modified = meta
+                            .as_ref()
                             .and_then(|m| m.modified().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs());
-                        let created = entry
-                            .metadata()
-                            .ok()
+                        let created = meta
+                            .as_ref()
                             .and_then(|m| m.created().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs());

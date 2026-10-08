@@ -3,8 +3,9 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
+use std::time::Duration;
 use tauri::Emitter;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
@@ -32,6 +33,7 @@ pub struct DirectoryWatcher {
     stop_flag: Option<Arc<AtomicBool>>,
     event_handle: Option<SendHandle>,
     thread_handle: Option<JoinHandle<()>>,
+    done_rx: Option<mpsc::Receiver<()>>,
 }
 
 impl DirectoryWatcher {
@@ -40,6 +42,7 @@ impl DirectoryWatcher {
             stop_flag: None,
             event_handle: None,
             thread_handle: None,
+            done_rx: None,
         }
     }
 
@@ -60,13 +63,18 @@ impl DirectoryWatcher {
         let event_handle = SendHandle(create_event().map_err(|e| format!("Failed to create event: {}", e))?);
         let event_for_thread = event_handle;
 
+        // Channel for the watch thread to signal it has exited
+        let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
+
         let handle = std::thread::spawn(move || {
             watch_loop(&root_string, &stop_clone, &app_handle, event_for_thread);
+            let _ = done_tx.send(());
         });
 
         self.stop_flag = Some(stop_flag);
         self.event_handle = Some(event_handle);
         self.thread_handle = Some(handle);
+        self.done_rx = Some(done_rx);
         Ok(())
     }
 
@@ -78,7 +86,15 @@ impl DirectoryWatcher {
                 unsafe { let _ = SetEvent(event); }
             }
         }
-        if let Some(handle) = self.thread_handle.take() {
+        // Wait for the watch thread to exit with a timeout
+        if let Some(done_rx) = self.done_rx.take() {
+            if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+                info!("[directory_watcher] Watch thread did not exit within 5s, waiting on join...");
+                if let Some(handle) = self.thread_handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        } else if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
     }
