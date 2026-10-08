@@ -19,13 +19,15 @@ pub fn scan_dir_conflicts(src: &Path, dst: &Path, root: &Path, app: &AppHandle, 
         if path.is_dir() {
             scan_dir_conflicts(&path, &dst_path, root, app, skip_rel_paths);
         } else if dst_path.exists() {
-            let _ = app.emit("transfer-conflict-found", serde_json::json!({
+            if let Err(e) = app.emit("transfer-conflict-found", serde_json::json!({
                 "kind": "dir",
                 "dir_source": root.to_string_lossy().to_string(),
                 "source": path.to_string_lossy(),
                 "destination": dst_path.to_string_lossy(),
                 "rel_path": rel,
-            }));
+            })) {
+                log::debug!("[emit] transfer-conflict-found failed: {}", e);
+            }
         }
     }
 }

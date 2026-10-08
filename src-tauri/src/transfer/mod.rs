@@ -139,26 +139,32 @@ async fn execute_transfer(
             } else {
                 0
             };
-            let _ = app.emit("transfer-complete", serde_json::json!({
+            if let Err(e) = app.emit("transfer-complete", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "bytes_done": bytes_done,
                 "elapsed_ms": elapsed_ms, "avg_speed_bps": avg_speed,
                 "source": task.source, "destination": task.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-complete failed: {}", e);
+            }
         }
         Err(e) => {
             if cancel_flag.load(Ordering::Relaxed) {
-                let _ = app.emit("transfer-cancelled", serde_json::json!({
+                if let Err(emit_err) = app.emit("transfer-cancelled", serde_json::json!({
                     "id": task.id, "batch_id": task.batch_id,
                     "op_type": task.op_type,
                     "source": task.source, "destination": task.destination,
-                }));
+                })) {
+                    log::debug!("[emit] transfer-cancelled failed: {}", emit_err);
+                }
             } else {
-                let _ = app.emit("transfer-failed", serde_json::json!({
+                if let Err(emit_err) = app.emit("transfer-failed", serde_json::json!({
                     "id": task.id, "batch_id": task.batch_id,
                     "op_type": task.op_type, "error": e,
                     "source": task.source, "destination": task.destination,
-                }));
+                })) {
+                    log::debug!("[emit] transfer-failed failed: {}", emit_err);
+                }
             }
         }
     }

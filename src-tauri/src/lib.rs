@@ -77,35 +77,41 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
         dispatch = dispatch.chain(std::io::stdout());
     } else {
         // Release mode: file output with date-based rotation
+        let mut file_logging_ok = false;
         if let Ok(log_dir) = app_handle.path().app_local_data_dir().map(|p| p.join("logs")) {
-            let _ = std::fs::create_dir_all(&log_dir);
+            if std::fs::create_dir_all(&log_dir).is_ok() {
+                // State for tracking current log file and date
+                let state: &'static Mutex<(Option<std::fs::File>, String)> =
+                    Box::leak(Box::new(Mutex::new((None, String::new()))));
 
-            // State for tracking current log file and date
-            let state: &'static Mutex<(Option<std::fs::File>, String)> =
-                Box::leak(Box::new(Mutex::new((None, String::new()))));
-
-            // Use a custom log target for date-based file rotation
-            let log_dir_clone = log_dir.clone();
-            dispatch = dispatch.chain(fern::Output::call(move |record| {
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                let mut guard = state.lock().unwrap();
-                let (ref mut file, ref mut current_date) = *guard;
-                if current_date != &today {
-                    let log_path = log_dir_clone.join(format!("wind-{}.log", today));
-                    if let Ok(f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&log_path)
-                    {
-                        *file = Some(f);
-                        *current_date = today;
+                // Use a custom log target for date-based file rotation
+                let log_dir_clone = log_dir.clone();
+                dispatch = dispatch.chain(fern::Output::call(move |record| {
+                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    let mut guard = state.lock().unwrap();
+                    let (ref mut file, ref mut current_date) = *guard;
+                    if current_date != &today {
+                        let log_path = log_dir_clone.join(format!("wind-{}.log", today));
+                        if let Ok(f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&log_path)
+                        {
+                            *file = Some(f);
+                            *current_date = today;
+                        }
                     }
-                }
-                if let Some(ref mut f) = file {
-                    use std::io::Write;
-                    let _ = writeln!(f, "{}", record.args());
-                }
-            }));
+                    if let Some(ref mut f) = file {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{}", record.args());
+                    }
+                }));
+                file_logging_ok = true;
+            }
+        }
+        if !file_logging_ok {
+            // Fallback: log to stderr so messages are not silently lost
+            dispatch = dispatch.chain(std::io::stderr());
         }
     }
 

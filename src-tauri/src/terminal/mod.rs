@@ -123,7 +123,9 @@ impl TerminalManager {
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buffer[..n]).to_string();
                         if let Some(ref handle) = output_handle {
-                            let _ = handle.emit(&event_name, &data);
+                            if let Err(e) = handle.emit(&event_name, &data) {
+                                log::debug!("[emit] terminal-output failed: {}", e);
+                            }
                         }
                     }
                     Err(_) => break,
@@ -145,7 +147,9 @@ impl TerminalManager {
                 .unwrap_or(false);
             if current_instance {
                 if let Some(ref handle) = exit_handle {
-                    let _ = handle.emit(&exit_event_name, generation.to_string());
+                    if let Err(e) = handle.emit(&exit_event_name, generation.to_string()) {
+                        log::debug!("[emit] terminal-exited failed: {}", e);
+                    }
                 }
             }
         });

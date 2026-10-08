@@ -47,7 +47,9 @@ pub async fn scan_transfer_conflicts(
                 crate::transfer::scan_dir_conflicts(src, dst, src, &app, &task.skip_rel_paths);
             }
         }
-        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+        if let Err(e) = app.emit("transfer-conflict-scan-done", serde_json::json!({})) {
+            log::debug!("[emit] transfer-conflict-scan-done failed: {}", e);
+        }
     });
     Ok(())
 }
@@ -98,7 +100,7 @@ pub async fn scan_ftp_upload_conflicts(
                 .unwrap_or_default();
             if !path.is_dir() {
                 if remote_names.contains(&name) {
-                    let _ = app.emit(
+                    if let Err(e) = app.emit(
                         "transfer-conflict-found",
                         serde_json::json!({
                             "kind": "file",
@@ -107,7 +109,9 @@ pub async fn scan_ftp_upload_conflicts(
                             "source": src,
                             "destination": format!("ftp://{conn_name}{remote_base}/{name}"),
                         }),
-                    );
+                    ) {
+                        log::debug!("[emit] transfer-conflict-found failed: {}", e);
+                    }
                 }
             } else {
                 let mut local: Vec<(String, u64, bool)> = Vec::new();
@@ -129,18 +133,22 @@ pub async fn scan_ftp_upload_conflicts(
                     }
                     let remote_rel = format!("{}/{}", name, rel.replace('\\', "/"));
                     if remote_names.contains(&remote_rel) {
-                        let _ = app.emit("transfer-conflict-found", serde_json::json!({
+                        if let Err(e) = app.emit("transfer-conflict-found", serde_json::json!({
                             "kind": "dir",
                             "dir_source": src,
                             "rel_path": rel.replace('\\', "/"),
                             "source": full,
                             "destination": format!("ftp://{conn_name}{remote_base}/{remote_rel}"),
-                        }));
+                        })) {
+                            log::debug!("[emit] transfer-conflict-found failed: {}", e);
+                        }
                     }
                 }
             }
         }
-        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+        if let Err(e) = app.emit("transfer-conflict-scan-done", serde_json::json!({})) {
+            log::debug!("[emit] transfer-conflict-scan-done failed: {}", e);
+        }
     });
     Ok(())
 }
@@ -184,7 +192,7 @@ pub async fn scan_ftp_download_conflicts(
             let name = f.rsplit('/').next().unwrap_or(f.as_str());
             let local = std::path::Path::new(&local_dir).join(name);
             if local.exists() {
-                let _ = app.emit(
+                if let Err(e) = app.emit(
                     "transfer-conflict-found",
                     serde_json::json!({
                         "kind": "file",
@@ -193,7 +201,9 @@ pub async fn scan_ftp_download_conflicts(
                         "source": f,
                         "destination": local.to_string_lossy(),
                     }),
-                );
+                ) {
+                    log::debug!("[emit] transfer-conflict-found failed: {}", e);
+                }
             }
         }
         for (dir, entries) in &dir_trees {
@@ -213,7 +223,7 @@ pub async fn scan_ftp_download_conflicts(
                     .join(dir_name)
                     .join(rel.replace('/', "\\"));
                 if local.exists() {
-                    let _ = app.emit(
+                    if let Err(e) = app.emit(
                         "transfer-conflict-found",
                         serde_json::json!({
                             "kind": "dir",
@@ -222,11 +232,15 @@ pub async fn scan_ftp_download_conflicts(
                             "source": remote_full,
                             "destination": local.to_string_lossy(),
                         }),
-                    );
+                    ) {
+                        log::debug!("[emit] transfer-conflict-found failed: {}", e);
+                    }
                 }
             }
         }
-        let _ = app.emit("transfer-conflict-scan-done", serde_json::json!({}));
+        if let Err(e) = app.emit("transfer-conflict-scan-done", serde_json::json!({})) {
+            log::debug!("[emit] transfer-conflict-scan-done failed: {}", e);
+        }
     });
     Ok(())
 }

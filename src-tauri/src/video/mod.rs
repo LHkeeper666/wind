@@ -476,7 +476,10 @@ pub fn start_video_server(path: String) -> Result<String, String> {
         if let Some(state) = guard.take() {
             state.stop_flag.store(true, Ordering::Relaxed);
             if let Some(handle) = state.handle {
-                let _ = handle.join();
+                match handle.join() {
+                    Ok(_) => {}
+                    Err(e) => { log::error!("[video] server thread panicked: {:?}", e); }
+                }
             }
         }
     }
@@ -516,7 +519,10 @@ pub fn stop_video_server() -> Result<(), String> {
     if let Some(state) = guard.take() {
         state.stop_flag.store(true, Ordering::Relaxed);
         if let Some(handle) = state.handle {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(_) => {}
+                Err(e) => { log::error!("[video] server thread panicked: {:?}", e); }
+            }
         }
     }
     Ok(())

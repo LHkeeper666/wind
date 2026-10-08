@@ -91,11 +91,17 @@ impl DirectoryWatcher {
             if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
                 info!("[directory_watcher] Watch thread did not exit within 5s, waiting on join...");
                 if let Some(handle) = self.thread_handle.take() {
-                    let _ = handle.join();
+                    match handle.join() {
+                        Ok(_) => {}
+                        Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
+                    }
                 }
             }
         } else if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(_) => {}
+                Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
+            }
         }
     }
 }
@@ -181,7 +187,9 @@ fn watch_loop(root: &str, stop_flag: &Arc<AtomicBool>, app_handle: &tauri::AppHa
                 .collect();
 
             if !filtered.is_empty() {
-                let _ = app_handle.emit("directory-changed", filtered);
+                if let Err(e) = app_handle.emit("directory-changed", filtered) {
+                    log::debug!("[emit] directory-changed failed: {}", e);
+                }
             }
         }
         // Timeout: loop back to check stop_flag and resubmit

@@ -130,7 +130,7 @@ impl TransferScheduler {
                 internal_paths: task.internal_paths.clone(),
             };
             // Emit queued event so frontend creates the entry immediately
-            let _ = self.app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = self.app.emit("transfer-progress", serde_json::json!({
                 "id": entry.id,
                 "batch_id": entry.batch_id,
                 "op_type": entry.op_type,
@@ -140,7 +140,9 @@ impl TransferScheduler {
                 "speed_bps": 0,
                 "source": entry.source,
                 "destination": entry.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             self.queue.push_back(entry);
         }
 
@@ -185,7 +187,7 @@ impl TransferScheduler {
                 internal_paths: internal_paths.clone(),
             };
 
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": entry.id,
                 "batch_id": entry.batch_id,
                 "op_type": entry.op_type,
@@ -195,7 +197,9 @@ impl TransferScheduler {
                 "speed_bps": 0,
                 "source": entry.source,
                 "destination": entry.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
 
             s.queue.push_back(entry);
         }
@@ -234,7 +238,7 @@ impl TransferScheduler {
                 task.total_bytes = total_bytes;
             }
             // Also check if it's already been dispatched to active
-            let _ = app_clone.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app_clone.emit("transfer-progress", serde_json::json!({
                 "id": id,
                 "batch_id": batch_id,
                 "op_type": "extract",
@@ -244,7 +248,9 @@ impl TransferScheduler {
                 "speed_bps": 0,
                 "source": archive_path,
                 "destination": dest_dir,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
 
             // Try to dispatch — the task might be ready for a slot now
             s.dispatch_pending(sched_clone.clone());
@@ -311,9 +317,11 @@ impl TransferScheduler {
         }
 
         // Emit a single batch event so the frontend re-renders once.
-        let _ = self.app.emit("transfer-cancelled-batch", serde_json::json!({
+        if let Err(e) = self.app.emit("transfer-cancelled-batch", serde_json::json!({
             "ids": cancelled_ids,
-        }));
+        })) {
+            log::debug!("[emit] transfer-cancelled-batch failed: {}", e);
+        }
 
         cancelled_ids.len()
     }
@@ -332,7 +340,9 @@ impl TransferScheduler {
 
         self.queue = new_order;
         let queued_ids: Vec<u64> = self.queue.iter().map(|t| t.id).collect();
-        let _ = self.app.emit("transfer-queue-updated", serde_json::json!({ "ids": queued_ids }));
+        if let Err(e) = self.app.emit("transfer-queue-updated", serde_json::json!({ "ids": queued_ids })) {
+            log::debug!("[emit] transfer-queue-updated failed: {}", e);
+        }
     }
 
     fn dispatch_pending(&mut self, sched: Arc<TokioMutex<TransferScheduler>>) {
@@ -458,7 +468,7 @@ impl TransferScheduler {
     }
 
     fn emit_progress(&self, task: &TransferTask, speed_bps: u64) {
-        let _ = self.app.emit("transfer-progress", serde_json::json!({
+        if let Err(e) = self.app.emit("transfer-progress", serde_json::json!({
             "id": task.id,
             "batch_id": task.batch_id,
             "op_type": task.op_type,
@@ -468,15 +478,19 @@ impl TransferScheduler {
             "speed_bps": speed_bps,
             "source": task.source,
             "destination": task.destination,
-        }));
+        })) {
+            log::debug!("[emit] transfer-progress failed: {}", e);
+        }
     }
 
     fn emit_cancelled(&self, id: u64, batch_id: u64, source: &str, dest: &str,
                       op_type: TransferType) {
-        let _ = self.app.emit("transfer-cancelled", serde_json::json!({
+        if let Err(e) = self.app.emit("transfer-cancelled", serde_json::json!({
             "id": id, "batch_id": batch_id, "op_type": op_type,
             "source": source, "destination": dest,
-        }));
+        })) {
+            log::debug!("[emit] transfer-cancelled failed: {}", e);
+        }
     }
 
     // ── History ──

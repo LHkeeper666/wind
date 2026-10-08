@@ -3,9 +3,7 @@
 ## Purpose
 
 为 Wind 应用的关键路径 Rust 模块补全日志，确保问题可追溯。
-
 ## Requirements
-
 ### Requirement: 高优先级模块入口日志
 高优先级模块（file_ops、recycle、search、archive_cmd、file_info）的 command 函数入口 SHALL 使用 `log::info!` 记录操作类型和关键参数。
 
@@ -110,3 +108,28 @@
 #### Scenario: 功能行为不变
 - **WHEN** 执行文件操作、终端操作、搜索等操作
 - **THEN** 操作结果与变更前完全一致
+
+### Requirement: 关键路径 emit 失败记录
+关键路径的 `app.emit()` 调用失败时 SHALL 使用 `log::debug!` 记录失败信息，避免静默丢失。
+
+关键路径事件包括：`directory-changed`、`transfer-progress`、`transfer-complete`、`transfer-error`、`terminal-output`、`terminal-exit`、`file-watcher-event`。
+
+#### Scenario: emit 成功不记录
+- **WHEN** `app.emit("directory-changed", data)` 调用成功
+- **THEN** MUST NOT 产生额外日志
+
+#### Scenario: emit 失败记录 debug 日志
+- **WHEN** `app.emit("directory-changed", data)` 调用失败
+- **THEN** 系统 SHALL 输出 `[emit] failed: {error}` 的 debug 日志
+
+### Requirement: 线程 panic 记录
+所有 `handle.join()` 调用 SHALL 使用 match 模式处理返回值，线程 panic 时记录 error 级别日志。
+
+#### Scenario: 线程正常退出
+- **WHEN** `handle.join()` 返回 `Ok(_)`
+- **THEN** MUST NOT 产生额外日志
+
+#### Scenario: 线程 panic 记录
+- **WHEN** `handle.join()` 返回 `Err(e)`
+- **THEN** 系统 SHALL 输出 `[watcher] thread panicked: {error}` 的 error 日志
+

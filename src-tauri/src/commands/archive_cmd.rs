@@ -51,7 +51,9 @@ pub fn extract_archive_files(
         log::error!("[archive_cmd] extract_archive_files failed: {}", e);
         e
     })?;
-    let _ = app.emit("directory-changed", vec![dest_dir]);
+    if let Err(e) = app.emit("directory-changed", vec![dest_dir]) {
+        log::debug!("[emit] directory-changed failed: {}", e);
+    }
     Ok(())
 }
 
@@ -91,7 +93,9 @@ pub async fn extract_archive(
         serde_json::json!({ "archive": archive_name, "dest": dest_dir, "total_bytes": total_bytes }),
     )
     .ok();
-    let _ = app.emit("directory-changed", vec![dest_dir]);
+    if let Err(e) = app.emit("directory-changed", vec![dest_dir]) {
+        log::debug!("[emit] directory-changed failed: {}", e);
+    }
     Ok(())
 }
 

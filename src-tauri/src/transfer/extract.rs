@@ -50,7 +50,7 @@ pub async fn execute_extract(
         if last.elapsed().as_millis() >= 100 {
             *last = Instant::now();
             drop(last);
-            let _ = app_clone.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app_clone.emit("transfer-progress", serde_json::json!({
                 "id": task_id,
                 "batch_id": batch_id,
                 "op_type": op_type,
@@ -60,7 +60,9 @@ pub async fn execute_extract(
                 "speed_bps": 0u64,
                 "source": source,
                 "destination": dest,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
         }
 
         true

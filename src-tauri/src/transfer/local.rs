@@ -42,7 +42,7 @@ pub async fn execute_local_copy(
                 let actual_total = dir_size(&src);
                 if actual_total > 0 {
                     task_corrected.total_bytes = actual_total;
-                    let _ = app.emit("transfer-progress", serde_json::json!({
+                    if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                         "id": task_corrected.id,
                         "batch_id": task_corrected.batch_id,
                         "op_type": task_corrected.op_type,
@@ -52,7 +52,9 @@ pub async fn execute_local_copy(
                         "speed_bps": 0,
                         "source": task_corrected.source,
                         "destination": task_corrected.destination,
-                    }));
+                    })) {
+                        log::debug!("[emit] transfer-progress failed: {}", e);
+                    }
                 }
             }
             local_copy_blocking(&src, &dst, &cancel, &app, &task_corrected)
@@ -142,13 +144,15 @@ fn copy_file_with_progress(
 
         let now = Instant::now();
         if now.duration_since(*last_emit).as_millis() >= 100 {
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": *total, "total_bytes": task.total_bytes,
                 "speed_bps": 0,
                 "source": source_str, "destination": dest_str,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             *last_emit = now;
         }
     }
@@ -271,13 +275,15 @@ fn delete_with_progress_filtered(
 
         let now = Instant::now();
         if now.duration_since(*last_emit).as_millis() >= 100 {
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": *total, "total_bytes": task.total_bytes,
                 "speed_bps": 0,
                 "source": task.source.clone(), "destination": task.destination.clone(),
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             *last_emit = now;
         }
     }

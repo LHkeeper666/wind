@@ -80,7 +80,7 @@ fn walk_dir(
         }
 
         if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
-            let _ = app.emit(
+            if let Err(e) = app.emit(
                 "folder-size-tick",
                 serde_json::json!({
                     "path": root_path,
@@ -88,7 +88,9 @@ fn walk_dir(
                     "files": *files,
                     "dirs": *dirs,
                 }),
-            );
+            ) {
+                log::debug!("[emit] folder-size-tick failed: {}", e);
+            }
             *last_emit = Instant::now();
         }
     }
@@ -118,7 +120,7 @@ pub async fn calculate_folder_size(path: String, app: tauri::AppHandle) -> Resul
             &app_handle,
         );
 
-        let _ = app_handle.emit(
+        if let Err(e) = app_handle.emit(
             "folder-size-done",
             serde_json::json!({
                 "path": path_owned,
@@ -126,7 +128,9 @@ pub async fn calculate_folder_size(path: String, app: tauri::AppHandle) -> Resul
                 "files": files,
                 "dirs": dirs,
             }),
-        );
+        ) {
+            log::debug!("[emit] folder-size-done failed: {}", e);
+        }
         unregister_folder_size_calc(&path_owned);
     });
 

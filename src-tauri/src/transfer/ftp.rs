@@ -69,12 +69,14 @@ pub async fn execute_ftp_download(
     let total = if file_size > 0 { file_size as u64 } else { task.total_bytes };
     // Immediately update frontend with the correct file size
     if total > 0 {
-        let _ = app.emit("transfer-progress", serde_json::json!({
+        if let Err(e) = app.emit("transfer-progress", serde_json::json!({
             "id": task.id, "batch_id": task.batch_id,
             "op_type": task.op_type, "status": "running",
             "bytes_done": 0, "total_bytes": total, "speed_bps": 0,
             "source": task.source, "destination": task.destination,
-        }));
+        })) {
+            log::debug!("[emit] transfer-progress failed: {}", e);
+        }
     }
     let mut last_emit = Instant::now();
     let start = Instant::now();
@@ -101,13 +103,15 @@ pub async fn execute_ftp_download(
         if now.duration_since(last_emit).as_millis() >= 100 {
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 { (done as f64 / elapsed) as u64 } else { 0 };
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": done, "total_bytes": total,
                 "speed_bps": speed,
                 "source": task.source, "destination": task.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             last_emit = now;
         }
     }
@@ -212,13 +216,15 @@ pub async fn execute_ftp_delete(
     // Try rm (file), fall back to rmdir (directory)
     let result = match ftp.client.rm(remote_path).await {
         Ok(_) => {
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": 1, "total_bytes": 1,
                 "speed_bps": 0,
                 "source": task.source, "destination": task.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             Ok(1)
         }
         Err(rm_err) => {
@@ -226,13 +232,15 @@ pub async fn execute_ftp_delete(
             ftp.client.rmdir(remote_path)
                 .await
                 .map_err(|e| format!("FTP delete failed (both rm and rmdir): {rm_err} / {e}"))?;
-            let _ = app.emit("transfer-progress", serde_json::json!({
+            if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": 1, "total_bytes": 1,
                 "speed_bps": 0,
                 "source": task.source, "destination": task.destination,
-            }));
+            })) {
+                log::debug!("[emit] transfer-progress failed: {}", e);
+            }
             Ok(1)
         }
     };
@@ -276,13 +284,15 @@ impl AsyncRead for ProgressAsyncReader {
                 if now.duration_since(this.last_emit).as_millis() >= 100 {
                     let elapsed = this.start.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 { (this.done as f64 / elapsed) as u64 } else { 0 };
-                    let _ = this.app.emit("transfer-progress", serde_json::json!({
+                    if let Err(e) = this.app.emit("transfer-progress", serde_json::json!({
                         "id": this.task_id, "batch_id": this.batch_id,
                         "op_type": this.op_type, "status": "running",
                         "bytes_done": this.done, "total_bytes": this.total,
                         "speed_bps": speed,
                         "source": this.source, "destination": this.dest,
-                    }));
+                    })) {
+                        log::debug!("[emit] transfer-progress failed: {}", e);
+                    }
                     this.last_emit = now;
                 }
             }
