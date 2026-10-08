@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use log::debug;
+
 static ENCODING_CACHE: Mutex<Option<HashMap<String, Option<&'static encoding_rs::Encoding>>>> =
     Mutex::new(None);
 
@@ -18,6 +20,7 @@ pub(crate) fn detect_archive_encoding(archive_path: &str, name_bytes: &[u8]) -> 
     }
 
     let encoding = detect_encoding_from_bytes(name_bytes);
+    debug!("[archive] encoding detected for {}: {:?}", archive_path, encoding.map(|e| e.name()));
     let mut cache = ENCODING_CACHE.lock().unwrap();
     if cache.is_none() {
         *cache = Some(HashMap::new());

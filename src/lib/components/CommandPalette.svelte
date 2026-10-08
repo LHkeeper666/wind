@@ -258,6 +258,7 @@
                 actions.onNavigate(normalized);
               }
             }).catch((e: any) => {
+              logError('CommandPalette', `Failed to open FTP: ${e}`);
               actions.onShowToast(`Failed to open FTP: ${e}`);
             });
           } else {
@@ -310,7 +311,10 @@
         const name = q.substring(15).trim();
         invoke('ftp_disconnect', { name }).then((msg: any) => {
           actions.onShowToast(msg);
-        }).catch((e: any) => actions.onShowToast(`Error: ${e}`));
+        }).catch((e: any) => {
+          logError('CommandPalette', `ftp disconnect failed: ${name}, error: ${e}`);
+          actions.onShowToast(`Error: ${e}`);
+        });
         visible = false;
         actions.focusPanel('current');
         return;
@@ -389,6 +393,7 @@
             visible = false;
             actions.focusPanel('current');
           }).catch((e: any) => {
+            logError('CommandPalette', `Failed to open FTP: ${arg}, error: ${e}`);
             actions.onShowToast(`Failed to open FTP: ${e}`);
             visible = false;
             actions.focusPanel('current');

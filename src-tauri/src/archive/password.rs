@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use log::debug;
+
 static ARCHIVE_PASSWORD_CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 fn is_rar_path(path: &Path) -> bool {
@@ -73,7 +75,11 @@ fn cached_archive_password(archive_path: &str) -> Option<String> {
     let key = archive_cache_key(archive_path);
     let mut cache = ARCHIVE_PASSWORD_CACHE.lock().unwrap();
     let map = cache.get_or_insert_with(HashMap::new);
-    map.get(&key).cloned()
+    let result = map.get(&key).cloned();
+    if result.is_some() {
+        debug!("[archive] password cache hit for {}", archive_path);
+    }
+    result
 }
 
 fn store_archive_password(archive_path: &str, password: &str) {
@@ -81,6 +87,7 @@ fn store_archive_password(archive_path: &str, password: &str) {
     let mut cache = ARCHIVE_PASSWORD_CACHE.lock().unwrap();
     let map = cache.get_or_insert_with(HashMap::new);
     map.insert(key, password.to_string());
+    debug!("[archive] password cached for {}", archive_path);
 }
 
 pub(crate) fn resolve_archive_password(archive_path: &str, password: Option<String>) -> Option<String> {

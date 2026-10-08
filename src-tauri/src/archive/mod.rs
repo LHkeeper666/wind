@@ -8,6 +8,8 @@ mod zip;
 
 use std::sync::Arc;
 
+use log::debug;
+
 use crate::FileEntry;
 
 /// Callback for extraction progress. Receives bytes extracted by the current file.
@@ -71,6 +73,7 @@ pub fn list_entries(
 ) -> Result<Vec<FileEntry>, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    debug!("[archive] list_entries format={:?} path={} internal={}", format, archive_path, internal_path);
     let password = password::resolve_archive_password(archive_path, password);
     match format {
         ArchiveFormat::Zip => zip::list_entries(archive_path, internal_path, password.as_deref()),
@@ -88,6 +91,7 @@ pub fn read_file_bytes(
 ) -> Result<Vec<u8>, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    debug!("[archive] read_file_bytes format={:?} path={} internal={}", format, archive_path, internal_path);
     let password = password::resolve_archive_password(archive_path, password);
     match format {
         ArchiveFormat::Zip => zip::read_file(archive_path, internal_path, password.as_deref()),
@@ -141,6 +145,7 @@ pub fn extract_files(
 ) -> Result<(), String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    debug!("[archive] extract_files format={:?} count={} dest={}", format, internal_paths.len(), dest_dir);
     let password = password::resolve_archive_password(archive_path, password);
     match format {
         ArchiveFormat::Zip => zip::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
@@ -160,6 +165,7 @@ pub fn extract_all(
 ) -> Result<u64, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    debug!("[archive] extract_all format={:?} dest={}", format, dest_dir);
     let password = password::resolve_archive_password(archive_path, password);
     match format {
         ArchiveFormat::Zip => zip::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),

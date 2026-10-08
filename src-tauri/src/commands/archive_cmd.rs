@@ -88,11 +88,12 @@ pub async fn extract_archive(
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| archive_path.clone());
-    app.emit(
+    if let Err(e) = app.emit(
         "extract-complete",
         serde_json::json!({ "archive": archive_name, "dest": dest_dir, "total_bytes": total_bytes }),
-    )
-    .ok();
+    ) {
+        log::debug!("[emit] extract-complete failed: {}", e);
+    }
     if let Err(e) = app.emit("directory-changed", vec![dest_dir]) {
         log::debug!("[emit] directory-changed failed: {}", e);
     }
@@ -124,11 +125,12 @@ pub async fn compress_files(
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| dest_path.clone());
-    app.emit(
+    if let Err(e) = app.emit(
         "compress-complete",
         serde_json::json!({ "archive": archive_name, "path": dest_path, "total_bytes": total_bytes }),
-    )
-    .ok();
+    ) {
+        log::debug!("[emit] compress-complete failed: {}", e);
+    }
     Ok(())
 }
 
