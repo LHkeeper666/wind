@@ -67,7 +67,10 @@
       terminalManager.setContainerVisible(prevTabId, false);
     }
 
-    if (!visible) return;
+    if (!visible) {
+      logInfo('tab-perf', `terminalEffect hidden tabSwitch=${prevTabId !== activeTabId} time=${(performance.now()-t0).toFixed(1)}ms`);
+      return;
+    }
 
     if (!terminalManager.has(activeTabId)) {
       const terminalCwd = initialCwd || currentPath;
@@ -76,12 +79,12 @@
       const tCreate = performance.now();
       terminalManager.create(activeTabId, shellTypeProp, terminalCwd);
       const tCreated = performance.now();
-      logInfo('tab-perf', `terminal createContainer=${(tCreate-t0).toFixed(1)}ms create=${(tCreated-tCreate).toFixed(1)}ms`);
+      logInfo('tab-perf', `terminalEffect createContainer=${(tCreate-t0).toFixed(1)}ms create=${(tCreated-tCreate).toFixed(1)}ms`);
       terminalManager.startShell(activeTabId, shellTypeProp);
     } else {
       terminalManager.setContainerVisible(activeTabId, true);
       const t1 = performance.now();
-      logInfo('tab-perf', `terminal setVisible=${(t1-t0).toFixed(1)}ms`);
+      logInfo('tab-perf', `terminalEffect setVisible=${(t1-t0).toFixed(1)}ms tabSwitch=${prevTabId !== activeTabId}`);
     }
 
     // Restore focus on tab switch (only when terminal is the active column)

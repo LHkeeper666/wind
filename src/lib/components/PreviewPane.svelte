@@ -6,6 +6,7 @@
   import TocSidebar from './TocSidebar.svelte';
   import { restoreExpandedLines } from '$lib/utils/tab-cache';
   import { isDirectEditorFile } from '$lib/utils/file-types';
+  import { logInfo } from '$lib/utils/log';
 
   let {
     filePath = null,
@@ -190,6 +191,8 @@
     if (key === _prevRenderKey) return;
     _prevRenderKey = key;
 
+    logInfo('PreviewPane', `renderEffect fire mode=${mode} path=${filePath?.split(/[/\\]/).pop() || '(null)'} directEdit=${directEdit} isDir=${isDirectory} contentLen=${content?.length ?? 0} binary=${!!binaryContent} trigger=${renderTrigger}`);
+
     // Track which path isDirectory was set for.
     // When filePath changes (tab switch), isDirectory may be stale from a different tab.
     // We record the path that isDirectory=true was associated with so we can detect staleness.
@@ -275,9 +278,12 @@
     const slotPath = slot.dataset.filePath;
     const slotMtime = slot.dataset.fileMtime;
 
+    logInfo('PreviewPane', `renderPreviewOnce path=${path.split(/[/\\]/).pop()} tabId=${tabId} slotRendered=${slotRendered} slotPath=${slotPath?.split(/[/\\]/).pop() || '(none)'} mtime=${snapMtime} contentLen=${snapContent?.length ?? 0} binary=${!!snapBinary}`);
+
     // Skip if this tab's slot already holds a fresh render of the same file.
     if (slotRendered && slotPath === path
         && slotMtime === String(snapMtime)) {
+      logInfo('PreviewPane', `renderPreviewOnce SKIP (cached) path=${path.split(/[/\\]/).pop()}`);
       const savedScroll = pendingRestoreScrollTop;
       pendingRestoreScrollTop = -1;
       if (savedScroll >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll; }); }
@@ -307,12 +313,19 @@
 
     const previewContent: string | ArrayBuffer = snapBinary ?? snapContent;
     await getPreviewRouter().preview(path, previewContent, slot);
-    if (requestId !== _renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) return;
+    if (requestId !== _renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) {
+      logInfo('PreviewPane', `renderPreviewOnce ABORT (requestId/version mismatch) path=${path.split(/[/\\]/).pop()}`);
+      return;
+    }
     // Discard if loadFile started a new load during the async render
-    if (snapGen !== _contentGeneration) return;
+    if (snapGen !== _contentGeneration) {
+      logInfo('PreviewPane', `renderPreviewOnce ABORT (generation mismatch) path=${path.split(/[/\\]/).pop()}`);
+      return;
+    }
 
     slot.dataset.rendered = 'true';
     slot.dataset.fileMtime = String(snapMtime);
+    logInfo('PreviewPane', `renderPreviewOnce DONE path=${path.split(/[/\\]/).pop()} slotChildren=${slot.childElementCount} scrollH=${slot.scrollHeight}`);
 
     const savedScroll2 = pendingRestoreScrollTop;
     pendingRestoreScrollTop = -1;

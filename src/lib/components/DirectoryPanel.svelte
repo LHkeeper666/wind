@@ -330,6 +330,7 @@
   let prevPath: string = '';
   $effect.pre(() => {
     if (path && path !== prevPath) {
+      const t0 = performance.now();
       prevPath = path;
       if (!archiveState) {
         selectedIndex = -1;
@@ -337,6 +338,7 @@
         clearSelection();
         untrack(() => loadDirectory(path, false));
       }
+      logInfo('tab-perf', `dirEffect[${type}] path=${path.split(/[/\\]/).pop() || path} time=${(performance.now()-t0).toFixed(1)}ms`);
     }
   });
 
@@ -482,11 +484,13 @@
       const seen = new Set<string>();
       files = files.filter(f => { if (seen.has(f.path)) return false; seen.add(f.path); return true; });
       if (gen !== loadingGen) return false;
+      const t1 = performance.now();
       selectInitialEntry();
+      const t2 = performance.now();
       applyPendingRestore();
       markDirectorySynchronized(dirPath, version);
       isLoading = false;
-      logInfo('tab-perf', `loadDirectory CACHE_HIT dir=${dirPath.split(/[/\\]/).pop()} time=${(performance.now()-t0).toFixed(1)}ms`);
+      logInfo('tab-perf', `loadDirectory[${type}] CACHE_HIT dir=${dirPath.split(/[/\\]/).pop()} total=${(performance.now()-t0).toFixed(1)}ms select=${(t2-t1).toFixed(1)}ms files=${files.length}`);
       return true;
     }
 

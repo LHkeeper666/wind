@@ -284,7 +284,17 @@ export class MarkdownPreviewer implements Previewer {
 			}
 			const tPost = performance.now();
 			logInfo('md-render', `codeCache:${this.codeCache.size} imageCache:${this.imageCache.size} mermaidCache:${this.mermaidCache.size} katexCache:${this.katexCache.size}`);
-			await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
+			// Wrap with timeout to prevent a single hung task from blocking the entire render pipeline.
+			// If any task hangs (e.g. mermaid, image load), the timeout rejects and the render
+			// falls through to the catch block with a plain-text fallback.
+			const RENDER_TIMEOUT = 15000; // 15s
+			const allTasks = [...highlightTasks, ...mermaidTasks, ...imageTasks];
+			if (allTasks.length > 0) {
+				await Promise.race([
+					Promise.all(allTasks),
+					new Promise<void>((_, reject) => setTimeout(() => reject(new Error('render timeout')), RENDER_TIMEOUT)),
+				]);
+			}
 			const postMs = (performance.now() - tPost).toFixed(0);
 			const totalMs = (performance.now() - tMd).toFixed(0);
 			const stats = [`md:${mdMs}ms`];
@@ -441,7 +451,14 @@ export class MarkdownPreviewer implements Previewer {
 				}
 			}
 
-			await Promise.all([...highlightTasks, ...mermaidTasks, ...imageTasks]);
+			// Same timeout guard as render() to prevent hung tasks from blocking the pipeline.
+			const allUpdateTasks = [...highlightTasks, ...mermaidTasks, ...imageTasks];
+			if (allUpdateTasks.length > 0) {
+				await Promise.race([
+					Promise.all(allUpdateTasks),
+					new Promise<void>((_, reject) => setTimeout(() => reject(new Error('update timeout')), 15000)),
+				]);
+			}
 
 			// KaTeX: render new/changed formulas, reuse cached ones
 			if (placeholders.length > 0) {

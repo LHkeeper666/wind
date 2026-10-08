@@ -1,7 +1,7 @@
 import type { Previewer, TocHeading } from './types';
 import { TextPreviewer } from './TextPreviewer';
 import { MarkdownPreviewer } from './MarkdownPreviewer';
-import { logError } from '../utils/log';
+import { logError, logInfo } from '../utils/log';
 import { ImagePreviewer } from './ImagePreviewer';
 import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
@@ -76,16 +76,20 @@ export class PreviewRouter {
     // Staleness check: if container.dataset.filePath changed during the async render
     // (e.g. user selected a different file), skip the swap to prevent stale content flash.
     if (container.dataset.filePath !== filePath) {
+      logInfo('PreviewRouter', `SWAP_SKIP stale path: expected=${filePath} actual=${container.dataset.filePath || '(empty)'}`);
       staging.remove();
       return;
     }
 
     // Swap: replace old content with new, then clean up old previewer
+    const childCount = staging.childElementCount;
+    const htmlLen = staging.innerHTML.length;
     container.innerHTML = '';
     while (staging.firstChild) {
       container.appendChild(staging.firstChild);
     }
     staging.remove();
+    logInfo('PreviewRouter', `SWAP_OK path=${filePath.split(/[/\\]/).pop()} children=${childCount} htmlLen=${htmlLen} slotRect=${container.getBoundingClientRect().height.toFixed(0)}px scrollH=${container.scrollHeight}`);
     // Only dispose the old previewer if it's a DIFFERENT instance.
     // When oldPreviewer === previewer (same type), disposing would revoke
     // blob URLs that the new render just created (e.g. video thumbnails).

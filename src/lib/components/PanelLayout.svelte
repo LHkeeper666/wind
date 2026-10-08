@@ -316,6 +316,7 @@
   // Subscribe to layout changes
   $effect(() => {
     const unsubscribe = layout.subscribe(state => {
+      const t0 = performance.now();
       currentPath = state.currentPath;
       selectedFile = state.selectedFile;
       // During MRU switcher preview, layout temporarily shows another tab's
@@ -331,6 +332,8 @@
         : getDirName(state.currentPath);
       const tabsState = getTabsState();
       tabs.renameTab(tabsState.activeTabId, name);
+      const elapsed = performance.now() - t0;
+      if (elapsed > 5) logInfo('tab-perf', `layoutSubscribe path=${state.currentPath.split(/[/\\]/).pop()} time=${elapsed.toFixed(1)}ms`);
     });
     return unsubscribe;
   });
