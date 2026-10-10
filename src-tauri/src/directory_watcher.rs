@@ -1,13 +1,12 @@
-use log::{error, info};
+use log::{debug, error, info};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::Emitter;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED_0, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadDirectoryChangesW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED,
     FILE_ACTION_REMOVED, FILE_ACTION_RENAMED_NEW_NAME, FILE_FLAG_BACKUP_SEMANTICS,
@@ -16,7 +15,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
 use windows::Win32::System::IO::{CancelIo, OVERLAPPED};
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
 use windows::core::PCWSTR;
 
 const WATCH_BUFFER_SIZE: u32 = 16384;
@@ -30,8 +29,7 @@ struct SendHandle(HANDLE);
 unsafe impl Send for SendHandle {}
 
 pub struct DirectoryWatcher {
-    stop_flag: Option<Arc<AtomicBool>>,
-    event_handle: Option<SendHandle>,
+    stop_event: Option<SendHandle>,
     thread_handle: Option<JoinHandle<()>>,
     done_rx: Option<mpsc::Receiver<()>>,
 }
@@ -39,14 +37,14 @@ pub struct DirectoryWatcher {
 impl DirectoryWatcher {
     pub fn new() -> Self {
         Self {
-            stop_flag: None,
-            event_handle: None,
+            stop_event: None,
             thread_handle: None,
             done_rx: None,
         }
     }
 
     pub fn start(&mut self, root: &str, app_handle: tauri::AppHandle) -> Result<(), String> {
+        info!("[directory_watcher] Starting watcher for {}", root);
         // Ensure previous watcher is fully stopped before starting new one
         self.stop();
 
@@ -55,49 +53,50 @@ impl DirectoryWatcher {
             return Err(format!("Not a directory: {}", root));
         }
 
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_flag.clone();
         let root_string = root.to_string();
 
-        // Create event handle here so stop() can signal it
-        let event_handle = SendHandle(create_event().map_err(|e| format!("Failed to create event: {}", e))?);
-        let event_for_thread = event_handle;
+        // Create a dedicated stop event — separate from the I/O event used by ReadDirectoryChangesW
+        let stop_event = SendHandle(create_event().map_err(|e| format!("Failed to create stop event: {}", e))?);
+        let stop_event_for_thread = stop_event;
 
         // Channel for the watch thread to signal it has exited
         let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
 
         let handle = std::thread::spawn(move || {
-            watch_loop(&root_string, &stop_clone, &app_handle, event_for_thread);
+            watch_loop(&root_string, &app_handle, stop_event_for_thread);
             let _ = done_tx.send(());
         });
 
-        self.stop_flag = Some(stop_flag);
-        self.event_handle = Some(event_handle);
+        self.stop_event = Some(stop_event);
         self.thread_handle = Some(handle);
         self.done_rx = Some(done_rx);
         Ok(())
     }
 
     pub fn stop(&mut self) {
-        if let Some(flag) = self.stop_flag.take() {
-            flag.store(true, Ordering::SeqCst);
-            // Wake the watch thread if it's blocked in WaitForSingleObject
-            if let Some(SendHandle(event)) = self.event_handle.take() {
-                unsafe { let _ = SetEvent(event); }
-            }
+        // Signal the dedicated stop event to wake the watch thread
+        if let Some(SendHandle(event)) = self.stop_event.take() {
+            debug!("[directory_watcher] stop(): signaling stop_event={:?}", event);
+            unsafe { let _ = SetEvent(event); }
+        } else {
+            debug!("[directory_watcher] stop(): no stop_event to signal");
         }
         // Wait for the watch thread to exit with a timeout
         if let Some(done_rx) = self.done_rx.take() {
+            debug!("[directory_watcher] stop(): waiting for watch thread (5s timeout)...");
             if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
                 info!("[directory_watcher] Watch thread did not exit within 5s, waiting on join...");
                 if let Some(handle) = self.thread_handle.take() {
                     match handle.join() {
-                        Ok(_) => {}
+                        Ok(_) => { info!("[directory_watcher] stop(): join completed after timeout"); }
                         Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
                     }
                 }
+            } else {
+                debug!("[directory_watcher] stop(): watch thread exited cleanly");
             }
         } else if let Some(handle) = self.thread_handle.take() {
+            debug!("[directory_watcher] stop(): no done_rx, joining directly...");
             match handle.join() {
                 Ok(_) => {}
                 Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
@@ -112,28 +111,48 @@ impl Drop for DirectoryWatcher {
     }
 }
 
-fn watch_loop(root: &str, stop_flag: &Arc<AtomicBool>, app_handle: &tauri::AppHandle, SendHandle(event_handle): SendHandle) {
+fn watch_loop(root: &str, app_handle: &tauri::AppHandle, SendHandle(stop_event): SendHandle) {
+    debug!("[directory_watcher] watch_loop starting for root={} stop_event={:?}", root, stop_event);
+
     let dir_handle = match open_dir_handle(root) {
         Ok(h) => h,
         Err(e) => {
             error!("[directory_watcher] Failed to open handle for {}: {}", root, e);
-            unsafe { let _ = CloseHandle(event_handle); }
+            unsafe { let _ = CloseHandle(stop_event); }
             return;
         }
     };
+    debug!("[directory_watcher] dir_handle={:?}", dir_handle);
+
+    // Create a dedicated I/O completion event — separate from the stop event
+    let io_event = match create_event() {
+        Ok(h) => h,
+        Err(e) => {
+            error!("[directory_watcher] Failed to create I/O event: {}", e);
+            unsafe {
+                let _ = CloseHandle(dir_handle);
+                let _ = CloseHandle(stop_event);
+            }
+            return;
+        }
+    };
+    debug!("[directory_watcher] io_event={:?}", io_event);
 
     let mut buffer = vec![0u8; WATCH_BUFFER_SIZE as usize];
     let mut overlap = OVERLAPPED::default();
-    overlap.hEvent = event_handle;
+    overlap.hEvent = io_event;
 
     let notify_filter = FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
         | FILE_NOTIFY_CHANGE_LAST_WRITE;
 
+    // Wait on both: index 0 = I/O event, index 1 = stop event
+    let wait_handles = [io_event, stop_event];
+    let mut iteration: u64 = 0;
+
     loop {
-        if stop_flag.load(Ordering::SeqCst) {
-            break;
-        }
+        iteration += 1;
+        debug!("[directory_watcher] loop iter={} submitting ReadDirectoryChangesW", iteration);
 
         // Submit ReadDirectoryChangesW (overlapped, returns immediately)
         let ok = unsafe {
@@ -154,16 +173,25 @@ fn watch_loop(root: &str, stop_flag: &Arc<AtomicBool>, app_handle: &tauri::AppHa
             break;
         }
 
-        // Wait for event or timeout
-        let wait_result = unsafe { WaitForSingleObject(event_handle, WAIT_TIMEOUT_MS) };
+        // Wait for I/O completion, stop signal, or timeout
+        debug!("[directory_watcher] loop iter={} entering WaitForMultipleObjects", iteration);
+        let wait_result = unsafe {
+            WaitForMultipleObjects(&wait_handles, false, WAIT_TIMEOUT_MS)
+        };
+        debug!("[directory_watcher] loop iter={} WaitForMultipleObjects returned 0x{:08X}", iteration, wait_result.0);
 
-        if wait_result == WAIT_OBJECT_0 {
-            // Event signaled — check if stop was requested
-            if stop_flag.load(Ordering::SeqCst) {
+        if wait_result.0 >= WAIT_OBJECT_0.0 && wait_result.0 < WAIT_ABANDONED_0.0 {
+            let index = (wait_result.0 - WAIT_OBJECT_0.0) as u32;
+
+            if index == 1 {
+                // Stop event signaled
+                debug!("[directory_watcher] loop iter={} stop event signaled, canceling I/O", iteration);
                 unsafe { let _ = CancelIo(dir_handle); }
+                info!("[directory_watcher] Stop signaled, exiting");
                 break;
             }
 
+            // index == 0: I/O event signaled
             // Check overlapped result (Internal = NTSTATUS, InternalHigh = bytes transferred)
             let status = overlap.Internal as i32;
             let bytes_returned = overlap.InternalHigh as u32;
@@ -187,21 +215,31 @@ fn watch_loop(root: &str, stop_flag: &Arc<AtomicBool>, app_handle: &tauri::AppHa
                 .collect();
 
             if !filtered.is_empty() {
+                debug!("[directory_watcher] loop iter={} emitting {} changed paths", iteration, filtered.len());
                 if let Err(e) = app_handle.emit("directory-changed", filtered) {
                     log::debug!("[emit] directory-changed failed: {}", e);
                 }
             }
+        } else {
+            // Unexpected return value (WAIT_FAILED, WAIT_ABANDONED, etc.)
+            error!(
+                "[directory_watcher] WaitForMultipleObjects unexpected result=0x{:08X}, io_event={:?}, stop_event={:?}",
+                wait_result.0, io_event, stop_event
+            );
+            break;
         }
-        // Timeout: loop back to check stop_flag and resubmit
+        // Timeout: loop back to resubmit
     }
 
     // Cleanup
+    debug!("[directory_watcher] cleaning up handles: io_event={:?} dir_handle={:?} stop_event={:?}", io_event, dir_handle, stop_event);
     unsafe {
-        let _ = CloseHandle(event_handle);
+        let _ = CloseHandle(io_event);
         let _ = CloseHandle(dir_handle);
+        let _ = CloseHandle(stop_event);
     }
 
-    info!("[directory_watcher] Watch thread exiting for {}", root);
+    info!("[directory_watcher] Watch thread exiting for {} (ran {} iterations)", root, iteration);
 }
 
 fn open_dir_handle(path: &str) -> Result<HANDLE, String> {
