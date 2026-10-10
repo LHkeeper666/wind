@@ -15,7 +15,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
 use windows::Win32::System::IO::{CancelIo, OVERLAPPED};
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject};
 use windows::core::PCWSTR;
 
 const WATCH_BUFFER_SIZE: u32 = 16384;
@@ -191,7 +191,9 @@ fn watch_loop(root: &str, app_handle: &tauri::AppHandle, SendHandle(stop_event):
                 break;
             }
 
-            // index == 0: I/O event signaled
+            // index == 0: I/O event signaled — reset it so WaitForMultipleObjects can block again
+            unsafe { let _ = ResetEvent(io_event); }
+
             // Check overlapped result (Internal = NTSTATUS, InternalHigh = bytes transferred)
             let status = overlap.Internal as i32;
             let bytes_returned = overlap.InternalHigh as u32;
@@ -218,6 +220,16 @@ fn watch_loop(root: &str, app_handle: &tauri::AppHandle, SendHandle(stop_event):
                 debug!("[directory_watcher] loop iter={} emitting {} changed paths", iteration, filtered.len());
                 if let Err(e) = app_handle.emit("directory-changed", filtered) {
                     log::debug!("[emit] directory-changed failed: {}", e);
+                }
+            }
+
+            // Safety: check stop_event after processing I/O (in case both events fired simultaneously)
+            unsafe {
+                if WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0 {
+                    debug!("[directory_watcher] loop iter={} stop event detected after I/O, canceling", iteration);
+                    let _ = CancelIo(dir_handle);
+                    info!("[directory_watcher] Stop signaled (post-I/O check), exiting");
+                    break;
                 }
             }
         } else {
