@@ -15,8 +15,8 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE,
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
-use windows::Win32::System::IO::{CancelIo, OVERLAPPED};
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::IO::{CancelIoEx, OVERLAPPED};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows::core::PCWSTR;
 
 const WATCH_BUFFER_SIZE: u32 = 16384;
@@ -73,26 +73,25 @@ impl DirectoryWatcher {
         } else {
             debug!("[directory_watcher] stop(): no stop_flag to set");
         }
-        // Wait for the watch thread to exit with a timeout
+        // Wait briefly for the watch thread to exit, then detach to avoid blocking UI
         if let Some(done_rx) = self.done_rx.take() {
-            debug!("[directory_watcher] stop(): waiting for watch thread (5s timeout)...");
-            if done_rx.recv_timeout(Duration::from_secs(5)).is_err() {
-                info!("[directory_watcher] Watch thread did not exit within 5s, waiting on join...");
+            debug!("[directory_watcher] stop(): waiting for watch thread (500ms timeout)...");
+            if done_rx.recv_timeout(Duration::from_millis(500)).is_ok() {
+                debug!("[directory_watcher] stop(): watch thread exited cleanly");
+                // Thread signaled done — join should return immediately
                 if let Some(handle) = self.thread_handle.take() {
-                    match handle.join() {
-                        Ok(_) => { info!("[directory_watcher] stop(): join completed after timeout"); }
-                        Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
-                    }
+                    let _ = handle.join();
                 }
             } else {
-                debug!("[directory_watcher] stop(): watch thread exited cleanly");
+                // Thread didn't exit in time — detach to avoid blocking the UI.
+                // The thread will exit on its own once its pending I/O is cancelled.
+                if self.thread_handle.take().is_some() {
+                    info!("[directory_watcher] stop(): watch thread still running, detaching (non-blocking)");
+                }
             }
         } else if let Some(handle) = self.thread_handle.take() {
             debug!("[directory_watcher] stop(): no done_rx, joining directly...");
-            match handle.join() {
-                Ok(_) => {}
-                Err(e) => { log::error!("[directory_watcher] thread panicked: {:?}", e); }
-            }
+            let _ = handle.join();
         }
     }
 }
@@ -167,12 +166,14 @@ fn watch_loop(root: &str, app_handle: &tauri::AppHandle, stop_flag: &Arc<AtomicB
 
         if stop_flag.load(Ordering::SeqCst) {
             debug!("[directory_watcher] loop iter={} stop_flag detected after wait", iteration);
-            unsafe { let _ = CancelIo(dir_handle); }
+            unsafe { let _ = CancelIoEx(dir_handle, None); }
             break;
         }
 
         if wait_result == WAIT_OBJECT_0 {
-            // I/O event signaled — reset it
+            // Reset the manual-reset event before reading overlapped results
+            unsafe { let _ = ResetEvent(io_event); }
+
             let status = overlap.Internal as i32;
             let bytes_returned = overlap.InternalHigh as u32;
 
