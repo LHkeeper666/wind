@@ -13,7 +13,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_ACTION_REMOVED, FILE_ACTION_RENAMED_NEW_NAME, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE,
-    FILE_SHARE_MODE, OPEN_EXISTING,
+    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::Win32::System::IO::{CancelIoEx, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
@@ -217,7 +217,7 @@ fn open_dir_handle(path: &str) -> Result<HANDLE, String> {
         CreateFileW(
             PCWSTR(wide.as_ptr()),
             FILE_LIST_DIRECTORY.0,
-            FILE_SHARE_MODE(FILE_SHARE_DELETE.0 | 2 | 4),
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0),
             None,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
