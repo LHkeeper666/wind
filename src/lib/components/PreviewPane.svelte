@@ -429,8 +429,17 @@
   export function handleTocJump(line: number) {
     const slot = getActiveSlot();
     if (!slot) return;
-    const heading = slot.querySelector(`[data-line="${line}"]`);
-    if (heading) { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); tocActiveLine = line; onTocActiveLineChange(line); }
+    const heading = slot.querySelector<HTMLElement>(`[data-line="${line}"]`);
+    if (heading) {
+      // Only the slot may scroll. `offsetTop` is in local (unzoomed) units and so
+      // matches `slot.scrollTop`; rect math would be scaled by the ancestor `zoom`.
+      let top = 0;
+      let el: HTMLElement | null = heading;
+      while (el && el !== slot) { top += el.offsetTop; el = el.offsetParent as HTMLElement | null; }
+      slot.scrollTo({ top, behavior: 'smooth' });
+      tocActiveLine = line;
+      onTocActiveLineChange(line);
+    }
     onTocJump(line);
   }
 
@@ -494,7 +503,7 @@
   .preview-with-toc {
     display: flex;
     height: 100%;
-    overflow: hidden;
+    overflow: clip;
   }
 
   .preview-with-toc.hidden {
@@ -507,7 +516,7 @@
 
   .preview-area {
     flex: 1;
-    overflow: hidden;
+    overflow: clip;
     position: relative;
   }
 

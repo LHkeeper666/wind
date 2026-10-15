@@ -1009,7 +1009,7 @@
   .layout-toggle:hover { color: var(--text-primary); border-color: var(--accent); }
   .layout-toggle.expanded { color: var(--accent); border-color: var(--accent); }
 
-  .panel-content { flex: 1; overflow: hidden; position: relative; }
+  .panel-content { flex: 1; min-height: 0; overflow: clip; position: relative; }
 
   .preview-pane-wrapper { width: 100%; height: 100%; }
   .preview-pane-wrapper.modeHidden { display: none; }

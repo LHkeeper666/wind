@@ -490,7 +490,7 @@
   .editor-area {
     position: relative;
     height: 100%;
-    overflow: hidden;
+    overflow: clip;
   }
 
   .editor-area.hidden {
@@ -517,7 +517,7 @@
 
   .editor-area :global(.editor-session) {
     height: 100%;
-    overflow: hidden;
+    overflow: clip;
   }
 
   .editor-area :global(.cm-editor) {
