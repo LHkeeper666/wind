@@ -8,6 +8,19 @@ export interface ArchiveState {
   format: ArchiveFormat;
 }
 
+const ARCHIVE_BUSY_PREFIX = 'ARCHIVE_BUSY';
+
+/**
+ * True when a read-only archive operation was rejected because the backend is
+ * currently extracting that archive (the unrar library is serialized).
+ */
+export function isArchiveBusyError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.includes(ARCHIVE_BUSY_PREFIX);
+}
+
+export const ARCHIVE_BUSY_MESSAGE = 'Archive is being extracted';
+
 export function getArchiveFormat(name: string): ArchiveFormat {
   const lower = name.toLowerCase();
   if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'tar.gz';

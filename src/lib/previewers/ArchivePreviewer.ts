@@ -1,5 +1,6 @@
 import type { Previewer } from './types';
 import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+import { isArchiveBusyError, ARCHIVE_BUSY_MESSAGE } from '$lib/utils/archive-browser';
 import { formatSize } from '$lib/utils/file-types';
 
 interface ArchiveEntry {
@@ -35,7 +36,10 @@ export class ArchivePreviewer implements Previewer {
       }
       container.innerHTML = this.renderEntries(filePath, entries);
     } catch (err) {
-      container.innerHTML = `<p class="preview-unsupported">Failed to read archive: ${err}</p>`;
+      const message = isArchiveBusyError(err)
+        ? ARCHIVE_BUSY_MESSAGE
+        : `Failed to read archive: ${err}`;
+      container.innerHTML = `<p class="preview-unsupported">${message}</p>`;
     }
   }
 

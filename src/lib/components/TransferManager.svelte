@@ -213,6 +213,15 @@
     return 0;
   }
 
+  // RAR extraction reports no bytes mid-entry, so entries at or above this size
+  // would otherwise sit at a frozen percentage. Show an indeterminate bar plus
+  // the entry name instead of a fake number.
+  const INDETERMINATE_ENTRY_BYTES = 256 * 1024 * 1024;
+
+  function isIndeterminateEntry(entry: TransferEntry): boolean {
+    return entry.opType === 'extract' && (entry.entrySize ?? 0) >= INDETERMINATE_ENTRY_BYTES;
+  }
+
   let visibleEntries = $derived(entries);
 </script>
 
@@ -302,11 +311,19 @@
             <span class="row-dest">{transfer.util.shortPath(entry.destination)}</span>
             <span class="row-meta">
               {#if entry.status === 'running'}
-                <span class="progress-text">{Math.round(pct)}%</span>
-                <div class="mini-progress">
-                  <div class="mini-progress-fill" style="width: {pct}%"></div>
-                </div>
-                <span class="size-text">{transfer.util.formatSize(entry.bytesDone)}/{transfer.util.formatSize(entry.totalBytes)}</span>
+                {#if isIndeterminateEntry(entry)}
+                  <span class="entry-text" title={entry.entryName}>Extracting {transfer.util.shortPath(entry.entryName ?? '')}</span>
+                  <div class="mini-progress">
+                    <div class="mini-progress-fill indeterminate-fill"></div>
+                  </div>
+                  <span class="size-text">{transfer.util.formatSize(entry.bytesDone)}/{transfer.util.formatSize(entry.totalBytes)}</span>
+                {:else}
+                  <span class="progress-text">{Math.round(pct)}%</span>
+                  <div class="mini-progress">
+                    <div class="mini-progress-fill" style="width: {pct}%"></div>
+                  </div>
+                  <span class="size-text">{transfer.util.formatSize(entry.bytesDone)}/{transfer.util.formatSize(entry.totalBytes)}</span>
+                {/if}
                 {#if entry.speedBps > 0}
                   <span class="speed-text">{transfer.util.formatSpeed(entry.speedBps)}</span>
                 {/if}
@@ -575,6 +592,27 @@
     background-color: var(--accent);
     transition: width 0.15s ease;
     border-radius: 2px;
+  }
+
+  .indeterminate-fill {
+    width: 40%;
+    transition: none;
+    animation: mini-progress-slide 1.2s ease-in-out infinite;
+  }
+
+  @keyframes mini-progress-slide {
+    0% { margin-left: -40%; }
+    100% { margin-left: 100%; }
+  }
+
+  .entry-text {
+    color: var(--accent);
+    font-size: 11px;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
   }
 
   .size-text {

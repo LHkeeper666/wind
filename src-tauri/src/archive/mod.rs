@@ -6,7 +6,7 @@ mod shared;
 mod tar;
 mod zip;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use log::debug;
 
@@ -19,6 +19,41 @@ pub type ExtractProgress = Arc<dyn Fn(u64) -> bool + Send + Sync>;
 /// Returns a no-op progress callback that always continues.
 pub fn no_progress() -> ExtractProgress {
     Arc::new(|_| true)
+}
+
+/// Callback fired when extraction begins a new entry, with the entry name and its
+/// uncompressed size. RAR extraction offers no in-flight byte signal (unrar's
+/// Extract process mode has no data callback), so the UI needs this to render an
+/// indeterminate state for entries too large to show a live percentage. Only the
+/// RAR path invokes it; the other formats stream bytes and report real progress.
+pub type EntryStartProgress = Arc<dyn Fn(&str, u64) + Send + Sync>;
+
+/// Process-wide guard serializing every access to the statically-linked unrar
+/// library, which carries process-global state (error handler, CRC/rijndael
+/// lazy-init tables) that is not safe to touch concurrently.
+static UNRAR_GUARD: Mutex<()> = Mutex::new(());
+
+/// Blocking acquisition, used by extraction (write) paths that must run to
+/// completion.
+pub(crate) fn lock_blocking() -> MutexGuard<'static, ()> {
+    UNRAR_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Non-blocking acquisition, used by read-only paths. Returns `None` when an
+/// extraction currently holds the guard so callers fail fast instead of
+/// blocking for the entire extraction.
+pub(crate) fn try_lock_busy() -> Option<MutexGuard<'static, ()>> {
+    match UNRAR_GUARD.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Recognizable error returned when a read-only RAR operation is attempted while
+/// an extraction holds the unrar guard.
+pub(crate) fn archive_busy_error(path: &str) -> String {
+    format!("ARCHIVE_BUSY: {}", path)
 }
 
 fn is_rar_extension(lower: &str) -> bool {
@@ -142,6 +177,7 @@ pub fn extract_files(
     dest_dir: &str,
     password: Option<String>,
     on_progress: &ExtractProgress,
+    on_entry: Option<&EntryStartProgress>,
 ) -> Result<(), String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
@@ -152,7 +188,7 @@ pub fn extract_files(
         ArchiveFormat::Tar => tar::extract_files(archive_path, internal_paths, dest_dir, on_progress),
         ArchiveFormat::TarGz => tar::extract_gz_files(archive_path, internal_paths, dest_dir, on_progress),
         ArchiveFormat::SevenZ => seven_z::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
-        ArchiveFormat::Rar => rar::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress),
+        ArchiveFormat::Rar => rar::extract_files(archive_path, internal_paths, dest_dir, password.as_deref(), on_progress, on_entry),
     }
 }
 
@@ -162,6 +198,7 @@ pub fn extract_all(
     password: Option<String>,
     skip_paths: Option<&std::collections::HashSet<String>>,
     on_progress: &ExtractProgress,
+    on_entry: Option<&EntryStartProgress>,
 ) -> Result<u64, String> {
     let format = ArchiveFormat::from_path(archive_path)
         .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
@@ -172,7 +209,7 @@ pub fn extract_all(
         ArchiveFormat::Tar => tar::extract_all(archive_path, dest_dir, skip_paths, on_progress),
         ArchiveFormat::TarGz => tar::extract_gz_all(archive_path, dest_dir, skip_paths, on_progress),
         ArchiveFormat::SevenZ => seven_z::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),
-        ArchiveFormat::Rar => rar::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress),
+        ArchiveFormat::Rar => rar::extract_all(archive_path, dest_dir, password.as_deref(), skip_paths, on_progress, on_entry),
     }
 }
 

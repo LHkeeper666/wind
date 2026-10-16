@@ -51,6 +51,8 @@
     deleteArchiveEntries,
     markArchiveForExtraction,
     enterArchive,
+    isArchiveBusyError,
+    ARCHIVE_BUSY_MESSAGE,
   } from '$lib/utils/archive-browser';
   import { promptConflictStream } from '$lib/composables/dialog-state.svelte';
   import ProjectTreePanel from './ProjectTreePanel.svelte';
@@ -548,7 +550,9 @@
     } catch (error) {
       if (gen !== loadingGen) return false;
       logError('DirectoryPanel', `Failed to load directory: ${error}`);
-      errorMessage = `Failed to load: ${error}`;
+      errorMessage = isArchiveBusyError(error)
+        ? ARCHIVE_BUSY_MESSAGE
+        : `Failed to load: ${error}`;
       return false;
     } finally {
       if (gen === loadingGen) {

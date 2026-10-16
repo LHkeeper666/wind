@@ -19,6 +19,10 @@ export interface TransferEntry {
   startTime: number;
   elapsedMs?: number;
   etaSecs?: number;
+  /** Name of the archive entry currently being extracted (RAR only). */
+  entryName?: string;
+  /** Uncompressed size of the current entry, used to decide indeterminate display. */
+  entrySize?: number;
 }
 
 export interface TransferBatch {
@@ -122,18 +126,22 @@ function createTransferStore() {
         const etaSecs = computeEta(id, bytesDone, totalBytes, status);
         update(entries => {
           const idx = entries.findIndex(e => e.id === id);
-          const updated = { ...(idx >= 0 ? entries[idx] : {}),
+          const prev = idx >= 0 ? entries[idx] : undefined;
+          const updated = { ...(prev ?? {}),
             id,
             batchId: p.batch_id as number,
             opType: p.op_type as TransferEntry['opType'],
             source: p.source as string,
             destination: p.destination as string,
-            totalBytes: totalBytes || (idx >= 0 ? entries[idx].totalBytes : 0),
+            totalBytes: totalBytes || (prev ? prev.totalBytes : 0),
             bytesDone,
             speedBps: p.speed_bps as number,
-            status: status || (idx >= 0 ? entries[idx].status : 'queued'),
-            startTime: (idx >= 0 ? entries[idx].startTime : 0) || Date.now(),
+            status: status || (prev ? prev.status : 'queued'),
+            startTime: (prev ? prev.startTime : 0) || Date.now(),
             etaSecs,
+            // Only present on entry-boundary events; preserve across byte updates.
+            entryName: (p.entry_name as string | undefined) ?? prev?.entryName,
+            entrySize: (p.entry_size as number | undefined) ?? prev?.entrySize,
           } as TransferEntry;
           if (idx >= 0) {
             const newEntries = [...entries];

@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 use crate::FileEntry;
@@ -10,6 +9,10 @@ use super::password::{
     password_incorrect_error, password_required_error, remember_archive_password,
 };
 use super::shared::{collect_entries_at_path, normalize_internal};
+
+/// Entries at or above this uncompressed size are logged at info level so they
+/// remain visible at the default log level.
+const LARGE_ENTRY_THRESHOLD: u64 = 256 * 1024 * 1024;
 
 // ── RAR Helpers ─────────────────────────────────────────────────────
 
@@ -31,9 +34,18 @@ fn map_unrar_error(path: &str, err: unrar::error::UnrarError) -> String {
     }
 }
 
+fn log_entry_extract(name: &str, size: u64) {
+    if size >= LARGE_ENTRY_THRESHOLD {
+        log::info!("[archive] extract entry: {} size={}", name, size);
+    } else {
+        log::debug!("[archive] extract entry: {} size={}", name, size);
+    }
+}
+
 // ── RAR Operations ──────────────────────────────────────────────────
 
 pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<FileEntry>, String> {
+    let _guard = super::try_lock_busy().ok_or_else(|| super::archive_busy_error(path))?;
     let archive = open_rar_archive(path, password);
     let listing = archive
         .open_for_listing()
@@ -70,6 +82,7 @@ pub(crate) fn list_entries(path: &str, internal: &str, password: Option<&str>) -
 }
 
 pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Result<u64, String> {
+    let _guard = super::try_lock_busy().ok_or_else(|| super::archive_busy_error(path))?;
     let archive = open_rar_archive(path, password);
     let listing = archive.open_for_listing().map_err(|e| map_unrar_error(path, e))?;
 
@@ -85,6 +98,7 @@ pub(crate) fn total_uncompressed_size(path: &str, password: Option<&str>) -> Res
 }
 
 pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> Result<Vec<u8>, String> {
+    let _guard = super::try_lock_busy().ok_or_else(|| super::archive_busy_error(path))?;
     let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
@@ -120,7 +134,9 @@ pub(crate) fn extract_files(
     dest_dir: &str,
     password: Option<&str>,
     on_progress: &ExtractProgress,
+    on_entry: Option<&super::EntryStartProgress>,
 ) -> Result<(), String> {
+    let _guard = super::lock_blocking();
     let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
@@ -129,7 +145,6 @@ pub(crate) fn extract_files(
         .iter()
         .map(|p| normalize_internal(p))
         .collect();
-    let mut remaining_targets = target_set.clone();
 
     loop {
         let header = match open_archive.read_header() {
@@ -138,45 +153,47 @@ pub(crate) fn extract_files(
             Err(e) => return Err(map_unrar_error(path, e)),
         };
 
-        let norm = header.entry().filename.to_string_lossy().replace('\\', "/")
+        let filename = header.entry().filename.clone();
+        let norm = filename.to_string_lossy().replace('\\', "/")
             .trim_end_matches('/').to_string();
 
-        if target_set.contains(&norm) {
-            let dest = Path::new(dest_dir).join(header.entry().filename.as_path());
-            if header.entry().is_directory() {
-                fs::create_dir_all(&dest).map_err(|e| {
-                    log::error!("[archive] extract_files failed: {}", e);
-                    format!("Failed to create dir: {}", e)
-                })?;
-                remaining_targets.remove(&norm);
-                open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
-            } else {
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        log::error!("[archive] extract_files failed: {}", e);
-                        format!("Failed to create dir: {}", e)
-                    })?;
-                }
-                let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
-                let mut out = File::create(&dest).map_err(|e| {
-                    log::error!("[archive] extract_files failed: {}", e);
-                    format!("Failed to create file: {}", e)
-                })?;
-                for chunk in data.chunks(65536) {
-                    out.write_all(chunk).map_err(|e| {
-                        log::error!("[archive] extract_files failed: {}", e);
-                        format!("Failed to write file: {}", e)
-                    })?;
-                    if !on_progress(chunk.len() as u64) {
-                        return Err("Cancelled".to_string());
-                    }
-                }
-                remaining_targets.remove(&norm);
-                open_archive = archive_after_read;
-            }
-        } else {
+        if !target_set.contains(&norm) {
             open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
+            continue;
         }
+
+        let entry_size = header.entry().unpacked_size;
+        let is_dir = header.entry().is_directory();
+        let dest = Path::new(dest_dir).join(&filename);
+
+        if is_dir {
+            fs::create_dir_all(&dest).map_err(|e| {
+                log::error!("[archive] extract_files failed: {}", e);
+                format!("Failed to create dir: {}", e)
+            })?;
+            open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
+            continue;
+        }
+
+        // Cancellation is only observable between entries: unrar's extract path
+        // offers no in-flight abort.
+        if !on_progress(0) {
+            return Err("Cancelled".to_string());
+        }
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                log::error!("[archive] extract_files failed: {}", e);
+                format!("Failed to create dir: {}", e)
+            })?;
+        }
+
+        log_entry_extract(&filename.to_string_lossy(), entry_size);
+        if let Some(notify) = on_entry {
+            notify(&filename.to_string_lossy(), entry_size);
+        }
+        open_archive = header.extract_with_base(dest_dir).map_err(|e| map_unrar_error(path, e))?;
+        on_progress(entry_size);
     }
 
     remember_archive_password(path, password);
@@ -189,12 +206,15 @@ pub(crate) fn extract_all(
     password: Option<&str>,
     skip_paths: Option<&HashSet<String>>,
     on_progress: &ExtractProgress,
+    on_entry: Option<&super::EntryStartProgress>,
 ) -> Result<u64, String> {
+    let _guard = super::lock_blocking();
     let archive = open_rar_archive(path, password);
     let mut open_archive = archive
         .open_for_processing()
         .map_err(|e| map_unrar_error(path, e))?;
     let mut total_bytes: u64 = 0;
+    let mut entry_count: u64 = 0;
 
     loop {
         let header = match open_archive.read_header() {
@@ -203,49 +223,52 @@ pub(crate) fn extract_all(
             Err(e) => return Err(map_unrar_error(path, e)),
         };
 
-        let norm = header.entry().filename.to_string_lossy().replace('\\', "/")
+        let filename = header.entry().filename.clone();
+        let norm = filename.to_string_lossy().replace('\\', "/")
             .trim_end_matches('/').to_string();
 
-        if let Some(skip) = skip_paths {
-            if skip.contains(&norm) {
-                open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
-                continue;
-            }
+        if skip_paths.map_or(false, |skip| skip.contains(&norm)) {
+            open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
+            continue;
         }
 
-        let dest = Path::new(dest_dir).join(header.entry().filename.as_path());
-        if header.entry().is_directory() {
+        let entry_size = header.entry().unpacked_size;
+        let is_dir = header.entry().is_directory();
+        let dest = Path::new(dest_dir).join(&filename);
+
+        if is_dir {
             fs::create_dir_all(&dest).map_err(|e| {
                 log::error!("[archive] extract_all failed: {}", e);
                 format!("Failed to create dir: {}", e)
             })?;
             open_archive = header.skip().map_err(|e| map_unrar_error(path, e))?;
-        } else {
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    log::error!("[archive] extract_all failed: {}", e);
-                    format!("Failed to create dir: {}", e)
-                })?;
-            }
-            let (data, archive_after_read) = header.read().map_err(|e| map_unrar_error(path, e))?;
-            total_bytes += data.len() as u64;
-            let mut out = File::create(&dest).map_err(|e| {
-                log::error!("[archive] extract_all failed: {}", e);
-                format!("Failed to create file: {}", e)
-            })?;
-            for chunk in data.chunks(65536) {
-                out.write_all(chunk).map_err(|e| {
-                    log::error!("[archive] extract_all failed: {}", e);
-                    format!("Failed to write file: {}", e)
-                })?;
-                if !on_progress(chunk.len() as u64) {
-                    return Err("Cancelled".to_string());
-                }
-            }
-            open_archive = archive_after_read;
+            continue;
         }
+
+        // Cancellation is only observable between entries: unrar's extract path
+        // offers no in-flight abort.
+        if !on_progress(0) {
+            return Err("Cancelled".to_string());
+        }
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                log::error!("[archive] extract_all failed: {}", e);
+                format!("Failed to create dir: {}", e)
+            })?;
+        }
+
+        log_entry_extract(&filename.to_string_lossy(), entry_size);
+        if let Some(notify) = on_entry {
+            notify(&filename.to_string_lossy(), entry_size);
+        }
+        open_archive = header.extract_with_base(dest_dir).map_err(|e| map_unrar_error(path, e))?;
+        total_bytes += entry_size;
+        entry_count += 1;
+        on_progress(entry_size);
     }
 
+    log::debug!("[archive] extract_all complete: entries={} bytes={}", entry_count, total_bytes);
     remember_archive_password(path, password);
     Ok(total_bytes)
 }

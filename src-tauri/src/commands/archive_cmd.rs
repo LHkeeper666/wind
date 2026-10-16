@@ -47,7 +47,7 @@ pub fn extract_archive_files(
     password: Option<String>,
 ) -> Result<(), String> {
     log::info!("[archive_cmd] extract_archive_files: {} files from {}", internal_paths.len(), archive_path);
-    crate::archive::extract_files(&archive_path, &internal_paths, &dest_dir, password, &crate::archive::no_progress()).map_err(|e| {
+    crate::archive::extract_files(&archive_path, &internal_paths, &dest_dir, password, &crate::archive::no_progress(), None).map_err(|e| {
         log::error!("[archive_cmd] extract_archive_files failed: {}", e);
         e
     })?;
@@ -72,7 +72,7 @@ pub async fn extract_archive(
     let skip_set: Option<std::collections::HashSet<String>> =
         skip_paths.map(|v| v.into_iter().collect());
     let total_bytes = tokio::task::spawn_blocking(move || {
-        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone, skip_set.as_ref(), &crate::archive::no_progress())
+        crate::archive::extract_all(&archive_path_clone, &dest_dir_clone, password_clone, skip_set.as_ref(), &crate::archive::no_progress(), None)
     })
     .await
     .map_err(|e| {
