@@ -1,6 +1,8 @@
 mod app_paths;
 mod archive;
+pub mod archive_worker;
 mod commands;
+mod crash;
 mod directory_watcher;
 mod file_watcher;
 mod ftp;
@@ -36,19 +38,16 @@ struct AppState {
     transfer_scheduler: Arc<TokioMutex<transfer::TransferScheduler>>,
 }
 
-fn setup_logging(app_handle: &tauri::AppHandle) {
-    let is_dev = cfg!(debug_assertions);
-
-    // Determine log level from RUST_LOG env var
-    let level = std::env::var("RUST_LOG")
+/// Resolve the effective log level from `RUST_LOG`. Shared by the logger setup
+/// and the startup banner so both report the same value.
+fn resolve_log_level() -> log::LevelFilter {
+    std::env::var("RUST_LOG")
         .ok()
         .and_then(|v| {
-            let level_str: Option<String> = v
-                .split(',')
+            v.split(',')
                 .find(|s| s.starts_with("wind"))
                 .and_then(|s| s.split('=').nth(1))
-                .map(|s| s.to_lowercase());
-            level_str
+                .map(|s| s.to_lowercase())
         })
         .and_then(|l| match l.as_str() {
             "trace" => Some(log::LevelFilter::Trace),
@@ -58,7 +57,13 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
             "error" => Some(log::LevelFilter::Error),
             _ => None,
         })
-        .unwrap_or(log::LevelFilter::Info);
+        .unwrap_or(log::LevelFilter::Info)
+}
+
+fn setup_logging(app_handle: &tauri::AppHandle) {
+    let is_dev = cfg!(debug_assertions);
+
+    let level = resolve_log_level();
 
     let mut dispatch = fern::Dispatch::new()
         .format(|out, message, record| {
@@ -129,9 +134,10 @@ fn cleanup_old_logs(app_handle: &tauri::AppHandle) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                // Match wind-YYYY-MM-DD.log pattern
+                // Match wind-YYYY-MM-DD.log and wind-crash-YYYY-MM-DD.log
                 if name_str.starts_with("wind-") && name_str.ends_with(".log") {
-                    let date_part = &name_str[5..name_str.len() - 4];
+                    let stem = &name_str[5..name_str.len() - 4];
+                    let date_part = stem.strip_prefix("crash-").unwrap_or(stem);
                     if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                         if file_date < cutoff.naive_local().date() {
                             let _ = std::fs::remove_file(entry.path());
@@ -156,14 +162,24 @@ fn frontend_log(level: String, message: String) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+
+    // Point stderr at the crash log before anything can write to it; the logger
+    // does not exist yet, so the outcome is recorded later (in `setup`).
+    let redirect_note = crash::init_stderr_redirect(context.config().identifier.as_str());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
 
             // Initialize logging
             setup_logging(&handle);
-            log::info!("Wind application starting");
+            crash::install_panic_hook();
+            log::info!(target: "crash", "{redirect_note}");
+
+            crash::log_startup_banner(resolve_log_level());
+            crash::spawn_heartbeat();
 
             // Clean up old log files
             cleanup_old_logs(&handle);
@@ -277,6 +293,11 @@ pub fn run() {
             python_completion::get_package_api,
             frontend_log,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                log::info!(target: "crash", "[shutdown] graceful exit");
+            }
+        });
 }
