@@ -24,7 +24,7 @@ export interface TabEditorCache {
   pdfOutline: PdfOutlineItem[];
   pdfTocOpen: boolean;
   pdfTocFocused: boolean;
-  pdfTocExpanded: number[];
+  pdfTocExpanded: string[];
   pdfTocSelectedIndex: number;
   pdfScale: number;
   pdfScrollTop: number;
@@ -32,6 +32,7 @@ export interface TabEditorCache {
   tocOpen: boolean;
   tocHeadings: TocHeading[];
   tocExpandedLines: number[];
+  tocActiveLine: number;
   tocFocused: boolean;
   tocSelectedIndex: number;
 }

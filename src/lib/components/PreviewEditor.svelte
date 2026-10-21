@@ -183,7 +183,6 @@
   // Per-tab editor state cache
   const tabCache = new TabCacheManager();
   let pendingRestoreScrollTop: number = -1;
-  let pendingTocSelectedIndex: number = -1;
 
   export function clearTabCache(tabId: number) {
     tabCache.delete(tabId);
@@ -513,7 +512,7 @@
       pdfState.fromCacheSnapshot(cached);
       tocState.fromCacheSnapshot(cached);
       fileWatcher.setFileMtime(cached.fileMtime);
-      pendingTocSelectedIndex = cached.tocSelectedIndex;
+      previewPane?.setPendingTocSelectedIndex(cached.tocSelectedIndex);
       pendingTocExpanded = new Set(cached.tocExpandedLines);
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -558,6 +557,8 @@
     readyTextContent = null;
     previewPane?.bumpContentGeneration();
     pendingRestoreScrollTop = -1;
+    previewPane?.setPendingTocSelectedIndex(-1);
+    pendingTocExpanded = null;
     isModified = false;
     isDirectory = false;
     fileWatcher.setFileMtime(0);
@@ -863,6 +864,8 @@
             outline={pdfState.getPdfOutline()}
             currentPage={pdfState.getPdfCurrentPage()}
             pageDimensions={pdfState.getPdfPageDimensions()}
+            expandedIds={new Set(pdfState.getPdfTocExpanded())}
+            onToggleExpanded={(id) => pdfState.togglePdfTocExpanded(id)}
             onJump={(page, y) => pdfState.jumpToPage(page, y)}
             onFocusChange={(focused) => { pdfState.setTocFocused(focused); }}
             onExit={() => focusContent()}
@@ -885,7 +888,6 @@
       tocFocused={tocState.getTocFocused()}
       tocOpen={tocState.getTocOpen()}
       pendingTocExpanded={pendingTocExpanded}
-      pendingTocSelectedIndex={pendingTocSelectedIndex}
       pendingRestoreScrollTop={pendingRestoreScrollTop}
       renderTabId={renderTabId}
       codeFileDirectEdit={codeFileDirectEdit}

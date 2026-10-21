@@ -5,6 +5,7 @@ export interface MarkdownTocCacheData {
   tocOpen: boolean;
   tocHeadings: TocHeading[];
   tocExpandedLines: number[];
+  tocActiveLine: number;
   tocFocused: boolean;
   tocSelectedIndex: number;
 }
@@ -74,6 +75,7 @@ export function createMarkdownTocState(deps: MarkdownTocDeps): MarkdownTocAPI {
       tocOpen,
       tocHeadings: [...tocHeadings],
       tocExpandedLines: collectExpandedLines(tocHeadings),
+      tocActiveLine,
       tocFocused,
       tocSelectedIndex: getTocSelectedIndex(),
     };
@@ -81,6 +83,7 @@ export function createMarkdownTocState(deps: MarkdownTocDeps): MarkdownTocAPI {
 
   function fromCacheSnapshot(data: MarkdownTocCacheData) {
     tocOpen = data.tocOpen;
+    tocActiveLine = data.tocActiveLine ?? -1;
     tocFocused = data.tocFocused;
     if (data.tocHeadings && data.tocHeadings.length > 0) {
       tocHeadings = data.tocHeadings;

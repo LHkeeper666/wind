@@ -12,7 +12,7 @@ export interface PdfCacheData {
   pdfOutline: PdfOutlineItem[];
   pdfTocOpen: boolean;
   pdfTocFocused: boolean;
-  pdfTocExpanded: number[];
+  pdfTocExpanded: string[];
   pdfTocSelectedIndex: number;
   pdfScale: number;
   pdfScrollTop: number;
@@ -33,6 +33,7 @@ export interface PdfStateAPI {
   getPdfOutline: () => PdfOutlineItem[];
   getPdfTocOpen: () => boolean;
   getPdfTocFocused: () => boolean;
+  getPdfTocExpanded: () => string[];
 
   // Refs (for bind:this)
   pdfPreviewPanel: PdfPreviewPanel | undefined;
@@ -44,6 +45,7 @@ export interface PdfStateAPI {
 
   // Actions
   togglePdfToc: () => void;
+  togglePdfTocExpanded: (id: string) => void;
   jumpToPdfPage: (page: number) => void;
   jumpToPage: (page: number, y: number) => void;
   focusPanel: () => boolean;
@@ -68,7 +70,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   let pdfOutline: PdfOutlineItem[] = $state([]);
   let pdfTocOpen: boolean = $state(false);
   let pdfTocFocused: boolean = $state(false);
-  let pdfTocExpanded: number[] = $state([]);
+  let pdfTocExpanded: string[] = $state([]);
   let pdfTocSelectedIndex: number = $state(-1);
   let pdfScale: number = 0;
   let tocSidebarStatePending = false;
@@ -89,6 +91,12 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     }
   }
 
+  function togglePdfTocExpanded(id: string) {
+    pdfTocExpanded = pdfTocExpanded.includes(id)
+      ? pdfTocExpanded.filter(item => item !== id)
+      : [...pdfTocExpanded, id];
+  }
+
   function jumpToPdfPage(page: number) {
     pdfPreviewPanel?.scrollToPage(page);
   }
@@ -101,7 +109,6 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
   function applyTocSidebarState() {
     if (!tocSidebarStatePending || !pdfTocSidebar) return;
-    pdfTocSidebar.setExpandedIndexes(pdfTocExpanded);
     pdfTocSidebar.setSelectedIndex(pdfTocSelectedIndex);
     tocSidebarStatePending = false;
   }
@@ -202,7 +209,6 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
   function toCacheSnapshot(): PdfCacheData {
     if (pdfTocSidebar) {
-      pdfTocExpanded = pdfTocSidebar.getExpandedIndexes();
       pdfTocSelectedIndex = pdfTocSidebar.getSelectedIndex();
     }
     if (pdfPreviewPanel) pdfScale = pdfPreviewPanel.getScale();
@@ -258,6 +264,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     getPdfOutline: () => pdfOutline,
     getPdfTocOpen: () => pdfTocOpen,
     getPdfTocFocused: () => pdfTocFocused,
+    getPdfTocExpanded: () => pdfTocExpanded,
 
     get pdfPreviewPanel() { return pdfPreviewPanel; },
     set pdfPreviewPanel(v: PdfPreviewPanel | undefined) {
@@ -277,6 +284,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     },
 
     togglePdfToc,
+    togglePdfTocExpanded,
     jumpToPdfPage,
     jumpToPage,
     focusPanel,

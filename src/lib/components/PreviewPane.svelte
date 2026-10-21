@@ -21,7 +21,6 @@
     tocFocused = false,
     tocOpen = true,
     pendingTocExpanded = null as Set<number> | null,
-    pendingTocSelectedIndex = -1,
     pendingRestoreScrollTop = -1,
     renderTabId = 0,
     codeFileDirectEdit = false,
@@ -47,7 +46,6 @@
     tocFocused: boolean;
     tocOpen: boolean;
     pendingTocExpanded: Set<number> | null;
-    pendingTocSelectedIndex: number;
     pendingRestoreScrollTop: number;
     renderTabId: number;
     codeFileDirectEdit: boolean;
@@ -69,6 +67,7 @@
   let directoryPreviewer: DirectoryPreviewer | undefined;
   let _renderRequestId: number = 0;
   let _contentGeneration: number = 0;
+  let pendingTocSelectedIndex: number = $state(-1);
   let renderInFlight: boolean = false;
   let renderQueued: boolean = false;
   let scrollObserver: IntersectionObserver | undefined;
@@ -288,8 +287,14 @@
       pendingRestoreScrollTop = -1;
       if (savedScroll >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll; }); }
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
-      if (tocFocused && tocOpen && pendingTocSelectedIndex >= 0) {
-        requestAnimationFrame(() => { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; tocSidebar?.focus(); });
+      if (tocOpen && (pendingTocSelectedIndex >= 0 || tocFocused)) {
+        requestAnimationFrame(() => {
+          if (pendingTocSelectedIndex >= 0 && tocSidebar) {
+            tocSidebar.setSelectedTocIndex(pendingTocSelectedIndex);
+            pendingTocSelectedIndex = -1;
+          }
+          if (tocFocused) tocSidebar?.focus();
+        });
       }
       return;
     }
@@ -334,10 +339,13 @@
       restoreExpandedLines(tocHeadings, pendingTocExpanded);
       pendingTocExpanded = null; tocHeadings = [...tocHeadings];
     }
-    if (tocFocused && tocOpen) {
+    if (tocOpen && (pendingTocSelectedIndex >= 0 || tocFocused)) {
       requestAnimationFrame(() => {
-        if (pendingTocSelectedIndex >= 0) { tocSidebar?.setSelectedTocIndex(pendingTocSelectedIndex); pendingTocSelectedIndex = -1; }
-        tocSidebar?.focus();
+        if (pendingTocSelectedIndex >= 0 && tocSidebar) {
+          tocSidebar.setSelectedTocIndex(pendingTocSelectedIndex);
+          pendingTocSelectedIndex = -1;
+        }
+        if (tocFocused) tocSidebar?.focus();
       });
     }
     if (isMarkdown) { setupScrollObserver(); }
@@ -470,6 +478,10 @@
     return tocSidebar?.getSelectedIndex() ?? -1;
   }
 
+  export function setPendingTocSelectedIndex(index: number) {
+    pendingTocSelectedIndex = index;
+  }
+
   function handleTocFocusChangeInternal(focused: boolean) {
     tocFocused = focused;
     onTocFocusChange(focused);
@@ -495,6 +507,7 @@
       activeLine={tocActiveLine}
       onJump={handleTocJump}
       onFocusChange={handleTocFocusChangeInternal}
+      onExit={() => focusContent()}
     />
   {/if}
 </div>
