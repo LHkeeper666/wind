@@ -22,7 +22,7 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'Ctrl+=/-/0', context: 'global', description: 'Zoom in/out/reset' },
       { key: 'Ctrl+W h/l', context: 'global', description: 'Switch panel left/right' },
       { key: 'Ctrl+W j/k', context: 'global', description: 'Focus terminal/preview' },
-      { key: 'Ctrl+W m', context: 'global', description: 'Toggle 2-column/3-column layout' },
+      { key: 'Ctrl+W m', context: 'global', description: 'Cycle 3-column → 2-column → 1-column layout' },
       { key: 'F1', context: 'global', description: 'Show this help' },
     ],
   },
@@ -83,7 +83,7 @@ export const keybindingGroups: KeybindingGroup[] = [
   {
     title: 'Expanded Preview',
     items: [
-      { key: 'Ctrl+W m', context: 'preview', description: 'Toggle 2-column/3-column layout' },
+      { key: 'Ctrl+W m', context: 'preview', description: 'Cycle 3-column → 2-column → 1-column layout' },
       { key: 'Ctrl+W l', context: 'preview', description: 'Focus TOC sidebar (markdown)' },
       { key: 'Ctrl+W h', context: 'toc', description: 'Back to preview content' },
     ],
@@ -141,7 +141,7 @@ export const keybindingGroups: KeybindingGroup[] = [
   {
     title: 'Commands',
     items: [
-      { key: 'ratio X:Y:Z', context: 'global', description: 'Set column ratios' },
+      { key: 'ratio X:Y:Z', context: 'global', description: 'Set column ratios (dot form, 0 hides a column; aliases: default, dual, preview)' },
       { key: 'cd <path>', context: 'global', description: 'Change directory' },
       { key: 'e <path>', context: 'global', description: 'Open file/directory' },
       { key: 'help', context: 'global', description: 'Show keybindings' },

@@ -96,9 +96,14 @@
   });
 
   export function getSelectedIndex(): number { return selectedIndex; }
+  export function setSelectedIndex(index: number): void { selectedIndex = index; }
+  export function getExpandedIndexes(): number[] { return [...expandedSet]; }
+  export function setExpandedIndexes(indexes: number[]): void { expandedSet = new Set(indexes); }
 
-  export function focus() {
-    if (panelElement) { panelElement.focus(); isFocused = true; }
+  export function focus(): boolean {
+    if (!panelElement) return false;
+    panelElement.focus({ preventScroll: true });
+    return document.activeElement === panelElement;
   }
 
   function handleFocus() { isFocused = true; onFocusChange(true); }
@@ -138,7 +143,7 @@
     }
     if (ctrlWPending) {
       ctrlWPending = false;
-      if (event.code === 'KeyH' || event.code === 'KeyL') return;
+      if (event.code === 'KeyH' || event.code === 'KeyL' || event.code === 'KeyM') return;
     }
     event.stopPropagation();
 

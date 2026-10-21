@@ -214,6 +214,9 @@
     content = '';
     binaryContent = null;
     mode = 'global-normal';
+    // TOC focus is not persisted per tab, and unmounting the focused sidebar
+    // does not reliably fire blur, so clear it before the next tab restores.
+    pdfState.setTocFocused(false);
   }
 
   export function getEditorStateSnapshot(): {
@@ -427,13 +430,13 @@
     );
   }
 
-  export function focusToc() {
+  export function focusToc(silent = false) {
     if (isPdfFile(filePath || '')) {
-      pdfState.focusToc();
+      pdfState.focusToc(silent);
       return;
     }
     tocState.setTocFocused(true);
-    onToast('Focus: TOC');
+    if (!silent) onToast('Focus: TOC');
     previewPane?.focusToc();
   }
   export function focusContent() {
@@ -443,7 +446,31 @@
     if (isPdfFile(filePath || '')) pdfState.focusPanel();
     else if (panelElement) panelElement.focus({ preventScroll: true });
   }
-  export function isTocFocused(): boolean { return tocState.getTocFocused() || pdfState.getPdfTocFocused(); }
+  export function isTocFocused(): boolean {
+    return isPdfFile(filePath || '')
+      ? pdfState.getPdfTocFocused()
+      : tocState.getTocFocused();
+  }
+
+  export function focusPreviewContent(): void {
+    if (mode === 'global-normal' && filePath && isPdfFile(filePath)) {
+      if (pdfState.focusPanel()) return;
+      // The PDF panel's binding may not exist yet in the tick right after a
+      // tab switch, and the shared .preview-editor root may already hold
+      // focus (so its focus handler will not run again). Focus the container
+      // now and retry the PDF content on the next frame.
+      panelElement?.focus({ preventScroll: true });
+      requestAnimationFrame(() => {
+        if (mode === 'global-normal' && filePath && isPdfFile(filePath)
+            && get(layout).activeColumn === 'preview') {
+          pdfState.focusPanel();
+        }
+      });
+      return;
+    }
+    if (panelElement) panelElement.focus({ preventScroll: true });
+    focusActiveInput();
+  }
 
   // handleTocFocusChange is now tocState.handleTocFocusChange
 
@@ -616,6 +643,14 @@
     if (isPdfFile(path)) {
       content = ''; binaryContent = null; mode = 'global-normal';
       previewPane?.clearActiveSlot();
+      // PDF loading does not produce a text mtime, so record it here.
+      // Otherwise the tab cache sees fileMtime=0 on switch-back, treats the
+      // file as changed, and reloads it — wiping cached PDF/TOC state.
+      invoke<{ size: number; modified: number }>('get_file_metadata', { path })
+        .then(meta => {
+          if (gen === loadGeneration && filePath === path) fileWatcher.setFileMtime(meta.modified);
+        })
+        .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       await pdfState.loadPdfInfo(path, gen);
       return;
     }
@@ -770,7 +805,7 @@
       class="layout-toggle"
       class:expanded={$layout.previewExpanded}
       onclick={onToggleLayout}
-      title={$layout.previewExpanded ? 'Collapse to 3-column (Ctrl+W M)' : 'Expand to 2-column (Ctrl+W M)'}
+      title="Cycle layout: 3 → 2 → 1 column (Ctrl+W M)"
     >
       {#if $layout.previewExpanded}
         <svg width="14" height="12" viewBox="0 0 14 12" fill="none">

@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import { layout } from '$lib/stores/layout';
+import { nextVisibleColumn, type ColumnName } from '$lib/utils/ratio';
 import { tick } from 'svelte';
 import type { TabState } from '$lib/stores/tabs';
 
@@ -176,36 +177,26 @@ function canUseGlobalFileOperations(): boolean {
 
 // --- Internal helpers ---
 
-function togglePreviewLayout() {
-  const l = get(layout);
-  if (l.previewExpanded) {
-    layout.collapsePreview();
-  } else {
-    layout.expandPreview();
-  }
+function cyclePreviewLayout() {
+  layout.cycleLayout();
+  _deps?.focusPanel(get(layout).activeColumn);
 }
 
 function handleSwitchPanel(direction: 'left' | 'right') {
   const deps = _deps!;
   const l = get(layout);
   const current = l.activeColumn;
-  if (direction === 'left') {
-    if (current === 'preview') {
-      deps.focusPanel('current');
-    } else if (current === 'current') {
-      deps.focusPanel('parent');
+  if (current !== 'parent' && current !== 'current' && current !== 'preview') return;
+
+  if (direction === 'right' && current === 'preview') {
+    if (l.previewExpanded && deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
+      deps.getPreviewEditor().focusToc();
     }
-  } else if (direction === 'right') {
-    if (current === 'parent') {
-      deps.focusPanel('current');
-    } else if (current === 'current') {
-      deps.focusPanel('preview');
-    } else if (current === 'preview') {
-      if (deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
-        deps.getPreviewEditor().focusToc();
-      }
-    }
+    return;
   }
+
+  const next = nextVisibleColumn(current as ColumnName, direction, l.columnRatios);
+  if (next) deps.focusPanel(next);
 }
 
 // --- Main keydown handler ---
@@ -241,7 +232,13 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     if (event.key !== 'Escape' && !event.ctrlKey) return;
   }
 
-  if (target instanceof Element && target.closest('.pdf-preview-panel')) {
+  // The PDF panel owns unmodified keys (scroll, search, copy). Still let the
+  // Ctrl+W prefix and its follow-up key through so Ctrl+W h/j/k/l/m works
+  // from the PDF content, including moving focus into the outline.
+  const isCtrlWPrefix = event.ctrlKey && event.key === 'w';
+  const isPaletteTrigger = event.key === ':' && !event.ctrlKey && !event.altKey && !event.metaKey;
+  if (target instanceof Element && target.closest('.pdf-preview-panel')
+    && !waitingForWindowKey && !isCtrlWPrefix && !isPaletteTrigger) {
     if (!event.ctrlKey && !event.altKey && !event.metaKey) return;
     if (event.ctrlKey && (event.key === '=' || event.key === '+' || event.key === '-')) return;
   }
@@ -466,7 +463,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     } else if (code === 'KeyM') {
       event.preventDefault();
       event.stopPropagation();
-      togglePreviewLayout();
+      cyclePreviewLayout();
       return;
     }
   }

@@ -57,6 +57,7 @@ npm run tauri build        # Build release binary
 - `Ctrl+`` - Toggle floating terminal (works from any focus state)
 - `:` - Open command palette
 - `Ctrl+P` - File search
+- `Ctrl+W m` - Cycle 3-column → 2-column → 1-column layout
 
 ### Floating Terminal
 - `Ctrl+`` - Toggle terminal visibility
@@ -83,7 +84,7 @@ npm run tauri build        # Build release binary
 - `Ctrl+Q` - Close without saving
 
 ### Command Palette
-- `ratio X:Y:Z` - Set column ratios (e.g., `ratio 1:2:2`)
+- `ratio X:Y:Z` - Set column ratios (e.g., `ratio 1:2:2` or `ratio 1.2.2`); `0` hides a column, aliases are `default`, `dual`, `preview`
 - `cd path` - Change current directory (supports absolute/relative paths, `..`, no args = home)
 - `e path` - Open file in preview or navigate to directory; no args = refresh current directory
 - `Tab` - Auto-complete paths (cd: directories only, e: files + directories)

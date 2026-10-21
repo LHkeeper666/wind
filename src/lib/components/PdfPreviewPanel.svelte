@@ -48,6 +48,7 @@
   let totalPages = $derived(pageCount);
   let scale = $state(1);
   let scaleInitialized = false;
+  let pendingRestoreScale = 0;
   let isLoading = $state(true);
   let hasError = $state(false);
   let errorMessage = $state('');
@@ -139,6 +140,13 @@
   // Initialize scale to fit first page width
   function initScale() {
     if (scaleInitialized || !scrollEl || pageDimensions.length === 0) return;
+    // A tab restore may set the scale before this runs; keep it instead of
+    // fitting the page, otherwise the restored zoom is discarded.
+    if (pendingRestoreScale > 0) {
+      scale = pendingRestoreScale;
+      scaleInitialized = true;
+      return;
+    }
     const vw = scrollEl.clientWidth;
     if (vw === 0) return;
     // Fit the widest page to viewport width
@@ -760,8 +768,28 @@
     if (scrollEl) scrollEl.scrollTop = top;
   }
 
+  export function getScale(): number {
+    return scale;
+  }
+
+  export function setScale(value: number): void {
+    if (!(value > 0)) return;
+    pendingRestoreScale = value;
+    scale = value;
+    scaleInitialized = true;
+  }
+
+  export function resetScale(): void {
+    pendingRestoreScale = 0;
+    scaleInitialized = false;
+  }
+
   // Focus management
-  export function focusPanel() { containerEl?.focus(); }
+  export function focusPanel(): boolean {
+    if (!containerEl) return false;
+    containerEl.focus({ preventScroll: true });
+    return document.activeElement === containerEl;
+  }
 
   // Reload when pdfPath changes
   let lastPath = '';

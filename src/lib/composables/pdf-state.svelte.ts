@@ -11,6 +11,10 @@ export interface PdfCacheData {
   pdfPageDimensions: PdfPageDimensions[];
   pdfOutline: PdfOutlineItem[];
   pdfTocOpen: boolean;
+  pdfTocFocused: boolean;
+  pdfTocExpanded: number[];
+  pdfTocSelectedIndex: number;
+  pdfScale: number;
   pdfScrollTop: number;
 }
 
@@ -42,8 +46,8 @@ export interface PdfStateAPI {
   togglePdfToc: () => void;
   jumpToPdfPage: (page: number) => void;
   jumpToPage: (page: number, y: number) => void;
-  focusPanel: () => void;
-  focusToc: () => void;
+  focusPanel: () => boolean;
+  focusToc: (silent?: boolean) => void;
   reset: () => void;
   applyPendingScroll: () => void;
 
@@ -64,12 +68,18 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   let pdfOutline: PdfOutlineItem[] = $state([]);
   let pdfTocOpen: boolean = $state(false);
   let pdfTocFocused: boolean = $state(false);
+  let pdfTocExpanded: number[] = $state([]);
+  let pdfTocSelectedIndex: number = $state(-1);
+  let pdfScale: number = 0;
+  let tocSidebarStatePending = false;
   let pdfTocSidebar: PdfTocSidebar | undefined = $state(undefined);
   let pdfPreviewPanel: PdfPreviewPanel | undefined = $state(undefined);
 
   // Track generation to discard stale async results
   let lastLoadGen: number = 0;
   let pendingPdfScrollTop: number = -1;
+  // Invalidates in-flight focus retries when focus moves elsewhere.
+  let focusRequest: number = 0;
 
   function togglePdfToc() {
     if (pdfOutline.length === 0) return;
@@ -89,14 +99,41 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     }
   }
 
-  function focusPanel() {
-    pdfPreviewPanel?.focusPanel();
+  function applyTocSidebarState() {
+    if (!tocSidebarStatePending || !pdfTocSidebar) return;
+    pdfTocSidebar.setExpandedIndexes(pdfTocExpanded);
+    pdfTocSidebar.setSelectedIndex(pdfTocSelectedIndex);
+    tocSidebarStatePending = false;
   }
 
-  function focusToc() {
+  function applyPdfScale() {
+    if (pdfScale > 0 && pdfPreviewPanel) pdfPreviewPanel.setScale(pdfScale);
+  }
+
+  function focusPanel(): boolean {
+    focusRequest++;
+    return pdfPreviewPanel?.focusPanel() ?? false;
+  }
+
+  function focusToc(silent = false) {
+    const request = ++focusRequest;
     pdfTocFocused = true;
-    deps.onToast('Focus: TOC');
-    setTimeout(() => pdfTocSidebar?.focus(), 0);
+    if (!silent) deps.onToast('Focus: TOC');
+    // The sidebar may not be mounted yet on the tick right after a tab restore.
+    // Retry for a few frames, then fall back to the preview so focus does not
+    // stay on an element belonging to the previous tab.
+    let attempts = 0;
+    const tryFocus = () => {
+      if (request !== focusRequest) return;
+      if (pdfTocSidebar?.focus()) return;
+      if (++attempts >= 10) {
+        pdfTocFocused = false;
+        pdfPreviewPanel?.focusPanel();
+        return;
+      }
+      requestAnimationFrame(tryFocus);
+    };
+    requestAnimationFrame(tryFocus);
   }
 
   function reset() {
@@ -108,6 +145,12 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     pdfOutline = [];
     pdfTocOpen = false;
     pdfTocFocused = false;
+    pdfTocExpanded = [];
+    pdfTocSelectedIndex = -1;
+    pdfScale = 0;
+    pdfPreviewPanel?.resetScale();
+    tocSidebarStatePending = false;
+    focusRequest++;
   }
 
   async function loadPdfInfo(path: string, gen: number): Promise<boolean> {
@@ -126,6 +169,12 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
       pdfFileSize = info.file_size;
       pdfTitle = info.title;
       pdfPageDimensions = info.page_dimensions;
+      pdfTocExpanded = [];
+      pdfTocSelectedIndex = -1;
+      pdfScale = 0;
+      pdfPreviewPanel?.resetScale();
+      tocSidebarStatePending = true;
+      applyTocSidebarState();
 
       // Fetch outline (non-blocking, don't fail on outline errors)
       fetchPdfOutline(path)
@@ -152,12 +201,21 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   }
 
   function toCacheSnapshot(): PdfCacheData {
+    if (pdfTocSidebar) {
+      pdfTocExpanded = pdfTocSidebar.getExpandedIndexes();
+      pdfTocSelectedIndex = pdfTocSidebar.getSelectedIndex();
+    }
+    if (pdfPreviewPanel) pdfScale = pdfPreviewPanel.getScale();
     return {
       pdfCurrentPage,
       pdfPageCount,
       pdfPageDimensions: [...pdfPageDimensions],
       pdfOutline: [...pdfOutline],
       pdfTocOpen,
+      pdfTocFocused,
+      pdfTocExpanded: [...pdfTocExpanded],
+      pdfTocSelectedIndex,
+      pdfScale,
       pdfScrollTop: pdfPreviewPanel?.getScrollTop() ?? 0,
     };
   }
@@ -168,6 +226,14 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     pdfPageDimensions = data.pdfPageDimensions ?? [];
     pdfOutline = data.pdfOutline ?? [];
     pdfTocOpen = data.pdfTocOpen ?? false;
+    pdfTocFocused = data.pdfTocFocused ?? false;
+    pdfTocExpanded = data.pdfTocExpanded ?? [];
+    pdfTocSelectedIndex = data.pdfTocSelectedIndex ?? -1;
+    pdfScale = data.pdfScale ?? 0;
+    tocSidebarStatePending = true;
+    applyTocSidebarState();
+    applyPdfScale();
+    focusRequest++;
     pendingPdfScrollTop = data.pdfScrollTop ?? 0;
   }
 
@@ -194,12 +260,21 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     getPdfTocFocused: () => pdfTocFocused,
 
     get pdfPreviewPanel() { return pdfPreviewPanel; },
-    set pdfPreviewPanel(v: PdfPreviewPanel | undefined) { pdfPreviewPanel = v; },
+    set pdfPreviewPanel(v: PdfPreviewPanel | undefined) {
+      pdfPreviewPanel = v;
+      if (v) applyPdfScale();
+    },
     get pdfTocSidebar() { return pdfTocSidebar; },
-    set pdfTocSidebar(v: PdfTocSidebar | undefined) { pdfTocSidebar = v; },
+    set pdfTocSidebar(v: PdfTocSidebar | undefined) {
+      pdfTocSidebar = v;
+      if (v) applyTocSidebarState();
+    },
 
     setPage(page: number) { pdfCurrentPage = page; },
-    setTocFocused(focused: boolean) { pdfTocFocused = focused; },
+    setTocFocused(focused: boolean) {
+      if (!focused) focusRequest++;
+      pdfTocFocused = focused;
+    },
 
     togglePdfToc,
     jumpToPdfPage,

@@ -5,6 +5,7 @@
   import { tabs } from '$lib/stores/tabs';
   import { clipboard } from '$lib/stores/clipboard';
   import { logError } from '$lib/utils/log';
+  import { parseRatioCommand, RATIO_PRESETS } from '$lib/utils/ratio';
 
   interface Command { name: string; action: () => void }
 
@@ -57,8 +58,9 @@
     { name: 'Open Terminal', action: () => actions.onToggleTerminal() },
     { name: 'Open Editor', action: () => layout.setActiveColumn('preview') },
     { name: 'Toggle Terminal', action: () => actions.onToggleTerminal() },
-    { name: 'ratio 1:1:3', action: () => layout.setRatios([1, 1, 3]) },
-    { name: 'ratio 1:1:1', action: () => layout.setRatios([1, 1, 1]) },
+    { name: 'ratio 1.1.3', action: () => layout.setRatios([1, 1, 3]) },
+    { name: 'ratio 1.1.1', action: () => layout.setRatios([1, 1, 1]) },
+    { name: 'ratio preview', action: () => layout.setRatios([0, 0, 1]) },
     { name: 'Close Panel', action: () => { visible = false; } },
     { name: 'Help', action: () => { visible = false; actions.onToggleHelp(); } },
     { name: 'Tab: New', action: () => actions.onTabNew() },
@@ -187,7 +189,7 @@
   function executeCommand(cmd: Command) {
     cmd.action();
     visible = false;
-    actions.focusPanel(activeColumn as any);
+    actions.focusPanel(get(layout).activeColumn as any);
   }
 
   function handleCommandKeydown(event: KeyboardEvent) {
@@ -479,24 +481,18 @@
       }
 
       // Ratio command
-      if (q === 'ratio') {
-        layout.setRatios([1, 1, 3]);
-        visible = false;
-        return;
-      }
-      if (q === 'ratio dual') {
-        layout.setRatios([1, 1, 1]);
-        visible = false;
-        return;
-      }
-      if (commandQuery.startsWith('ratio ')) {
-        const ratioStr = commandQuery.substring(6).trim();
-        const parts = ratioStr.split(':').map(Number);
-        if (parts.length === 3 && parts.every(p => !isNaN(p) && p > 0)) {
-          layout.setRatios([parts[0], parts[1], parts[2]]);
-          visible = false;
-          return;
+      if (q === 'ratio' || q.startsWith('ratio ')) {
+        const result = parseRatioCommand(q);
+        if (result.kind === 'error') {
+          actions.onShowToast(result.message);
+        } else if (result.kind === 'preset') {
+          layout.setRatios(RATIO_PRESETS[result.preset]);
+        } else {
+          layout.setRatios(result.ratios);
         }
+        visible = false;
+        actions.focusPanel(get(layout).activeColumn as any);
+        return;
       }
       // transfer slots command
       if (q === 'transfer slots') {

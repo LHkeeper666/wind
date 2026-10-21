@@ -1,4 +1,11 @@
 import { writable, derived } from 'svelte/store';
+import {
+  correctActiveColumn,
+  nextLayoutRatios,
+  RATIO_PRESETS,
+  visibleColumnCount,
+  type RatioTuple,
+} from '../utils/ratio';
 
 export type ArchiveFormat = 'zip' | 'tar' | 'tar.gz' | '7z' | 'rar';
 
@@ -89,6 +96,27 @@ const initialState: LayoutState = {
   markPaths: [],
 };
 
+function applyRatios(state: LayoutState, ratios: RatioTuple): LayoutState {
+  const columnRatios = [...ratios] as RatioTuple;
+  const visible = visibleColumnCount(columnRatios);
+  const previousVisible = visibleColumnCount(state.columnRatios);
+
+  let originalRatios = state.originalRatios;
+  if (visible === 3) {
+    originalRatios = [...columnRatios] as RatioTuple;
+  } else if (previousVisible === 3) {
+    originalRatios = [...state.columnRatios] as RatioTuple;
+  }
+
+  return {
+    ...state,
+    columnRatios,
+    originalRatios,
+    previewExpanded: visible < 3,
+    activeColumn: correctActiveColumn(state.activeColumn, columnRatios),
+  };
+}
+
 function createLayoutStore() {
   const { subscribe, set, update } = writable<LayoutState>(initialState);
 
@@ -128,11 +156,17 @@ function createLayoutStore() {
             parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '\\';
           }
         }
+        const columnRatios = [...partial.columnRatios] as RatioTuple;
+        const hasThreeColumnSnapshot = visibleColumnCount(partial.originalRatios) === 3;
+
         return {
           ...state,
-          columnRatios: [...partial.columnRatios] as [number, number, number],
-          previewExpanded: partial.previewExpanded,
-          originalRatios: [...partial.originalRatios] as [number, number, number],
+          columnRatios,
+          previewExpanded: visibleColumnCount(columnRatios) < 3,
+          originalRatios: hasThreeColumnSnapshot
+            ? [...partial.originalRatios] as RatioTuple
+            : [...RATIO_PRESETS.default],
+          activeColumn: correctActiveColumn(state.activeColumn, columnRatios),
           currentPath: normalized,
           parentPath,
           selectedFile: partial.selectedFile,
@@ -148,7 +182,15 @@ function createLayoutStore() {
 
     // Set column ratios
     setRatios(ratios: [number, number, number]) {
-      update(state => ({ ...state, columnRatios: ratios }));
+      update(state => applyRatios(state, ratios));
+    },
+
+    // Cycle three-column → two-column → one-column → three-column
+    cycleLayout() {
+      update(state => applyRatios(
+        state,
+        nextLayoutRatios(state.columnRatios, state.originalRatios),
+      ));
     },
 
     // Update current path and auto-update parent path
@@ -245,21 +287,17 @@ function createLayoutStore() {
 
     // Enter expanded preview mode
     expandPreview() {
-      update(state => ({
-        ...state,
-        originalRatios: [...state.columnRatios] as [number, number, number],
-        columnRatios: [0, 1, 4],
-        previewExpanded: true,
-      }));
+      update(state => applyRatios(state, [0, 1, 4]));
     },
 
     // Exit expanded preview mode
     collapsePreview() {
-      update(state => ({
-        ...state,
-        columnRatios: [...state.originalRatios] as [number, number, number],
-        previewExpanded: false,
-      }));
+      update(state => {
+        const snapshot = visibleColumnCount(state.originalRatios) === 3
+          ? state.originalRatios
+          : RATIO_PRESETS.default;
+        return applyRatios(state, snapshot);
+      });
     },
 
     // Set key prefix for status bar display

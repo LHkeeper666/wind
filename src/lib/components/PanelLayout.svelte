@@ -5,6 +5,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { layout, columnWidths } from '$lib/stores/layout';
+  import { nextVisibleColumn, type ColumnName } from '$lib/utils/ratio';
   import { logInfo, logDebug, logError } from '$lib/utils/log';
   import { theme } from '$lib/stores/theme';
   import { tabs, activeTab, type TabState } from '$lib/stores/tabs';
@@ -470,8 +471,13 @@
     restoreTabAndFocus();
   }
 
+  // Guards against a deferred focus callback from an older restore landing
+  // after the user has already switched to another tab.
+  let tabRestoreGeneration = 0;
+
   function restoreTabContent(tab: TabState) {
     if (!tab) return;
+    const restoreId = ++tabRestoreGeneration;
     const t0 = performance.now();
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
@@ -524,13 +530,16 @@
       archiveState: tab.archiveState ?? null,
     });
     // Re-assert activeColumn — restoreTabState may have triggered reactive
-    // effects that changed it (e.g. tab rename callback → layout subscription)
-    layout.setActiveColumn(actualPanel);
+    // effects that changed it (e.g. tab rename callback → layout subscription),
+    // and it moves focus out of any column that ended up zero-width.
+    const restoredPanel = get(layout).activeColumn;
+    layout.setActiveColumn(restoredPanel);
     const t3 = performance.now();
     logInfo('tab-perf', `restoreTabContent total=${(t3-t0).toFixed(1)}ms deactivate=${(t1-t0).toFixed(1)}ms setColumn=${(t2-t1).toFixed(1)}ms restoreState=${(t3-t2).toFixed(1)}ms`);
     if (import.meta.env.DEV) performance.mark('tab-focus-restore-start');
     const tickStart = performance.now();
     void tick().then(() => {
+      if (restoreId !== tabRestoreGeneration) return;
       const tickDone = performance.now();
       logInfo('tab-perf', `tick-wait=${(tickDone-tickStart).toFixed(1)}ms`);
       if (tab.projectMode) {
@@ -548,7 +557,7 @@
       } else {
         setTimeout(() => void synchronizeProjectTreeWatcher(), 0);
       }
-      focusPanelNow(actualPanel);
+      focusPanelNow(restoredPanel, { silent: true });
       const focusDone = performance.now();
       logInfo('tab-perf', `focusPanel=${(focusDone-tickDone).toFixed(1)}ms`);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
@@ -611,32 +620,23 @@
   }
 
   function togglePreviewLayout() {
-    if ($layout.previewExpanded) {
-      layout.collapsePreview();
-    } else {
-      layout.expandPreview();
-    }
+    layout.cycleLayout();
+    focusPanel(get(layout).activeColumn);
   }
 
   function handleSwitchPanel(direction: 'left' | 'right') {
     const current = $layout.activeColumn;
-    if (direction === 'left') {
-      if (current === 'preview') {
-        focusPanel('current');
-      } else if (current === 'current') {
-        focusPanel('parent');
+    if (current !== 'parent' && current !== 'current' && current !== 'preview') return;
+
+    if (direction === 'right' && current === 'preview') {
+      if ($layout.previewExpanded && previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
+        previewEditor.focusToc();
       }
-    } else if (direction === 'right') {
-      if (current === 'parent') {
-        focusPanel('current');
-      } else if (current === 'current') {
-        focusPanel('preview');
-      } else if (current === 'preview') {
-        if ($layout.previewExpanded && previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
-          previewEditor.focusToc();
-        }
-      }
+      return;
     }
+
+    const next = nextVisibleColumn(current as ColumnName, direction, $layout.columnRatios);
+    if (next) focusPanel(next);
   }
 
   function handleFullscreenEditor() {
@@ -760,7 +760,7 @@
     void tick().then(() => focusPanelNow(panel));
   }
 
-  function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal') {
+  function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal', opts?: { silent?: boolean }) {
     if (panel === 'terminal' && floatingTerminal) {
       const _ft0 = performance.now();
       floatingTerminal.focus();
@@ -776,11 +776,12 @@
       currentDirectoryPanel.focus();
     } else if (panel === 'preview' && previewPanel) {
       if (previewEditor?.isTocFocused() && previewEditor?.isTocVisible()) {
-        previewEditor.focusToc();
+        previewEditor.focusToc(opts?.silent ?? false);
+      } else if (previewEditor) {
+        previewEditor.focusPreviewContent();
       } else {
         const element = previewPanel.querySelector('.preview-editor') as HTMLElement;
         if (element) element.focus({ preventScroll: true });
-        previewEditor?.focusActiveInput();
       }
     }
   }
@@ -800,6 +801,10 @@
     if (!target) return;
     const column = target.closest('.parent-panel, .current-panel, .preview-panel');
     if (column) {
+      // A hidden (zero-width) column must never claim the active column;
+      // otherwise the status bar shows a column the user cannot see.
+      const rect = column.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
       let panel: 'parent' | 'current' | 'preview';
       if (column.classList.contains('parent-panel')) panel = 'parent';
       else if (column.classList.contains('current-panel')) panel = 'current';

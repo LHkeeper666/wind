@@ -6,7 +6,7 @@ Inspired by [Yazi](https://github.com/sxyazi/yazi), Wind combines a three-column
 
 ## Features
 
-- **Three-column layout** — parent directory | current directory | preview/editor, adjustable with `:ratio X:Y:Z`
+- **Three-column layout** — parent directory | current directory | preview/editor, adjustable with `:ratio X:Y:Z` (or `X.Y.Z`, `0` hides a column; aliases `default`, `dual`, `preview`)
 - **Vim keybindings** — `j/k` navigation, `gg/G`, `h/l` panel switching
 - **File preview** — text (Shiki syntax highlight), Markdown (KaTeX + Mermaid), images (turbojpeg), PDF, video (ffmpeg thumbnails + HTTP streaming), JSON, archives (zip), directories
 - **Fullscreen viewers** — image viewer (zoom/pan/rotate), PDF viewer (text search), video player
@@ -58,6 +58,7 @@ npm run tauri build
 | `h` | Switch to left panel (parent dir) |
 | `l` | Switch to right panel (preview) |
 | `Ctrl+W h/j/k/l` | Panel navigation |
+| `Ctrl+W m` | Cycle 3-column → 2-column → 1-column layout |
 
 ### Floating Terminal
 | Key | Action |
@@ -122,7 +123,9 @@ npm run tauri build
 |---|---|
 | `:cd <path>` | Change directory (`.` for current, `..` for parent, no args for home) |
 | `:e <path>` | Open file or directory |
-| `:ratio X:Y:Z` | Set column width ratio |
+| `:ratio X:Y:Z` | Set column width ratio (`X.Y.Z` is equivalent; `0` hides a column) |
+| `:ratio default` | Restore the `1:1:3` three-column layout |
+| `:ratio preview` | Show only the preview column (`0:0:1`) |
 | `Tab` | Auto-complete path (`cd`: dirs only, `e`: files + dirs) |
 
 ## Shell Integration
