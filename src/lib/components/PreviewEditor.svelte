@@ -63,10 +63,52 @@
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
   // Keep preview state keyed by that target tab instead of the origin tab.
   let renderTabId = $derived(previewTabId ?? currentTabId);
+  type PdfSession = { tabId: number; path: string; dimensions: import('$lib/utils/pdf-shared').PdfPageDimensions[]; count: number; size: number; title: string | null; panel?: PdfPreviewPanel; lastUsed: number };
+  let pdfSessions = $state<PdfSession[]>([]);
+  let pdfReadyPath = $state<string | null>(null);
+  const INACTIVE_PDF_BUDGET = 96 * 1024 * 1024;
+
+  function removePdfSession(tabId: number) {
+    pdfSessions = pdfSessions.filter(session => session.tabId !== tabId);
+  }
+
+  function trimPdfSessions() {
+    let inactive = pdfSessions.filter(session => session.tabId !== renderTabId)
+      .sort((a, b) => a.lastUsed - b.lastUsed);
+    let bytes = inactive.reduce((sum, session) => sum + (session.panel?.getRetainedBytes() ?? 0), 0);
+    for (const session of inactive) {
+      if (bytes <= INACTIVE_PDF_BUDGET && inactive.length <= 3) break;
+      bytes -= session.panel?.getRetainedBytes() ?? 0;
+      removePdfSession(session.tabId);
+      inactive = inactive.filter(item => item.tabId !== session.tabId);
+    }
+  }
 
   const pdfState = createPdfState({
     getFilePath: () => filePath,
     onToast,
+  });
+
+  $effect(() => {
+    const path = filePath;
+    const tabId = renderTabId;
+    const dimensions = pdfState.getPdfPageDimensions();
+    if (!path || path !== pdfReadyPath || !isPdfFile(path) || dimensions.length === 0) return;
+    if (!pdfSessions.some(session => session.tabId === tabId && session.path === path)) {
+      pdfSessions = [...pdfSessions.filter(session => session.tabId !== tabId), {
+        tabId, path, dimensions, count: pdfState.getPdfPageCount(),
+        size: pdfState.getPdfFileSize(), title: pdfState.getPdfTitle(),
+        lastUsed: performance.now(),
+      }];
+    }
+    trimPdfSessions();
+  });
+
+  $effect(() => {
+    const session = filePath === pdfReadyPath
+      ? pdfSessions.find(item => item.tabId === renderTabId && item.path === filePath)
+      : undefined;
+    pdfState.pdfPreviewPanel = session?.panel;
   });
 
   const tocState = createMarkdownTocState({
@@ -84,7 +126,12 @@
       if (a !== b) return;
       if (mode !== 'global-normal') return;
       tabCache.delete(renderTabId);
+      removePdfSession(renderTabId);
       previewPane?.clearActiveSlot();
+      if (isPdfFile(filePath)) {
+        await invoke('invalidate_pdf_document', { path: filePath })
+          .catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`));
+      }
       await loadFile(filePath);
     },
   });
@@ -186,6 +233,7 @@
 
   export function clearTabCache(tabId: number) {
     tabCache.delete(tabId);
+    removePdfSession(tabId);
     previewPane?.clearSlot(tabId);
     destroyEditorSession(tabId);
   }
@@ -201,6 +249,8 @@
       isModified, ...pdfState.toCacheSnapshot(), fileMtime: fileWatcher.getFileMtime(),
       ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
     });
+    const session = pdfSessions.find(item => item.tabId === tabId);
+    if (session) session.lastUsed = performance.now();
   }
 
   export function deactivateTab() {
@@ -476,6 +526,10 @@
 
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
+    pdfReadyPath = null;
+    pdfState.pdfPreviewPanel = undefined;
+    const oldPdfSession = pdfSessions.find(session => session.tabId === renderTabId);
+    if (oldPdfSession && oldPdfSession.path !== path) removePdfSession(renderTabId);
     const fileName = path.split(/[/\\]/).pop() || path;
 
     // Check if we're in archive mode
@@ -510,6 +564,7 @@
       };
       isModified = cached.isModified;
       pdfState.fromCacheSnapshot(cached);
+      pdfReadyPath = isPdfFile(path) ? path : null;
       tocState.fromCacheSnapshot(cached);
       fileWatcher.setFileMtime(cached.fileMtime);
       previewPane?.setPendingTocSelectedIndex(cached.tocSelectedIndex);
@@ -544,7 +599,7 @@
       }
       fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
+        .then(async meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       return;
     }
@@ -652,7 +707,7 @@
           if (gen === loadGeneration && filePath === path) fileWatcher.setFileMtime(meta.modified);
         })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
-      await pdfState.loadPdfInfo(path, gen);
+      if (await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) pdfReadyPath = path;
       return;
     }
 
@@ -846,19 +901,29 @@
   </div>
 
   <div class="panel-content">
-    {#if filePath && isPdfFile(filePath) && mode === 'global-normal'}
-      <div class="pdf-with-toc">
-        <PdfPreviewPanel
-          bind:this={pdfState.pdfPreviewPanel}
-          pdfPath={filePath}
-          pageDimensions={pdfState.getPdfPageDimensions()}
-          pageCount={pdfState.getPdfPageCount()}
-          fileSize={pdfState.getPdfFileSize()}
-          title={pdfState.getPdfTitle()}
-          onPageChange={(page: number) => { pdfState.setPage(page); }}
-          onFullscreen={() => onFullscreen()}
-        />
-        {#if pdfState.getPdfOutline().length > 0 && pdfState.getPdfTocOpen()}
+    {#if filePath && isPdfFile(filePath) && mode === 'global-normal' && !pdfSessions.some(session => session.tabId === renderTabId && session.path === filePath)}
+      <div class="pdf-loading">Loading PDF...</div>
+    {/if}
+    {#if pdfSessions.length > 0}
+      <div class="pdf-with-toc" class:inactive={!filePath || !isPdfFile(filePath) || mode !== 'global-normal' || !pdfSessions.some(session => session.tabId === renderTabId && session.path === filePath)}>
+        <div class="pdf-session-stage">
+          {#each pdfSessions as session (session.tabId)}
+            <div class="pdf-session" class:inactive={session.tabId !== renderTabId || session.path !== filePath || mode !== 'global-normal'}>
+              <PdfPreviewPanel
+                bind:this={session.panel}
+                pdfPath={session.path}
+                pageDimensions={session.dimensions}
+                pageCount={session.count}
+                fileSize={session.size}
+                title={session.title}
+                active={session.tabId === renderTabId && session.path === filePath && mode === 'global-normal'}
+                onPageChange={(page: number) => { if (session.tabId === renderTabId) pdfState.setPage(page); }}
+                onFullscreen={() => { if (session.tabId === renderTabId) onFullscreen(); }}
+              />
+            </div>
+          {/each}
+        </div>
+        {#if filePath && isPdfFile(filePath) && mode === 'global-normal' && pdfState.getPdfOutline().length > 0 && pdfState.getPdfTocOpen()}
           <PdfTocSidebar
             bind:this={pdfState.pdfTocSidebar}
             outline={pdfState.getPdfOutline()}
@@ -1053,6 +1118,11 @@
   .preview-pane-wrapper.hidden { display: none; }
 
   .pdf-with-toc { display: flex; width: 100%; height: 100%; }
+  .pdf-with-toc.inactive { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+  .pdf-session-stage { flex: 1; min-width: 0; position: relative; }
+  .pdf-session { position: absolute; inset: 0; display: flex; }
+  .pdf-session.inactive { visibility: hidden; pointer-events: none; }
+  .pdf-loading { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--text-muted); }
 
   :global(.editor-session) { width: 100%; height: 100%; }
 

@@ -758,6 +758,15 @@ pub fn clear_pdf_cache() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn invalidate_pdf_document(path: String) -> Result<(), String> {
+    let mut guard = PDF_CACHE.lock().map_err(|e| format!("Lock: {}", e))?;
+    if let Some(cache) = guard.as_mut() {
+        cache.docs.remove(&path);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

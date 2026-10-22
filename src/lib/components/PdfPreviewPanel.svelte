@@ -33,6 +33,7 @@
     title = null,
     onPageChange = (_page: number) => {},
     onFullscreen = () => {},
+    active = true,
   }: {
     pdfPath: string;
     pageDimensions?: PdfPageDimensions[];
@@ -41,6 +42,7 @@
     title?: string | null;
     onPageChange?: (page: number) => void;
     onFullscreen?: () => void;
+    active?: boolean;
   } = $props();
 
   // State
@@ -93,6 +95,19 @@
   let failedVisibleHighTileKeys = new Set<string>();
   let visibleHighRetryCounts = new Map<string, number>();
   let visibleHighGeneration = -1;
+  let lowBatch: { generation: number; pending: Set<string>; timer: ReturnType<typeof setTimeout> } | undefined;
+  let lowBatchStartedGeneration = -1;
+
+  function releaseLowBatch() {
+    const batch = lowBatch;
+    if (!batch) return;
+    clearTimeout(batch.timer);
+    for (const canvas of scrollEl?.querySelectorAll<HTMLCanvasElement>('.pdf-tile-canvas[data-tile-quality="low"]') || []) {
+      canvas.style.visibility = '';
+    }
+    lowBatch = undefined;
+    if (active && batch.generation === renderGeneration) requestAnimationFrame(updatePageRendering);
+  }
 
   type ZoomAnchor = {
     page: number;
@@ -119,6 +134,7 @@
   const MAX_SCALE = 5.0;
 
   function scheduleRenderRetry() {
+    if (!active) return;
     if (renderRetryScheduled) return;
     renderRetryScheduled = true;
     requestAnimationFrame(() => {
@@ -230,6 +246,7 @@
     canvas.className = 'pdf-tile-canvas';
     canvas.dataset.tileKey = tileKey;
     canvas.dataset.tileQuality = data.lowRes ? 'low' : 'high';
+    if (data.lowRes && lowBatch?.generation === generation) canvas.style.visibility = 'hidden';
     canvas.style.zIndex = data.lowRes ? '1' : '2';
     canvas.width = data.width;
     canvas.height = data.height;
@@ -291,6 +308,10 @@
     }).catch(error => {
       if (generation === renderGeneration) {
         logError('PdfPreviewPanel', `Failed to render PDF tile ${spec.key}: ${error}`);
+        if (spec.lowRes && lowBatch?.generation === generation) {
+          lowBatch.pending.delete(spec.key);
+          if (lowBatch.pending.size === 0) requestAnimationFrame(releaseLowBatch);
+        }
         retryVisibleHighTile();
       }
     }).finally(() => {
@@ -435,7 +456,7 @@
   }
 
   function updateTiledPageRendering() {
-    if (!scrollEl || pageOffsets.length < 2) return;
+    if (!active || !scrollEl || pageOffsets.length < 2) return;
     if (zoomSession && renderedTileData.size > 0) return;
     const viewport = {
       left: scrollEl.scrollLeft,
@@ -511,6 +532,15 @@
       visibleHighRetryCounts = new Map();
     }
     const generation = renderGeneration;
+    if (lowBatch && lowBatch.generation !== generation) releaseLowBatch();
+    if (!lowBatch && lowBatchStartedGeneration !== generation && renderedTileData.size === 0 && visibleLowRequests.length > 0) {
+      lowBatchStartedGeneration = generation;
+      lowBatch = {
+        generation,
+        pending: new Set(visibleLowRequests.map(request => request.spec.key)),
+        timer: setTimeout(releaseLowBatch, 500),
+      };
+    }
     tileCache.setCurrentScale(highScale);
     tileCache.setPinned(visibleRequests.map(request => request.spec.key));
 
@@ -525,18 +555,22 @@
       if (generation !== visibleHighGeneration || !requiredVisibleHighTileKeys.has(key)) return;
       completedVisibleHighTileKeys.add(key);
     };
-    const orderedRequests = [
-      ...visibleHighRequests,
-      ...visibleLowRequests,
-      ...prefetchHighRequests,
-      ...prefetchLowRequests,
-    ].sort((left, right) => left.priority - right.priority);
+    const orderedRequests = (lowBatch?.generation === generation
+      ? visibleLowRequests
+      : [...visibleHighRequests, ...visibleLowRequests, ...prefetchHighRequests, ...prefetchLowRequests]
+    ).sort((left, right) => left.priority - right.priority);
     for (const { spec, priority, page } of orderedRequests) {
       const layer = layers.get(page);
       if (!layer) continue;
       const onInserted = requiredVisibleHighTileKeys.has(spec.key)
         ? () => markVisibleHighComplete(spec.key)
-        : undefined;
+        : lowBatch?.generation === generation && lowBatch.pending.has(spec.key)
+          ? () => {
+            if (lowBatch?.generation !== generation) return;
+            lowBatch.pending.delete(spec.key);
+            if (lowBatch.pending.size === 0) requestAnimationFrame(releaseLowBatch);
+          }
+          : undefined;
       queueTile(spec, layer, priority, generation, onInserted);
     }
     lastScrollTop = viewport.top;
@@ -817,7 +851,6 @@
       loadedLinks.clear();
       renderGeneration++;
       renderScheduler.clear();
-      invoke('clear_pdf_cache').catch(() => {});
       isLoading = true;
       hasError = false;
       isLoading = false;
@@ -876,6 +909,7 @@
   });
 
   onDestroy(() => {
+    releaseLowBatch();
     resizeObserver?.disconnect();
     tileCache.clear();
     renderingTiles.clear();
@@ -885,9 +919,26 @@
     if (scrollEl && zoomSession) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
     zoomSession = undefined;
     renderScheduler.clear();
-    invoke('clear_pdf_cache').catch(() => {});
     clearLinkCache();
   });
+
+  $effect(() => {
+    if (active) {
+      requestAnimationFrame(() => {
+        if (scrollEl) viewportWidth = scrollEl.clientWidth;
+        updatePageRendering();
+      });
+    } else {
+      renderGeneration++;
+      renderScheduler.invalidate(renderGeneration);
+    }
+  });
+
+  export function getRetainedBytes(): number {
+    let canvasBytes = 0;
+    for (const data of renderedTileData.values()) canvasBytes += data.width * data.height * 4;
+    return Math.max(tileCache.getSizeBytes(), canvasBytes);
+  }
 
   const position = $derived(`${currentPage + 1}/${totalPages}`);
   const zoomPercent = $derived(`${Math.round(scale * 100)}%`);

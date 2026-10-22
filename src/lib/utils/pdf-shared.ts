@@ -307,6 +307,8 @@ export class PdfTileCache {
     this.lowResBytes = 0;
   }
 
+  getSizeBytes(): number { return this.totalBytes; }
+
   private removeMatchingLowRes(spec: PdfTileSpec): void {
     for (const [key, entry] of this.cache) {
       const tile = entry.data;

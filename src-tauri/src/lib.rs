@@ -275,6 +275,7 @@ pub fn run() {
             pdf::get_pdf_outline,
             pdf::get_pdf_page_links,
             pdf::clear_pdf_cache,
+            pdf::invalidate_pdf_document,
             video::get_video_thumbnail,
             video::start_video_server,
             video::stop_video_server,
