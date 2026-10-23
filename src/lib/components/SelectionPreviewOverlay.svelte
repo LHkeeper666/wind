@@ -21,7 +21,6 @@
   let body: HTMLDivElement;
   let generation = 0;
   let renderedPath = $state('');
-  let loading = $state(true);
   let error = $state('');
   let pdfVisible = $state(false);
   let headings = $state<TocHeading[]>([]);
@@ -32,19 +31,20 @@
   const pdf = createPdfState({ getFilePath: () => path, onToast: () => {} });
 
   async function load(workspace: number, selectedPath: string, directory: boolean | null, archive: string | null, gen: number) {
-    loading = true;
+    // Keep the overlay opaque while the next file loads, but do not show the
+    // previous selection or expose the opened slot underneath it.
+    body?.replaceChildren();
     error = '';
     pdfVisible = false;
     renderedPath = '';
-    router.dispose();
-    router = new PreviewRouter();
-    router.onHeadings = (value) => { if (generation === gen) headings = value; };
+    const previousRouter = router;
+    const nextRouter = new PreviewRouter();
+    nextRouter.onHeadings = (value) => { if (generation === gen) headings = value; };
     headings = [];
     pdf.reset();
     await tick();
     const valid = () => generation === gen && workspaceId === workspace && path === selectedPath;
-    if (!valid() || !body) return;
-    body.replaceChildren();
+    if (!valid() || !body) { nextRouter.dispose(); return; }
     const ctx: LoadContext = {
       gen, loadTabId: workspace, path: selectedPath, archivePath: archive,
       archiveInternalPath: archive ? selectedPath : null, selectedEntryIsDir: directory,
@@ -71,25 +71,29 @@
           : isImageFile(selectedPath) ? await loadImage(ctx, valid)
           : isVideoFile(selectedPath) ? await loadVideo(ctx, valid)
           : await loadTextOrBinary(ctx, valid);
-        if (!valid() || 'aborted' in result) return;
+        if (!valid() || 'aborted' in result) { nextRouter.dispose(); return; }
         const content = result.binaryContent ?? result.content;
         const renderHost = document.createElement('div');
         renderHost.dataset.filePath = selectedPath;
         renderHost.style.minHeight = '100%';
-        body.appendChild(renderHost);
         if ('thumbnailMeta' in result && result.thumbnailMeta) {
           renderHost.dataset.thumbWidth = String(result.thumbnailMeta.width);
           renderHost.dataset.thumbHeight = String(result.thumbnailMeta.height);
           renderHost.dataset.thumbOriginalSize = String(result.thumbnailMeta.originalSize);
           renderHost.dataset.thumbIsThumbnail = String(result.thumbnailMeta.isThumbnail);
         }
-        await router.preview(selectedPath, content, renderHost);
-        if (!valid()) { renderHost.remove(); return; }
+        await nextRouter.preview(selectedPath, content, renderHost);
+        if (!valid()) { nextRouter.dispose(); renderHost.remove(); return; }
         body.replaceChildren(renderHost);
       }
-      if (valid()) { renderedPath = selectedPath; loading = false; }
+      if (valid()) {
+        router = nextRouter;
+        previousRouter.dispose();
+        renderedPath = selectedPath;
+      } else nextRouter.dispose();
     } catch (cause) {
-      if (valid()) { error = String(cause); loading = false; }
+      nextRouter.dispose();
+      if (valid()) error = String(cause);
     }
   }
 
@@ -99,14 +103,26 @@
     const directory = isDirectory;
     const archive = archivePath;
     const recycle = recycleItem;
-    const gen = ++generation;
-    if (recycle?.id === selectedPath) {
-      generation++;
-      loading = false;
-      renderedPath = selectedPath;
+    return untrack(() => {
+      const gen = ++generation;
+      body?.replaceChildren();
+      renderedPath = '';
+      error = '';
       pdfVisible = false;
-    } else void untrack(() => load(workspace, selectedPath, directory, archive, gen));
-    return () => { generation++; if (body) body.dataset.filePath = ''; router.dispose(); pdf.reset(); };
+      headings = [];
+      pdf.reset();
+      if (recycle?.id === selectedPath) {
+        generation++;
+        renderedPath = selectedPath;
+      } else {
+        void load(workspace, selectedPath, directory, archive, gen);
+      }
+      return () => untrack(() => {
+        generation++;
+        if (body) body.dataset.filePath = '';
+        pdf.reset();
+      });
+    });
   });
 
   onDestroy(() => { generation++; router.dispose(); directoryPreviewer.dispose(); pdf.reset(); });
@@ -117,7 +133,6 @@
   {#if recycleItem?.id === path}
     <div class="status"><strong>{recycleItem.name}</strong><p>{recycleItem.original_path}</p><p>{new Date(recycleItem.date_deleted * 1000).toLocaleString('zh-CN')}</p></div>
   {/if}
-  {#if loading}<div class="status">Loading preview...</div>{/if}
   {#if error}<div class="status">{error}</div>{/if}
   {#if pdfVisible && renderedPath === path}
     <div class="pdf-content">
@@ -130,10 +145,10 @@
       {/if}
     </div>
   {/if}
-  {#if headings.length > 0 && !pdfVisible}
+  {#if headings.length > 0 && !pdfVisible && renderedPath === path}
     <button class="outline-toggle" onclick={() => tocOpen = !tocOpen} aria-label="Toggle outline">☰</button>
   {/if}
-  <div class="reading-content" class:hidden={pdfVisible || recycleItem?.id === path}>
+  <div class="reading-content" class:hidden={pdfVisible || recycleItem?.id === path || renderedPath !== path}>
     <div class="selection-body" bind:this={body}></div>
     {#if headings.length > 0 && tocOpen}
       <TocSidebar {headings} onJump={(line) => {

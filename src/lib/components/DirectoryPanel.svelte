@@ -108,7 +108,6 @@
   let lastKey: string = '';
   let panelElement: HTMLDivElement | undefined = $state(undefined);
   let isFocused: boolean = $state(false);
-  let selectTimeout: ReturnType<typeof setTimeout> | null = null;
   let scrollRafId: number = 0;
   let pendingSelectName: string | null = null;
   let isSearchModalOpen: boolean = $state(false);
@@ -239,13 +238,6 @@
 
   export function setSuppressInitialSelect(value: boolean) {
     _suppressInitialSelect = value;
-  }
-
-  export function cancelPendingSelection() {
-    if (selectTimeout) {
-      clearTimeout(selectTimeout);
-      selectTimeout = null;
-    }
   }
 
   function applyPendingRestore() {
@@ -583,28 +575,11 @@
       selectedIndex = index;
       selectedPathInternal = displayFiles[index].path;
       const selectedPath = displayFiles[index].path;
-      const notify = options.notify ?? 'debounced';
-
-      // Debounce onSelect to avoid rapid file loading
-      if (selectTimeout) {
-        clearTimeout(selectTimeout);
-        selectTimeout = null;
-      }
+      const notify = options.notify ?? 'immediate';
       if (notify === 'silent') {
         return;
       }
-      if (notify === 'immediate') {
-        onSelect(selectedPath, displayFiles[index].is_dir);
-        return;
-      }
-      const capturedIndex = index;
-      const capturedPath = selectedPath;
-      selectTimeout = setTimeout(() => {
-        // Only fire if user is still on the same item
-        if (selectedIndex === capturedIndex && displayFiles[capturedIndex]?.path === capturedPath) {
-          onSelect(capturedPath, displayFiles[capturedIndex]?.is_dir);
-        }
-      }, 200);
+      onSelect(selectedPath, displayFiles[index].is_dir);
     }
   }
 

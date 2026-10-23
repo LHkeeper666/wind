@@ -213,6 +213,7 @@
       getZoomLevel: () => zoomLevel,
       applyZoom,
       focusPanel,
+      focusOpenedPreview,
       handleTabNew,
       handleTabClose,
       createPreviewSlot: () => createPreviewSlot(),
@@ -495,7 +496,6 @@
   function restoreTabContent(tab: TabState) {
     if (!tab) return;
     const restoreId = ++tabRestoreGeneration;
-    currentDirectoryPanel?.cancelPendingSelection();
     const t0 = performance.now();
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
@@ -652,6 +652,7 @@
     if (id !== getActiveTab().activeSlotId) savePreviewSlot();
     tabs.switchSlot(id);
     restorePreviewSlot();
+    focusPanel('preview');
   }
 
   function createPreviewSlot(path: string | null = null) {
@@ -736,7 +737,8 @@
     }
 
     const next = nextVisibleColumn(current as ColumnName, direction, $layout.columnRatios);
-    if (next) focusPanel(next);
+    if (next === 'preview') focusOpenedPreview();
+    else if (next) focusPanel(next);
   }
 
   function handleFullscreenEditor() {
@@ -858,6 +860,12 @@
     layout.setActiveColumn(panel);
     focusPanelNow(panel);
     void tick().then(() => focusPanelNow(panel));
+  }
+
+  function focusOpenedPreview() {
+    tabs.hideSelectionPreview();
+    restorePreviewSlot();
+    focusPanel('preview');
   }
 
   function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal', opts?: { silent?: boolean }) {

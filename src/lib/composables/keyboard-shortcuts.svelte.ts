@@ -38,6 +38,7 @@ interface KeyboardDeps {
   applyZoom: (level: number) => void;
 
   focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void;
+  focusOpenedPreview: () => void;
   handleTabNew: () => void;
   handleTabClose: () => void;
   createPreviewSlot: () => void;
@@ -199,7 +200,8 @@ function handleSwitchPanel(direction: 'left' | 'right') {
   }
 
   const next = nextVisibleColumn(current as ColumnName, direction, l.columnRatios);
-  if (next) deps.focusPanel(next);
+  if (next === 'preview') deps.focusOpenedPreview();
+  else if (next) deps.focusPanel(next);
 }
 
 // --- Main keydown handler ---

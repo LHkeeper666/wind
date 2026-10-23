@@ -20,7 +20,7 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
-export type SelectNotifyMode = 'debounced' | 'immediate' | 'silent';
+export type SelectNotifyMode = 'immediate' | 'silent';
 
 export interface SelectOptions {
   notify?: SelectNotifyMode;
