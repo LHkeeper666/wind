@@ -69,6 +69,7 @@
     onNavigate = (path: string) => {},
     onSelect = (path: string, _isDir?: boolean) => {},
     onActivate = (path: string) => {},
+    onActivateNew = (path: string) => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onFullscreen = () => {},
     onNavigateUp = () => {},
@@ -84,6 +85,7 @@
     onNavigate?: (path: string) => void;
     onSelect?: (path: string, isDir?: boolean) => void;
     onActivate?: (path: string) => void;
+    onActivateNew?: (path: string) => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onFullscreen?: () => void;
     onNavigateUp?: () => void;
@@ -237,6 +239,13 @@
 
   export function setSuppressInitialSelect(value: boolean) {
     _suppressInitialSelect = value;
+  }
+
+  export function cancelPendingSelection() {
+    if (selectTimeout) {
+      clearTimeout(selectTimeout);
+      selectTimeout = null;
+    }
   }
 
   function applyPendingRestore() {
@@ -442,7 +451,7 @@
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
         logInfo('tab-perf', `selectInitialEntry pendingSelectName=${target} file=${displayFiles[idx].name}`);
-        onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
+        if ($layout.activeColumn === 'current') onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
     }
@@ -453,7 +462,7 @@
         selectedIndex = idx;
         selectedPathInternal = displayFiles[idx].path;
         logInfo('tab-perf', `selectInitialEntry selectedPath file=${displayFiles[idx].name}`);
-        onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
+        if ($layout.activeColumn === 'current') onSelect(displayFiles[idx].path, displayFiles[idx].is_dir);
         return;
       }
     }
@@ -461,7 +470,7 @@
     selectedIndex = firstReal >= 0 ? firstReal : 0;
     selectedPathInternal = displayFiles[selectedIndex].path;
     logInfo('tab-perf', `selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
-    onSelect(displayFiles[selectedIndex].path, displayFiles[selectedIndex].is_dir);
+    if ($layout.activeColumn === 'current') onSelect(displayFiles[selectedIndex].path, displayFiles[selectedIndex].is_dir);
   }
 
   let loadingGen = 0;
@@ -497,9 +506,10 @@
     }
 
     try {
+      let loadedFiles: FileEntry[];
       if (isVirtual) {
         // Virtual root: list drives
-        files = await invoke<FileEntry[]>('list_drives');
+        loadedFiles = await invoke<FileEntry[]>('list_drives');
       } else if (archiveState) {
         // Archive mode: list entries within the archive
         const archiveEntries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
@@ -516,15 +526,15 @@
           }
           return false;
         }
-        files = archiveEntries;
-        files.sort((a, b) => {
+        loadedFiles = archiveEntries;
+        loadedFiles.sort((a, b) => {
           if (a.is_dir && !b.is_dir) return -1;
           if (!a.is_dir && b.is_dir) return 1;
           return a.name.localeCompare(b.name);
         });
       } else {
-        files = await invoke<FileEntry[]>('read_directory', { path: dirPath });
-        files.sort((a, b) => {
+        loadedFiles = await invoke<FileEntry[]>('read_directory', { path: dirPath });
+        loadedFiles.sort((a, b) => {
           if (a.is_dir && !b.is_dir) return -1;
           if (!a.is_dir && b.is_dir) return 1;
           return a.name.localeCompare(b.name);
@@ -532,7 +542,7 @@
       }
       // Client-side dedup by path (safety net, backend should already handle this)
       const seen = new Set<string>();
-      files = files.filter(f => {
+      loadedFiles = loadedFiles.filter(f => {
         if (seen.has(f.path)) return false;
         seen.add(f.path);
         return true;
@@ -540,6 +550,8 @@
 
       // Discard stale results from superseded concurrent calls
       if (gen !== loadingGen) return false;
+
+      files = loadedFiles;
 
       // Update cache (store without .., inject on read)
       directoryCache.set(dirPath, files.filter(f => f.name !== '..'));
@@ -1011,7 +1023,7 @@
                 else layout.setArchiveInternalPath(entry.path);
               } else {
                 if (isArchiveFile(entry.name)) onToast('Nested archives not supported in this phase');
-                else onSelect(entry.path, entry.is_dir);
+                else (event.shiftKey ? onActivateNew : onActivate)(entry.path);
               }
             }
             break;
@@ -1079,7 +1091,7 @@
             if (event.shiftKey) void projectTree.expandRecursively(node);
             else if (node.expanded && node.children.length > 0) selectByIndex(selectedIndex + 1);
             else void projectTree.expandTreeNode(node);
-          } else if (node) onActivate(node.entry.path);
+          } else if (node) (event.shiftKey ? onActivateNew : onActivate)(node.entry.path);
         }
         return true;
       case 'KeyV':
@@ -1260,7 +1272,7 @@
             if (entry.is_dir) onNavigate(entry.path);
             else {
               if (isArchiveFile(entry.name)) enterArchive(entry.path, layout);
-              else onActivate(entry.path);
+              else (event.shiftKey ? onActivateNew : onActivate)(entry.path);
             }
           }
         }

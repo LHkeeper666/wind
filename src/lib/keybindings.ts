@@ -23,6 +23,8 @@ export const keybindingGroups: KeybindingGroup[] = [
       { key: 'Ctrl+W h/l', context: 'global', description: 'Switch panel left/right' },
       { key: 'Ctrl+W j/k', context: 'global', description: 'Focus terminal/preview' },
       { key: 'Ctrl+W m', context: 'global', description: 'Cycle 3-column → 2-column → 1-column layout' },
+      { key: 'Ctrl+N / Ctrl+U', context: 'global', description: 'New/close preview slot' },
+      { key: 'Ctrl+, / Ctrl+.', context: 'global', description: 'Previous/next preview slot' },
       { key: 'F1', context: 'global', description: 'Show this help' },
     ],
   },
@@ -31,7 +33,8 @@ export const keybindingGroups: KeybindingGroup[] = [
     items: [
       { key: 'j/k', context: 'directory', description: 'Navigate up/down' },
       { key: 'gg / G', context: 'directory', description: 'Jump to top/bottom' },
-      { key: 'Enter / l', context: 'directory', description: 'Open file (expanded preview)' },
+      { key: 'Enter / l', context: 'directory', description: 'Open file in current preview slot' },
+      { key: 'L', context: 'directory', description: 'Open file in a new preview slot (expand directory recursively in project tree)' },
       { key: 'R', context: 'directory', description: 'Refresh' },
       { key: 'h', context: 'directory', description: 'Go to parent directory' },
       { key: '/', context: 'directory', description: 'Search in current dir' },

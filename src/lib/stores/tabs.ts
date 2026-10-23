@@ -1,6 +1,22 @@
 import { writable, derived, get } from 'svelte/store';
 import { layout, type ArchiveState } from './layout';
 
+export interface PreviewSlot {
+  id: number;
+  filePath: string | null;
+  editorMode: TabState['editorMode'];
+  isModified: boolean;
+  previewScrollTop: number;
+  pdfCurrentPage: number;
+  tocOpen: boolean;
+}
+
+export interface SelectionPreview {
+  path: string;
+  isDirectory: boolean | null;
+  visible: boolean;
+}
+
 export interface TabState {
   id: number;
   lastUsedAt: number;
@@ -11,6 +27,10 @@ export interface TabState {
   parentPath: string;
   currentPath: string;
   selectedFile: string | null;
+  slots: PreviewSlot[];
+  activeSlotId: number;
+  nextSlotId: number;
+  selectionPreview: SelectionPreview | null;
   cursorIndex: number;
   scrollOffset: number;
   terminalVisible: boolean;
@@ -55,6 +75,10 @@ function getDefaultTab(id: number): TabState {
     parentPath: '',
     currentPath: '',
     selectedFile: null,
+    slots: [{ id: 1, filePath: null, editorMode: 'global-normal', isModified: false, previewScrollTop: 0, pdfCurrentPage: 0, tocOpen: true }],
+    activeSlotId: 1,
+    nextSlotId: 2,
+    selectionPreview: null,
     cursorIndex: 0,
     scrollOffset: 0,
     terminalVisible: false,
@@ -103,6 +127,54 @@ function createTabsStore() {
 
   return {
     subscribe,
+
+    selectEntry(path: string, isDirectory: boolean | null) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
+        ? { ...tab, selectionPreview: { path, isDirectory, visible: true } } : tab) }));
+    },
+
+    hideSelectionPreview() {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
+        ? { ...tab, selectionPreview: null } : tab) }));
+    },
+
+    openInActiveSlot(path: string) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
+        ? { ...tab, selectedFile: path, selectionPreview: null,
+            slots: tab.slots.map(slot => slot.id === tab.activeSlotId ? { ...slot, filePath: path } : slot) }
+        : tab) }));
+    },
+
+    createSlot(path: string | null = null) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => {
+        if (tab.id !== state.activeTabId) return tab;
+        const id = tab.nextSlotId;
+        return { ...tab, slots: [...tab.slots, { id, filePath: path, editorMode: 'global-normal' as const, isModified: false, previewScrollTop: 0, pdfCurrentPage: 0, tocOpen: true }], activeSlotId: id, nextSlotId: id + 1, selectedFile: path, selectionPreview: null, editorMode: 'global-normal', isModified: false, previewScrollTop: 0, pdfCurrentPage: 0, tocOpen: true };
+      }) }));
+    },
+
+    switchSlot(id: number) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => {
+        if (tab.id !== state.activeTabId) return tab;
+        const slot = tab.slots.find(item => item.id === id);
+        return slot ? { ...tab, activeSlotId: id, selectedFile: slot.filePath, selectionPreview: null, editorMode: slot.editorMode, isModified: slot.isModified, previewScrollTop: slot.previewScrollTop, pdfCurrentPage: slot.pdfCurrentPage, tocOpen: slot.tocOpen } : tab;
+      }) }));
+    },
+
+    closeSlot(id: number) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => {
+        if (tab.id !== state.activeTabId) return tab;
+        const remaining = tab.slots.filter(slot => slot.id !== id);
+        const slots = remaining.length ? remaining : [{ id, filePath: null, editorMode: 'global-normal' as const, isModified: false, previewScrollTop: 0, pdfCurrentPage: 0, tocOpen: true }];
+        const active = slots.find(slot => slot.id === tab.activeSlotId) ?? slots[Math.max(0, Math.min(tab.slots.findIndex(slot => slot.id === id), slots.length - 1))];
+        return { ...tab, slots, activeSlotId: active.id, selectedFile: active.filePath, selectionPreview: null, editorMode: active.editorMode, isModified: active.isModified, previewScrollTop: active.previewScrollTop, pdfCurrentPage: active.pdfCurrentPage, tocOpen: active.tocOpen };
+      }) }));
+    },
+
+    saveActiveSlot(snapshot: Pick<PreviewSlot, 'editorMode' | 'isModified' | 'previewScrollTop' | 'pdfCurrentPage' | 'tocOpen'>) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
+        ? { ...tab, slots: tab.slots.map(slot => slot.id === tab.activeSlotId ? { ...slot, ...snapshot } : slot) } : tab) }));
+    },
 
     createTab(inheritPath?: string) {
       update(state => {
@@ -273,7 +345,7 @@ function createTabsStore() {
           originalRatios: [...layoutState.originalRatios] as [number, number, number],
           parentPath: layoutState.parentPath,
           currentPath: layoutState.currentPath,
-          selectedFile: layoutState.selectedFile,
+          selectedFile: newTabs[idx].slots.find(slot => slot.id === newTabs[idx].activeSlotId)?.filePath ?? null,
           cursorIndex: extra?.cursorIndex ?? newTabs[idx].cursorIndex,
           scrollOffset: extra?.scrollOffset ?? newTabs[idx].scrollOffset,
           terminalVisible: layoutState.terminalVisible,

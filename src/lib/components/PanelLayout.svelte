@@ -13,6 +13,8 @@
   import DirectoryPanel from './DirectoryPanel.svelte';
   import RecycleBinPanel from './RecycleBinPanel.svelte';
   import PreviewEditor from './PreviewEditor.svelte';
+  import SelectionPreviewOverlay from './SelectionPreviewOverlay.svelte';
+  import { previewSlotKey } from '$lib/utils/preview-slot-key';
   import FullscreenEditor from './FullscreenEditor.svelte';
   import CommandPalette from './CommandPalette.svelte';
   import FullscreenImageViewer from './FullscreenImageViewer.svelte';
@@ -75,6 +77,11 @@
   let currentPath: string = $state('');
   let leftPanelPath: string = $derived($layout.leftMode === 'manual' ? $layout.leftPath : $layout.parentPath);
   let selectedFile: string | null = $state(null);
+  let displayedTab: TabState = $derived(
+    (getSwitcherActive()
+      ? $tabs.tabs.find(tab => tab.id === getSwitcherSelectionId())
+      : null) ?? $activeTab
+  );
   let selectedFileIsDir: boolean | null = $state(null);
   let commandPaletteVisible: boolean = $state(false);
   let showFileSearch: boolean = $state(false);
@@ -208,6 +215,13 @@
       focusPanel,
       handleTabNew,
       handleTabClose,
+      createPreviewSlot: () => createPreviewSlot(),
+      closePreviewSlot: () => closePreviewSlot(getActiveTab().activeSlotId),
+      switchPreviewSlotRelative: (delta) => {
+        const tab = getActiveTab();
+        const index = tab.slots.findIndex((slot: { id: number }) => slot.id === tab.activeSlotId);
+        switchPreviewSlot(tab.slots[(index + delta + tab.slots.length) % tab.slots.length].id);
+      },
       handleTabSwitchByIndex,
       handlePaste,
       showToast,
@@ -381,8 +395,9 @@
     // Cache full editor state for tab restore
     const state = getTabsState();
     const snapshot = previewEditor?.getEditorStateSnapshot();
+    if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: snapshot.isModified, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
     const t1 = performance.now();
-    previewEditor?.cacheTabState(state.activeTabId);
+    previewEditor?.cacheTabState(previewSlotKey(state.activeTabId, getActiveTab().activeSlotId));
     const t2 = performance.now();
 
     const projectTree = currentDirectoryPanel?.getProjectTreeState();
@@ -421,7 +436,9 @@
     const closingTabId = tabsState.activeTabId;
     tabs.closeTab(closingTabId);
     terminalManager.destroy(closingTabId);
-    previewEditor?.clearTabCache(closingTabId);
+    for (const slot of tabsState.tabs.find((tab: TabState) => tab.id === closingTabId)?.slots ?? []) {
+      previewEditor?.clearTabCache(previewSlotKey(closingTabId, slot.id));
+    }
     restoreTabAndFocus();
     showToast('Tab closed');
   }
@@ -478,6 +495,7 @@
   function restoreTabContent(tab: TabState) {
     if (!tab) return;
     const restoreId = ++tabRestoreGeneration;
+    currentDirectoryPanel?.cancelPendingSelection();
     const t0 = performance.now();
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
@@ -509,11 +527,12 @@
       : targetPanel;
     layout.setActiveColumn(actualPanel);
     if (actualPanel === 'preview') {
-      previewEditor?.prepareTabFocus(tab.id, tab.selectedFile, tab.editorMode);
+      previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), tab.selectedFile, tab.editorMode);
     }
     // Sync PanelLayout local state
     currentPath = tab.currentPath;
     selectedFile = tab.selectedFile;
+    selectedFileIsDir = false;
     const t2 = performance.now();
     // Batch all layout store updates into one to avoid cascading reactive triggers
     layout.restoreTabState({
@@ -589,26 +608,107 @@
   }
 
   function handleSelect(filePath: string, isDir: boolean | null = null) {
-    layout.setSelectedFile(filePath);
-    selectedFile = filePath;
-    selectedFileIsDir = isDir;
+    if (getSwitcherActive()) return;
+    tabs.selectEntry(filePath, isDir);
   }
 
   function handleActivate(filePath: string) {
+    const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === filePath.toLowerCase());
+    if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id); focusPanel('preview'); return; }
+    if (existing) { tabs.hideSelectionPreview(); focusPanel('preview'); return; }
     // Check for unsaved changes before switching files
     if (previewEditor?.getIsModified()) {
-      setPendingActionPath(filePath);
-      setPendingAction('activate');
+      pendingSlotAction = { kind: 'replace', slotId: getActiveTab().activeSlotId, path: filePath };
       setShowUnsavedConfirm(true);
       return;
     }
     layout.setSelectedFile(filePath);
     selectedFile = filePath;
     selectedFileIsDir = false;
+    tabs.openInActiveSlot(filePath);
     if (!$layout.previewExpanded) {
       layout.expandPreview();
     }
     focusPanel('preview');
+  }
+
+  function savePreviewSlot() {
+    const tab = getActiveTab();
+    const snapshot = previewEditor?.getEditorStateSnapshot();
+    previewEditor?.cacheTabState(previewSlotKey(tab.id, tab.activeSlotId));
+    if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: snapshot.isModified, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
+  }
+
+  function restorePreviewSlot() {
+    const tab = getActiveTab();
+    const slot = tab.slots.find((item: { id: number }) => item.id === tab.activeSlotId);
+    selectedFile = slot?.filePath ?? null;
+    selectedFileIsDir = false;
+    layout.setSelectedFile(selectedFile);
+    previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), selectedFile, slot?.editorMode ?? 'global-normal');
+  }
+
+  function switchPreviewSlot(id: number) {
+    if (id !== getActiveTab().activeSlotId) savePreviewSlot();
+    tabs.switchSlot(id);
+    restorePreviewSlot();
+  }
+
+  function createPreviewSlot(path: string | null = null) {
+    savePreviewSlot();
+    tabs.createSlot(path);
+    restorePreviewSlot();
+    if (path && !$layout.previewExpanded) layout.expandPreview();
+  }
+
+  function handleActivateNew(path: string) {
+    const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === path.toLowerCase());
+    if (existing) { switchPreviewSlot(existing.id); focusPanel('preview'); return; }
+    createPreviewSlot(path);
+    focusPanel('preview');
+  }
+
+  function closePreviewSlot(id: number) {
+    if (id === getActiveTab().activeSlotId) savePreviewSlot();
+    const tab = getActiveTab();
+    if (tab.slots.find((slot: { id: number; isModified: boolean }) => slot.id === id)?.isModified) {
+      pendingSlotAction = { kind: 'close', slotId: id };
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    finishClosePreviewSlot(id);
+  }
+
+  let pendingSlotAction: { kind: 'replace' | 'close'; slotId: number; path?: string } | null = $state(null);
+
+  function finishClosePreviewSlot(id: number) {
+    const tab = getActiveTab();
+    previewEditor?.clearTabCache(previewSlotKey(tab.id, id));
+    tabs.closeSlot(id);
+    restorePreviewSlot();
+  }
+
+  async function resolveUnsavedSlot(choice: 'save' | 'discard') {
+    const action = pendingSlotAction;
+    if (!action) return;
+    const tab = getActiveTab();
+    const key = previewSlotKey(tab.id, action.slotId);
+    if (!await previewEditor?.resolveSlotChanges(key, choice)) return;
+    pendingSlotAction = null;
+    setShowUnsavedConfirm(false);
+    if (action.kind === 'close') {
+      finishClosePreviewSlot(action.slotId);
+    } else if (action.path) {
+      const snapshot = previewEditor?.getEditorStateSnapshot();
+      if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: false, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
+      previewEditor?.clearTabCache(key);
+      handleActivate(action.path);
+    }
+  }
+
+  function cancelUnsavedSlot() {
+    pendingSlotAction = null;
+    setShowUnsavedConfirm(false);
   }
 
   function handlePaste(force: boolean = false) {
@@ -963,9 +1063,9 @@
         <RecycleBinPanel
           bind:this={recycleBinPanel}
           onPreview={(id, item) => {
+            if (getSwitcherActive()) return;
             recycleBinPreviewItem = item;
-            selectedFile = id;
-            layout.setSelectedFile(id);
+            tabs.selectEntry(id, false);
           }}
           onExit={() => {
             layout.recycleBinExit();
@@ -984,6 +1084,7 @@
           onNavigate={handleNavigate}
           onSelect={handleSelect}
           onActivate={handleActivate}
+      onActivateNew={handleActivateNew}
           onSwitchPanel={handleSwitchPanel}
           onFullscreen={handleFullscreenEditor}
           onNavigateUp={() => handleNavigate($layout.parentPath)}
@@ -1036,12 +1137,26 @@
           {/if}
         </div>
       {/if}
-      <PreviewEditor
+      <div class="preview-slot-bar">
+        <div class="preview-slot-list">
+          {#each displayedTab.slots as slot (slot.id)}
+            <button class="preview-slot-tab" class:active={slot.id === displayedTab.activeSlotId} title={slot.filePath ?? 'Empty preview'} onclick={() => switchPreviewSlot(slot.id)}>{slot.filePath?.split(/[/\\]/).pop() ?? 'Empty preview'}{#if slot.isModified || (slot.id === displayedTab.activeSlotId && previewEditor?.getIsModified())} ●{/if}</button>
+            <button class="preview-slot-close" aria-label="Close preview" title="Close preview (Ctrl+U)" onclick={() => closePreviewSlot(slot.id)}>×</button>
+          {/each}
+          <button class="preview-slot-add" aria-label="New preview" title="New preview (Ctrl+N)" onclick={() => createPreviewSlot()}>+</button>
+        </div>
+        <span class="preview-slot-mode">{previewEditor?.getModeLabel() ?? 'PREVIEW'}</span>
+        <button class="preview-slot-control" title="Toggle outline" onclick={() => previewEditor?.toggleOutline()}>☰</button>
+        <button class="preview-slot-control" title="Cycle layout (Ctrl+W m)" onclick={togglePreviewLayout}>▣</button>
+      </div>
+      <div class="preview-slot-body"><PreviewEditor
         bind:this={previewEditor}
+        hideHeader={true}
         filePath={selectedFile}
         selectedEntryIsDir={selectedFileIsDir}
-        currentTabId={$activeTab.id}
-        previewTabId={getSwitcherActive() ? getSwitcherSelectionId() : $activeTab.id}
+        currentTabId={displayedTab.id}
+        slotId={displayedTab.activeSlotId}
+        previewTabId={displayedTab.id}
         activeColumn={$layout.activeColumn}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
@@ -1050,7 +1165,20 @@
         batchRenameTempPath={batchRenameTempPath}
         onBatchRenameSave={handleBatchRenameSave}
         onBatchRenameCancel={handleBatchRenameCancel}
-      />
+      /></div>
+      {#if displayedTab.selectionPreview?.visible}
+        <div class="selection-overlay-shell">
+          <div class="selection-overlay-content">
+            <SelectionPreviewOverlay
+              workspaceId={displayedTab.id}
+              path={displayedTab.selectionPreview.path}
+              isDirectory={displayedTab.selectionPreview.isDirectory}
+              archivePath={$layout.archiveState?.archivePath ?? null}
+              recycleItem={$layout.recycleBinMode ? recycleBinPreviewItem : null}
+            />
+          </div>
+        </div>
+      {/if}
     </div>
     </div>
 
@@ -1158,6 +1286,10 @@
       onJumpToPdfPage: (p) => previewEditor?.jumpToPdfPage(p),
       onTabNew: handleTabNew,
       onTabClose: handleTabClose,
+      onSlotNew: () => createPreviewSlot(),
+      onSlotClose: () => closePreviewSlot(getActiveTab().activeSlotId),
+      onSlotNext: () => switchPreviewSlot(getActiveTab().slots[(getActiveTab().slots.findIndex((slot: { id: number }) => slot.id === getActiveTab().activeSlotId) + 1) % getActiveTab().slots.length].id),
+      onSlotPrev: () => switchPreviewSlot(getActiveTab().slots[(getActiveTab().slots.findIndex((slot: { id: number }) => slot.id === getActiveTab().activeSlotId) - 1 + getActiveTab().slots.length) % getActiveTab().slots.length].id),
       onSetProjectTreeRoot: setProjectTreeRoot,
       getPreviewEditor: () => previewEditor,
       getCurrentDirectoryPanel: () => currentDirectoryPanel,
@@ -1182,11 +1314,11 @@
   <ConfirmModal
     visible={getShowUnsavedConfirm()}
     title="Unsaved changes"
-    fileName={selectedFile?.split(/[/\\]/).pop() || ''}
+    fileName={(pendingSlotAction ? getActiveTab().slots.find((slot: { id: number }) => slot.id === pendingSlotAction?.slotId)?.filePath : selectedFile)?.split(/[/\\]/).pop() || ''}
     buttons={[
-      { key: 'w', label: 'rite', action: handleUnsavedSave, style: 'primary' },
-      { key: 'q!', label: 'uit', action: handleUnsavedDiscard, style: 'danger' },
-      { key: 'C', label: 'ancel', action: handleUnsavedCancel },
+      { key: 'w', label: 'rite', action: () => pendingSlotAction ? resolveUnsavedSlot('save') : handleUnsavedSave(), style: 'primary' },
+      { key: 'q!', label: 'uit', action: () => pendingSlotAction ? resolveUnsavedSlot('discard') : handleUnsavedDiscard(), style: 'danger' },
+      { key: 'C', label: 'ancel', action: () => pendingSlotAction ? cancelUnsavedSlot() : handleUnsavedCancel() },
     ]}
   />
 
@@ -1266,6 +1398,21 @@
     gap: 1px;
     background-color: var(--border);
   }
+
+  .selection-overlay-shell { position: absolute; inset: 32px 0 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg-primary); }
+  .preview-slot-bar { position: relative; z-index: 11; height: 32px; display: flex; align-items: center; background: var(--bg-secondary); border-bottom: 1px solid var(--border); gap: 4px; padding: 0 6px; }
+  .preview-slot-list { display: flex; align-items: center; flex: 1; min-width: 0; overflow-x: auto; }
+  .preview-slot-tab, .preview-slot-close, .preview-slot-add, .preview-slot-control { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; }
+  .preview-slot-tab { padding: 4px 6px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .preview-slot-tab.active { color: var(--text-primary); border-bottom: 2px solid var(--accent); }
+  .preview-slot-close, .preview-slot-add, .preview-slot-control { padding: 4px 6px; }
+  .preview-slot-mode { color: var(--text-muted); font-size: 10px; }
+  .preview-slot-body { height: calc(100% - 32px); }
+  .selection-slot-bar { height: 32px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .selection-indicator { color: var(--text-muted); }
+  .selection-slot-tab { border: 0; background: transparent; color: var(--text-primary); cursor: pointer; font: inherit; }
+  .selection-overlay-content { position: relative; flex: 1; min-height: 0; }
+  .preview-panel { position: relative; }
 
   .panel {
     background-color: var(--bg-primary);

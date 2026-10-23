@@ -36,6 +36,10 @@
       onJumpToPdfPage: (page: number) => void;
       onTabNew: () => void;
       onTabClose: () => void;
+      onSlotNew: () => void;
+      onSlotClose: () => void;
+      onSlotNext: () => void;
+      onSlotPrev: () => void;
       onSetProjectTreeRoot: (path: string) => Promise<void>;
       getPreviewEditor: () => any;
       getCurrentDirectoryPanel: () => any;
@@ -65,6 +69,10 @@
     { name: 'Help', action: () => { visible = false; actions.onToggleHelp(); } },
     { name: 'Tab: New', action: () => actions.onTabNew() },
     { name: 'Tab: Close', action: () => actions.onTabClose() },
+    { name: 'Preview: New', action: () => actions.onSlotNew() },
+    { name: 'Preview: Close', action: () => actions.onSlotClose() },
+    { name: 'Preview: Next', action: () => actions.onSlotNext() },
+    { name: 'Preview: Previous', action: () => actions.onSlotPrev() },
     { name: 'Tab: Swap Next', action: () => tabs.swapTab(1) },
     { name: 'Tab: Swap Prev', action: () => tabs.swapTab(-1) },
   ];

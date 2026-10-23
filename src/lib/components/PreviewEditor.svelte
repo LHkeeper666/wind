@@ -31,10 +31,13 @@
   import VimOverlay from './VimOverlay.svelte';
   import PreviewPane from './PreviewPane.svelte';
   import type { FileEntry } from '$lib/types/file-explorer';
+  import { previewSlotKey } from '$lib/utils/preview-slot-key';
 
   let {
     filePath = null,
     currentTabId = 0,
+    slotId = 1,
+    hideHeader = false,
     previewTabId = undefined,
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
@@ -48,6 +51,8 @@
   }: {
     filePath: string | null;
     currentTabId?: number;
+    slotId?: number;
+    hideHeader?: boolean;
     previewTabId?: number;
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
@@ -62,10 +67,11 @@
 
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
   // Keep preview state keyed by that target tab instead of the origin tab.
-  let renderTabId = $derived(previewTabId ?? currentTabId);
+  let renderTabId = $derived(previewSlotKey(previewTabId ?? currentTabId, slotId));
   type PdfSession = { tabId: number; path: string; dimensions: import('$lib/utils/pdf-shared').PdfPageDimensions[]; count: number; size: number; title: string | null; panel?: PdfPreviewPanel; lastUsed: number };
   let pdfSessions = $state<PdfSession[]>([]);
   let pdfReadyPath = $state<string | null>(null);
+  let pdfError = $state<string | null>(null);
   const INACTIVE_PDF_BUDGET = 96 * 1024 * 1024;
 
   function removePdfSession(tabId: number) {
@@ -109,6 +115,9 @@
       ? pdfSessions.find(item => item.tabId === renderTabId && item.path === filePath)
       : undefined;
     pdfState.pdfPreviewPanel = session?.panel;
+    if (session?.panel && get(layout).activeColumn === 'preview' && document.activeElement === panelElement) {
+      requestAnimationFrame(() => session.panel?.focusPanel());
+    }
   });
 
   const tocState = createMarkdownTocState({
@@ -236,6 +245,50 @@
     removePdfSession(tabId);
     previewPane?.clearSlot(tabId);
     destroyEditorSession(tabId);
+  }
+
+  export async function resolveSlotChanges(tabId: number, choice: 'save' | 'discard'): Promise<boolean> {
+    const current = tabId === renderTabId;
+    const cached = current ? null : tabCache.get(tabId);
+    const path = current ? filePath : cached?.filePath;
+    const draft = current ? content : cached?.content;
+    const original = current ? savedContent : cached?.savedContent;
+    if (!path || draft === undefined || original === undefined) return false;
+    if (choice === 'save') {
+      try {
+        if (current && archiveEditPath && archiveEditInternalPath) {
+          await invoke('archive_write_file', {
+            archivePath: archiveEditPath,
+            internalPath: archiveEditInternalPath,
+            content: Array.from(new TextEncoder().encode(draft)),
+          });
+        } else {
+          await invoke('write_file', { path, content: draft });
+          const meta = await invoke<{ modified: number }>('get_file_metadata', { path }).catch(() => null);
+          if (meta && current) fileWatcher.setFileMtime(meta.modified);
+          if (meta && cached) cached.fileMtime = meta.modified;
+        }
+      } catch (error) {
+        onToast(`Failed to save: ${error}`);
+        return false;
+      }
+    }
+    if (choice === 'discard') {
+      const view = textEditorHost?.getEditorSession(tabId)?.view;
+      if (view && view.state.doc.toString() !== original) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: original } });
+      }
+    }
+    if (current) {
+      content = choice === 'save' ? draft : original;
+      savedContent = content;
+      isModified = false;
+    } else if (cached) {
+      cached.content = choice === 'save' ? draft : original;
+      cached.savedContent = cached.content;
+      cached.isModified = false;
+    }
+    return true;
   }
 
   export function cacheTabState(tabId: number) {
@@ -444,6 +497,11 @@
 
   export function getMode(): string { return mode; }
   export function getIsModified(): boolean { return isModified; }
+  export function getModeLabel(): string { return mode === 'editor-insert' ? 'INSERT' : mode === 'editor-normal' ? 'NORMAL' : 'PREVIEW'; }
+  export function toggleOutline(): void {
+    if (filePath && isPdfFile(filePath)) pdfState.togglePdfToc();
+    else tocState.setTocOpen(!tocState.getTocOpen());
+  }
 
   function handlePanelFocus() {
     if (vimOverlay?.getOutputVisible()) return;
@@ -527,6 +585,7 @@
   async function loadFile(path: string) {
     const gen = ++loadGeneration;
     pdfReadyPath = null;
+    pdfError = null;
     pdfState.pdfPreviewPanel = undefined;
     const oldPdfSession = pdfSessions.find(session => session.tabId === renderTabId);
     if (oldPdfSession && oldPdfSession.path !== path) removePdfSession(renderTabId);
@@ -565,6 +624,10 @@
       isModified = cached.isModified;
       pdfState.fromCacheSnapshot(cached);
       pdfReadyPath = isPdfFile(path) ? path : null;
+      if (isPdfFile(path) && pdfState.getPdfPageDimensions().length === 0) {
+        if (!await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) pdfError = 'Failed to load PDF';
+        if (gen !== loadGeneration) return;
+      }
       tocState.fromCacheSnapshot(cached);
       fileWatcher.setFileMtime(cached.fileMtime);
       previewPane?.setPendingTocSelectedIndex(cached.tocSelectedIndex);
@@ -708,6 +771,7 @@
         })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       if (await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) pdfReadyPath = path;
+      else if (gen === loadGeneration) pdfError = 'Failed to load PDF';
       return;
     }
 
@@ -843,7 +907,7 @@
   aria-label="Preview/Editor"
   tabindex="0"
 >
-  <div class="panel-header">
+  {#if !hideHeader}<div class="panel-header">
     <span class="panel-title">{batchRenameTempPath ? 'Batch Rename' : mode === 'global-normal' ? 'Preview' : 'Editor'}</span>
     {#if batchRenameTempPath}
       <span class="file-name">:w to rename, :q! to cancel</span>
@@ -898,11 +962,11 @@
         ☰
       </button>
     {/if}
-  </div>
+  </div>{/if}
 
   <div class="panel-content">
     {#if filePath && isPdfFile(filePath) && mode === 'global-normal' && !pdfSessions.some(session => session.tabId === renderTabId && session.path === filePath)}
-      <div class="pdf-loading">Loading PDF...</div>
+      <div class="pdf-loading">{pdfError ?? 'Loading PDF...'}</div>
     {/if}
     {#if pdfSessions.length > 0}
       <div class="pdf-with-toc" class:inactive={!filePath || !isPdfFile(filePath) || mode !== 'global-normal' || !pdfSessions.some(session => session.tabId === renderTabId && session.path === filePath)}>

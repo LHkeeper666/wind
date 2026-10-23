@@ -40,6 +40,9 @@ interface KeyboardDeps {
   focusPanel: (panel: 'parent' | 'current' | 'preview' | 'terminal') => void;
   handleTabNew: () => void;
   handleTabClose: () => void;
+  createPreviewSlot: () => void;
+  closePreviewSlot: () => void;
+  switchPreviewSlotRelative: (delta: number) => void;
   handleTabSwitchByIndex: (index: number) => void;
   handlePaste: (force?: boolean) => void;
   showToast: (msg: string) => void;
@@ -405,6 +408,21 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     waitingForGKey = false;
     layout.clearKeyPrefix();
     if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
+  }
+
+  // Preview slots use direct Ctrl shortcuts; event.code keeps comma/period
+  // independent of the character produced by the active keyboard layout.
+  if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
+    && !waitingForWindowKey && !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
+    && get(layout).fullscreenViewer === 'none') {
+    if (event.code === 'KeyN' || event.code === 'KeyU' || event.code === 'Comma' || event.code === 'Period') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'KeyN') deps.createPreviewSlot();
+      else if (event.code === 'KeyU') deps.closePreviewSlot();
+      else deps.switchPreviewSlotRelative(event.code === 'Comma' ? -1 : 1);
+      return;
+    }
   }
 
   // Ctrl+W prefix for vim-style window navigation
