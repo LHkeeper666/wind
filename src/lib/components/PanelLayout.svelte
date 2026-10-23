@@ -89,6 +89,8 @@
   let showTransfer: boolean = $state(false);
   let fileSearchHomeDir: string = $state('');
   let zoomLevel: number = $state(1);
+  // Keep preview tabs compact above 100% while their text follows panel zoom.
+  let previewSlotScale = $derived(zoomLevel > 1 ? (1 + (zoomLevel - 1) * 0.5) / zoomLevel : 1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
   let fullscreenEditor: FullscreenEditor | undefined = $state(undefined);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
@@ -1119,6 +1121,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="panel preview-panel"
+      style={`--preview-slot-scale: ${previewSlotScale}; --preview-slot-height: ${32 * previewSlotScale}px`}
       bind:this={previewPanel}
       class:active={$layout.activeColumn === 'preview'}
       onclick={() => focusPanel('preview')}
@@ -1408,16 +1411,16 @@
     background-color: var(--border);
   }
 
-  .selection-overlay-shell { position: absolute; inset: 32px 0 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg-primary); }
-  .preview-slot-bar { position: relative; z-index: 11; height: 32px; display: flex; align-items: center; background: var(--bg-secondary); border-bottom: 1px solid var(--border); }
+  .selection-overlay-shell { position: absolute; inset: var(--preview-slot-height) 0 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg-primary); }
+  .preview-slot-bar { position: relative; z-index: 11; height: var(--preview-slot-height); display: flex; align-items: center; background: var(--bg-secondary); border-bottom: 1px solid var(--border); }
   .preview-slot-list { display: flex; align-items: stretch; align-self: stretch; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; font-family: var(--font-mono); }
-  .preview-slot-tab { display: flex; align-items: center; gap: 4px; flex: 1 1 0; min-width: 80px; max-width: 250px; height: 100%; padding: 0 12px; border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; font: 11px var(--font-mono); white-space: nowrap; }
+  .preview-slot-tab { display: flex; align-items: center; gap: 4px; flex: 1 1 0; min-width: calc(80px * var(--preview-slot-scale)); max-width: calc(250px * var(--preview-slot-scale)); height: 100%; padding: 0 calc(12px * var(--preview-slot-scale)); border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; font: 11px var(--font-mono); white-space: nowrap; }
   .preview-slot-tab:hover { background: var(--bg-hover); color: var(--text-secondary); }
   .preview-slot-tab.active { background: var(--bg-primary); color: var(--text-primary); }
   .preview-slot-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .preview-slot-modified { flex: none; color: var(--warning); }
   .preview-slot-control { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; padding: 4px 6px; font: inherit; }
-  .preview-slot-body { height: calc(100% - 32px); }
+  .preview-slot-body { height: calc(100% - var(--preview-slot-height)); }
   .selection-slot-bar { height: 32px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
   .selection-indicator { color: var(--text-muted); }
   .selection-slot-tab { border: 0; background: transparent; color: var(--text-primary); cursor: pointer; font: inherit; }

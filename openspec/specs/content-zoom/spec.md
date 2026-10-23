@@ -59,3 +59,8 @@ The system SHALL apply the same zoom level to parent directory panel, current di
 #### Scenario: Multiple panels share zoom level
 - **WHEN** the user changes the zoom level
 - **THEN** all three panels (.parent-panel, .current-panel, .preview-panel) reflect the same zoom level
+
+#### Scenario: Preview tabs remain compact when zooming in
+- **WHEN** the user increases the zoom level above 100%
+- **THEN** the preview slot bar and tab dimensions grow at half the panel zoom rate while their text continues to follow the panel zoom level
+- **AND** the preview content and selection overlay remain aligned below the slot bar
