@@ -44,6 +44,7 @@ interface KeyboardDeps {
   createPreviewSlot: () => void;
   closePreviewSlot: () => void;
   switchPreviewSlotRelative: (delta: number) => void;
+  swapPreviewSlotRelative: (delta: number) => void;
   handleTabSwitchByIndex: (index: number) => void;
   handlePaste: (force?: boolean) => void;
   showToast: (msg: string) => void;
@@ -215,6 +216,21 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   }
 
   const target = event.target as HTMLElement | null;
+  // Handle focus restoration before panel-specific key handling.
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
+    && event.code === 'Quote'
+    && !isTerminalInputTarget(event.target)) {
+    const currentLayout = get(layout);
+    const canRestore = !waitingForWindowKey && !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
+      && currentLayout.fullscreenViewer === 'none' && !currentLayout.fullscreenTerminalOpen;
+    if (canRestore) {
+      event.preventDefault();
+      event.stopPropagation();
+      deps.focusPanel(currentLayout.activeColumn);
+      deps.showToast(`Focus: ${currentLayout.activeColumn.toUpperCase()}`);
+    }
+    return;
+  }
   const isTerminalAltTabChord = event.altKey && !event.ctrlKey && !event.metaKey
     && !event.shiftKey && isSupportedAltTabCode(event.code) && isTerminalInputTarget(event.target);
   const l0 = get(layout);
@@ -329,19 +345,6 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     }
   }
 
-  // Ctrl+L to manually restore focus
-  if (event.ctrlKey && event.key === 'l' && !waitingForWindowKey) {
-    const l = get(layout);
-    const canRestore = !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-      && l.fullscreenViewer === 'none';
-    if (canRestore) {
-      event.preventDefault();
-      deps.focusPanel(l.activeColumn);
-      deps.showToast(`Focus: ${l.activeColumn.toUpperCase()}`);
-    }
-    return;
-  }
-
   // Ctrl+Shift+` to toggle fullscreen terminal
   if (event.ctrlKey && event.shiftKey && (event.key === '`' || event.key === '~')) {
     event.preventDefault();
@@ -416,13 +419,16 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   // independent of the character produced by the active keyboard layout.
   if (event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
     && !waitingForWindowKey && !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-    && get(layout).fullscreenViewer === 'none') {
-    if (event.code === 'KeyN' || event.code === 'KeyU' || event.code === 'Comma' || event.code === 'Period') {
+    && get(layout).fullscreenViewer === 'none' && !get(layout).fullscreenTerminalOpen
+    && !isTerminalInputTarget(event.target)) {
+    if (event.code === 'KeyN' || event.code === 'KeyU' || event.code === 'KeyH'
+      || event.code === 'KeyL' || event.code === 'Comma' || event.code === 'Period') {
       event.preventDefault();
       event.stopPropagation();
       if (event.code === 'KeyN') deps.createPreviewSlot();
       else if (event.code === 'KeyU') deps.closePreviewSlot();
-      else deps.switchPreviewSlotRelative(event.code === 'Comma' ? -1 : 1);
+      else if (event.code === 'KeyH' || event.code === 'KeyL') deps.switchPreviewSlotRelative(event.code === 'KeyH' ? -1 : 1);
+      else deps.swapPreviewSlotRelative(event.code === 'Comma' ? -1 : 1);
       return;
     }
   }

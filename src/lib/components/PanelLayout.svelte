@@ -223,8 +223,10 @@
       switchPreviewSlotRelative: (delta) => {
         const tab = getActiveTab();
         const index = tab.slots.findIndex((slot: { id: number }) => slot.id === tab.activeSlotId);
-        switchPreviewSlot(tab.slots[(index + delta + tab.slots.length) % tab.slots.length].id);
+        if (index < 0 || tab.slots.length < 2) return;
+        switchPreviewSlot(tab.slots[(index + delta + tab.slots.length) % tab.slots.length].id, true);
       },
+      swapPreviewSlotRelative: (delta) => tabs.swapActiveSlot(delta),
       handleTabSwitchByIndex,
       handlePaste,
       showToast,
@@ -641,20 +643,21 @@
     if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: snapshot.isModified, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
   }
 
-  function restorePreviewSlot() {
+  function restorePreviewSlot(prepareFocus = true) {
     const tab = getActiveTab();
     const slot = tab.slots.find((item: { id: number }) => item.id === tab.activeSlotId);
     selectedFile = slot?.filePath ?? null;
     selectedFileIsDir = false;
     layout.setSelectedFile(selectedFile);
-    previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), selectedFile, slot?.editorMode ?? 'global-normal');
+    if (prepareFocus) previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), selectedFile, slot?.editorMode ?? 'global-normal');
   }
 
-  function switchPreviewSlot(id: number) {
+  function switchPreviewSlot(id: number, fromKeyboard = false) {
+    const keepCurrentFocus = fromKeyboard && $layout.activeColumn === 'current';
     if (id !== getActiveTab().activeSlotId) savePreviewSlot();
-    tabs.switchSlot(id);
-    restorePreviewSlot();
-    focusPanel('preview');
+    tabs.switchSlot(id, keepCurrentFocus);
+    restorePreviewSlot(!keepCurrentFocus);
+    if (!keepCurrentFocus) focusPanel('preview');
   }
 
   function createPreviewSlot(path: string | null = null) {
@@ -1090,7 +1093,7 @@
           bind:this={currentDirectoryPanel}
           type="current"
           path={$layout.currentPath}
-          selectedPath={selectedFile}
+          selectedPath={displayedTab.selectionPreview?.visible ? displayedTab.selectionPreview.path : selectedFile}
           onNavigate={handleNavigate}
           onSelect={handleSelect}
           onActivate={handleActivate}

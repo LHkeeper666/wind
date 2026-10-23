@@ -26,31 +26,31 @@
 - **THEN** 系统将焦点 fallback 到 preview panel 容器本身
 - **AND** 后续键盘事件可被 preview panel 接收
 
-### Requirement: Ctrl+L 手动恢复焦点
-用户按 Ctrl+L 时，系统 SHALL 将焦点恢复到 `layout.activeColumn` 对应的面板，并显示 toast 提示。
+### Requirement: Ctrl+' 手动恢复焦点
+用户按 `Ctrl+'` 时，系统 SHALL 将焦点恢复到 `layout.activeColumn` 对应的面板，并显示 toast 提示。
 
-#### Scenario: 正常面板状态下按 Ctrl+L
-- **WHEN** 用户在任意面板（非终端 insert 模式）按下 Ctrl+L
+#### Scenario: 正常面板状态下按 Ctrl+'
+- **WHEN** 用户在任意面板（非终端 insert 模式）按下 `Ctrl+'`
 - **AND** 命令面板和文件搜索均未打开
 - **AND** 无全屏 overlay 打开
 - **THEN** 系统调用 `focusPanel(activeColumn)`
 - **AND** 显示 toast `Focus: {activeColumn 大写}`
 
-#### Scenario: 终端 insert 模式下按 Ctrl+L
-- **WHEN** 用户在终端 insert 模式下按下 Ctrl+L
-- **THEN** 系统不拦截，Ctrl+L 透传给 shell（执行 clear）
+#### Scenario: 终端 insert 模式下按 Ctrl+'
+- **WHEN** 用户在终端 insert 模式下按下 `Ctrl+'`
+- **THEN** 系统不拦截该按键，透传给 shell
 
-#### Scenario: 命令面板打开时按 Ctrl+L
+#### Scenario: 命令面板打开时按 Ctrl+'
 - **WHEN** 命令面板处于打开状态
-- **THEN** 系统不拦截 Ctrl+L，不触发焦点恢复
+- **THEN** 系统不拦截 `Ctrl+'`，不触发焦点恢复
 
-#### Scenario: 文件搜索打开时按 Ctrl+L
+#### Scenario: 文件搜索打开时按 Ctrl+'
 - **WHEN** 文件搜索处于打开状态
-- **THEN** 系统不拦截 Ctrl+L，不触发焦点恢复
+- **THEN** 系统不拦截 `Ctrl+'`，不触发焦点恢复
 
-#### Scenario: 全屏模式下按 Ctrl+L
+#### Scenario: 全屏模式下按 Ctrl+'
 - **WHEN** 全屏编辑器/图片查看器/PDF 查看器/视频播放器任一打开
-- **THEN** 系统不拦截 Ctrl+L，不触发焦点恢复
+- **THEN** 系统不拦截 `Ctrl+'`，不触发焦点恢复
 
 ## ADDED Requirements
 

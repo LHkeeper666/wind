@@ -153,12 +153,28 @@ function createTabsStore() {
       }) }));
     },
 
-    switchSlot(id: number) {
+    switchSlot(id: number, preserveSelectionPreview = false) {
       update(state => ({ ...state, tabs: state.tabs.map(tab => {
         if (tab.id !== state.activeTabId) return tab;
         const slot = tab.slots.find(item => item.id === id);
-        return slot ? { ...tab, activeSlotId: id, selectedFile: slot.filePath, selectionPreview: null, editorMode: slot.editorMode, isModified: slot.isModified, previewScrollTop: slot.previewScrollTop, pdfCurrentPage: slot.pdfCurrentPage, tocOpen: slot.tocOpen } : tab;
+        return slot ? { ...tab, activeSlotId: id, selectedFile: slot.filePath, selectionPreview: preserveSelectionPreview ? tab.selectionPreview : null, editorMode: slot.editorMode, isModified: slot.isModified, previewScrollTop: slot.previewScrollTop, pdfCurrentPage: slot.pdfCurrentPage, tocOpen: slot.tocOpen } : tab;
       }) }));
+    },
+
+    swapActiveSlot(delta: number) {
+      update(state => {
+        const index = state.tabs.findIndex(tab => tab.id === state.activeTabId);
+        if (index < 0) return state;
+        const tab = state.tabs[index];
+        const slotIndex = tab.slots.findIndex(slot => slot.id === tab.activeSlotId);
+        const targetIndex = slotIndex + delta;
+        if (slotIndex < 0 || targetIndex < 0 || targetIndex >= tab.slots.length) return state;
+        const slots = [...tab.slots];
+        [slots[slotIndex], slots[targetIndex]] = [slots[targetIndex], slots[slotIndex]];
+        const tabs = [...state.tabs];
+        tabs[index] = { ...tab, slots };
+        return { ...state, tabs };
+      });
     },
 
     closeSlot(id: number) {

@@ -848,7 +848,6 @@
     if (mode !== 'global-normal') return;
     // PDF mode: let PdfPreviewPanel handle all non-modifier keys
     if (filePath && isPdfFile(filePath) && !event.ctrlKey && !event.altKey && !event.metaKey) return;
-    if (event.ctrlKey && event.code === 'KeyL' && isMarkdown && tocState.getTocHeadings().length > 0) { event.preventDefault(); event.stopPropagation(); focusToc(); return; }
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }
