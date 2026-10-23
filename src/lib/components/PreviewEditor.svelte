@@ -497,7 +497,11 @@
 
   export function getMode(): string { return mode; }
   export function getIsModified(): boolean { return isModified; }
-  export function getModeLabel(): string { return mode === 'editor-insert' ? 'INSERT' : mode === 'editor-normal' ? 'NORMAL' : 'PREVIEW'; }
+  export function getModeLabel(): string {
+    if (mode === 'editor-insert') return 'INSERT';
+    if (mode === 'editor-normal') return 'NORMAL';
+    return isTocFocused() ? 'TOC' : 'PREVIEW';
+  }
   export function toggleOutline(): void {
     if (filePath && isPdfFile(filePath)) pdfState.togglePdfToc();
     else tocState.setTocOpen(!tocState.getTocOpen());
