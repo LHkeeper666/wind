@@ -3,7 +3,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { layout } from '$lib/stores/layout';
-  import { logError } from '$lib/utils/log';
+  import { logDebug, logError, logInfo } from '$lib/utils/log';
   import type { VideoMeta, TocHeading } from '$lib/previewers';
   import { isTextFile, isImageFile, isPdfFile, isVideoFile, isArchiveFile } from '$lib/utils/file-types';
   import { EditorView } from 'codemirror';
@@ -293,13 +293,20 @@
 
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
+    const fileMtime = fileWatcher.getFileMtime();
+    const cacheDetails = `tabId=${tabId} renderTabId=${renderTabId} gen=${loadGeneration} path=${filePath} contentLen=${content.length} binary=${binaryContent !== null} size=${originalFileSize} mtime=${fileMtime} mode=${mode}`;
+    if (!content && !binaryContent && originalFileSize > 0 && isTextFile(filePath)) {
+      logInfo('file-load', `CACHE_EMPTY ${cacheDetails}`);
+    } else {
+      logDebug('file-load', `CACHE_SAVE ${cacheDetails}`);
+    }
     tabCache.set(tabId, {
       filePath, content, savedContent, binaryContent,
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, ...pdfState.toCacheSnapshot(), fileMtime: fileWatcher.getFileMtime(),
+      isModified, ...pdfState.toCacheSnapshot(), fileMtime,
       ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
     });
     const session = pdfSessions.find(item => item.tabId === tabId);
@@ -611,8 +618,15 @@
 
     const loadTabId = renderTabId;
     const cached = tabCache.get(loadTabId);
+    logDebug('file-load', `START tabId=${loadTabId} gen=${gen} path=${path} cache=${cached ? 'hit' : 'miss'} cachedPath=${cached?.filePath ?? '(none)'}`);
     if (cached && cached.filePath === path && !browsingArchive) {
       if (gen !== loadGeneration) return;
+      const cacheDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${cached.content.length} binary=${cached.binaryContent !== null} mtime=${cached.fileMtime} mode=${cached.mode}`;
+      if (!cached.content && !cached.binaryContent && isTextFile(path)) {
+        logInfo('file-load', `CACHE_RESTORE_EMPTY ${cacheDetails}`);
+      } else {
+        logDebug('file-load', `CACHE_RESTORE ${cacheDetails}`);
+      }
       // Bring cached slot to front FIRST to hide old tab's content immediately.
       // Slot retains its rendered content and scroll position from the previous visit.
       previewPane?.prepareForLoad();
@@ -666,7 +680,11 @@
       }
       fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
-        .then(async meta => { if (meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified)) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path); } })
+        .then(async meta => {
+          const shouldReload = meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified);
+          logDebug('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} size=${meta.size} mtime=${meta.modified} cachedMtime=${cached.fileMtime} reload=${shouldReload}`);
+          if (shouldReload) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path); }
+        })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       return;
     }
@@ -800,7 +818,16 @@
     // Text / binary
     {
       const result = await loadTextOrBinary(ctx, checkGen);
-      if ('aborted' in result) return;
+      if ('aborted' in result) {
+        logDebug('file-load', `ABORT tabId=${loadTabId} gen=${gen} currentGen=${loadGeneration} path=${path}`);
+        return;
+      }
+      const loadDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${result.content.length} binary=${result.binaryContent !== null} size=${result.originalFileSize} mtime=${result.fileMtime}`;
+      if (!result.content && !result.binaryContent && result.originalFileSize > 0 && isTextFile(path)) {
+        logInfo('file-load', `READ_EMPTY ${loadDetails}`);
+      } else {
+        logDebug('file-load', `READ_DONE ${loadDetails}`);
+      }
       content = result.content; binaryContent = result.binaryContent;
       readyTextContent = result.readyTextContent;
       originalFileSize = result.originalFileSize;
@@ -848,7 +875,7 @@
     if (mode !== 'global-normal') return;
     // PDF mode: let PdfPreviewPanel handle all non-modifier keys
     if (filePath && isPdfFile(filePath) && !event.ctrlKey && !event.altKey && !event.metaKey) return;
-    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
+    if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; } if (!content && originalFileSize > 0) { logInfo('file-load', `EDIT_BLOCKED_EMPTY tabId=${renderTabId} gen=${loadGeneration} path=${filePath} size=${originalFileSize} binary=${binaryContent !== null}`); onToast('文件加载中，请稍候'); return; } editorTargetLine = getVisibleLine(); mode = 'editor-normal'; }
     else if (event.code === 'KeyE' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); if (!filePath) { onToast('此文件类型不支持全屏查看'); return; } onFullscreen(); }
     else if (event.code === 'KeyJ' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(40); }
     else if (event.code === 'KeyK' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); scrollPreview(-40); }

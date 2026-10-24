@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { VideoMeta } from '$lib/previewers';
-import { logError } from './log';
+import { logError, logInfo } from './log';
 import type { FileEntry } from '$lib/types/file-explorer';
 import type { TextContentSnapshot } from '$lib/utils/tab-cache';
 import type { PdfPageDimensions } from '$lib/utils/pdf-shared';
@@ -216,7 +216,9 @@ export async function loadTextOrBinary(
     if (!checkGen()) return { aborted: true };
     originalFileSize = meta.size;
     fileMtime = meta.modified;
-  } catch { /* ignore */ }
+  } catch (error) {
+    logInfo('file-load', `METADATA_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${error}`);
+  }
 
   const usePartial = originalFileSize > MAX_PREVIEW_SIZE;
 
@@ -269,8 +271,9 @@ export async function loadTextOrBinary(
       savedContent: newContent,
       fileMtime,
     };
-  } catch {
+  } catch (error) {
     if (!checkGen()) return { aborted: true };
+    logInfo('file-load', `TEXT_READ_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${error}`);
     try {
       const base64 = usePartial
         ? await invoke<string>('read_binary_file_partial', { path: ctx.path, maxBytes: MAX_PREVIEW_SIZE })
@@ -280,8 +283,9 @@ export async function loadTextOrBinary(
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
-    } catch {
+    } catch (binaryError) {
       if (!checkGen()) return { aborted: true };
+      logInfo('file-load', `BINARY_FALLBACK_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${binaryError}`);
       return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
     }
   }
