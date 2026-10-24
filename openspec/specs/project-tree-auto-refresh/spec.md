@@ -4,12 +4,13 @@
 TBD - created by archiving change add-project-tree-auto-refresh. Update Purpose after archive.
 ## Requirements
 ### Requirement: 项目树自动刷新受影响分支
-系统 SHALL 在当前可见 Tab 的本地项目树模式中递归监听项目根目录，并对文件系统变更仅刷新受影响的已加载目录分支。监听 MUST 使用不锁定目录的后端实现（`FILE_SHARE_DELETE` 共享模式）。
+系统 SHALL 在当前可见 Tab 的本地项目树模式中递归监听项目根目录，并对文件系统变更仅刷新受影响的已加载目录分支。监听 MUST 使用不锁定目录的后端实现（`FILE_SHARE_DELETE` 共享模式）。刷新恢复选中路径时 MUST 不触发用户选择通知。
 
 #### Scenario: 已展开目录发生变更
 - **WHEN** 已展开目录中有文件被外部创建、删除、修改或重命名
 - **THEN** 系统在去抖后刷新该目录的直接子项
 - **AND** 保留有效的展开路径与选中路径
+- **AND** 不因恢复选中路径而显示新的选中预览层
 
 #### Scenario: 折叠目录发生变更
 - **WHEN** 未加载或折叠目录发生文件系统变更
@@ -25,6 +26,16 @@ TBD - created by archiving change add-project-tree-auto-refresh. Update Purpose 
 - **WHEN** 用户在 Windows 资源管理器中删除被监听项目树中的子目录
 - **THEN** 删除操作 SHALL 成功，不报"资源被占用"错误
 - **AND** 项目树在收到变更通知后刷新受影响分支
+
+#### Scenario: 保存正在编辑的 Markdown
+- **WHEN** 用户在项目模式编辑 Markdown 文件并执行 `:w`，文件变更触发项目树刷新
+- **THEN** 项目树保留有效的选中路径
+- **AND** 编辑器保持可见且保留编辑模式，不显示新的选中预览层
+
+#### Scenario: 手动刷新项目树
+- **WHEN** 用户在项目模式按 `R` 刷新项目树
+- **THEN** 系统保留有效的选中路径
+- **AND** 不因恢复选中路径而显示新的选中预览层
 
 ### Requirement: 自动刷新忽略高频生成目录
 系统 MUST 按大小写不敏感的目录名忽略 `.git`、`target`、`node_modules` 内的自动刷新事件，且 MUST 不隐藏这些目录或阻止手动刷新。

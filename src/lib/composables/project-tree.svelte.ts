@@ -232,7 +232,7 @@ export function createProjectTree(deps: ProjectTreeDeps): ProjectTreeAPI {
     if (!projectRoot) return false;
     const selectedPath = deps.getSelectedFile()?.path ?? null;
     await refreshLoadedTreeNode(projectRoot);
-    if (selectedPath) selectTreePathOrAncestor(selectedPath);
+    if (selectedPath) selectTreePathOrAncestor(selectedPath, { notify: 'silent' });
     markDirectorySynchronized(projectRoot.entry.path, version);
     return true;
   }
@@ -250,7 +250,7 @@ export function createProjectTree(deps: ProjectTreeDeps): ProjectTreeAPI {
       const node = findTreeNode(directory);
       if (node?.loaded) await loadTreeChildren(node, projectRestoreGeneration, true);
     }
-    if (selectedPath) selectTreePathOrAncestor(selectedPath);
+    if (selectedPath) selectTreePathOrAncestor(selectedPath, { notify: 'silent' });
   }
 
   function getProjectTreeState(): ProjectTreeState {
