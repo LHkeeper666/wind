@@ -101,6 +101,7 @@
 
   let files: FileEntry[] = $state([]);
   let isLoading: boolean = $state(false);
+  let loadingGen = 0;
   let errorMessage: string = $state('');
   let selectedIndex: number = $state(-1);
   let selectedPathInternal: string | null = $state(null);
@@ -464,8 +465,6 @@
     logInfo('tab-perf', `selectInitialEntry FALLBACK firstReal=${displayFiles[selectedIndex]?.name}`);
     if ($layout.activeColumn === 'current') onSelect(displayFiles[selectedIndex].path, displayFiles[selectedIndex].is_dir);
   }
-
-  let loadingGen = 0;
 
   function markDirectorySynchronized(dirPath: string, version?: number) {
     const directory = normalizeDirectoryKey(dirPath);
