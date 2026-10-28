@@ -32,6 +32,8 @@ export interface TabEditorCache {
   pdfScale: number;
   pdfScrollTop: number;
   fileMtime: number;
+  originalFileSize: number;
+  textLoadState: 'ready' | 'loading' | 'error' | 'transition';
   tocOpen: boolean;
   tocHeadings: TocHeading[];
   tocExpandedLines: number[];
@@ -39,6 +41,30 @@ export interface TabEditorCache {
   tocFocused: boolean;
   tocSelectedIndex: number;
   tocScrollTop: number;
+}
+
+export function isValidTextCache(entry: TabEditorCache): boolean {
+  if (entry.isModified) return true;
+  return entry.textLoadState === 'ready'
+    && !(entry.content === '' && entry.originalFileSize > 0);
+}
+
+export function shouldReloadCachedFile(entry: TabEditorCache, meta: { size: number; modified: number }, isText: boolean): boolean {
+  if (entry.isModified) return false;
+  return (isText && meta.size > 0 && entry.content === '' && entry.binaryContent === null)
+    || meta.modified !== entry.fileMtime;
+}
+
+export function isSamePreviewIdentity(
+  current: { tabId: number; path: string | null },
+  target: { tabId: number; path: string | null },
+): boolean {
+  return current.tabId === target.tabId && current.path === target.path;
+}
+
+export function textEditAction(state: 'loading' | 'ready' | 'error' | 'transition' | null): 'wait' | 'error' | 'edit' {
+  if (state === 'error') return 'error';
+  return state === 'ready' ? 'edit' : 'wait';
 }
 
 export function collectExpandedLines(headings: TocHeading[]): number[] {

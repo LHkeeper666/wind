@@ -59,6 +59,7 @@ export interface TextBinaryResult {
   originalFileSize: number;
   savedContent: string;
   fileMtime: number;
+  error?: string;
 }
 
 export type LoadResult =
@@ -235,7 +236,7 @@ export async function loadTextOrBinary(
       return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
     } catch {
       if (!checkGen()) return { aborted: true };
-      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: '读取二进制文件失败' };
     }
   }
 
@@ -258,7 +259,7 @@ export async function loadTextOrBinary(
         return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
       } catch {
         if (!checkGen()) return { aborted: true };
-        return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+        return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: '读取文件失败' };
       }
     }
 
@@ -286,7 +287,7 @@ export async function loadTextOrBinary(
     } catch (binaryError) {
       if (!checkGen()) return { aborted: true };
       logInfo('file-load', `BINARY_FALLBACK_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${binaryError}`);
-      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: `读取文件失败: ${error}` };
     }
   }
 }

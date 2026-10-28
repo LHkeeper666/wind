@@ -512,7 +512,10 @@
     // selectedFile. Must run synchronously before selectedFile assignment so
     // the filePath $effect-triggered loadFile sees mode=global-normal (no stale
     // editor content during async load). Do NOT move into setTimeout/rAF.
-    previewEditor?.deactivateTab();
+    const targetIdentity = { tabId: previewSlotKey(tab.id, tab.activeSlotId), path: tab.selectedFile };
+    if (!previewEditor?.isDisplaying(targetIdentity.tabId, targetIdentity.path)) {
+      previewEditor?.deactivateTab();
+    }
     // Disable project mode before path change so the DirectoryPanel's $effect.pre
     // always loads the new directory in normal mode. If the target tab is project
     // mode, it will be re-enabled after the path settles in tick().then.
