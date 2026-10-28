@@ -10,7 +10,8 @@ import {
 import {
   getEditorIndentPolicy,
   getEditorIndentUnit,
-} from '../src/lib/utils/editor-indent-policy.js';
+// @ts-ignore Node's type stripping requires the source extension.
+} from '../src/lib/utils/editor-indent-policy.ts';
 
 function assertEqual(actual, expected, message) {
   if (actual !== expected) {

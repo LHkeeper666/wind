@@ -12,7 +12,8 @@ import {
   isHardTabIndentPolicy,
   isLiteralTabInsertionPolicy,
   type EditorIndentPolicy,
-} from './editor-indent-policy';
+// @ts-ignore Node's type stripping requires the source extension in tests.
+} from './editor-indent-policy.ts';
 
 export const EDITOR_TAB_SIZE = 4;
 export type EditorTextKeyOptions = {
