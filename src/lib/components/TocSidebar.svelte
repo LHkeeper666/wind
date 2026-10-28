@@ -83,6 +83,14 @@
   export function focus(): boolean {
     return inner?.focus() ?? false;
   }
+
+  export function getScrollTop(): number {
+    return inner?.getScrollTop() ?? 0;
+  }
+
+  export function setScrollTop(top: number): void {
+    inner?.setScrollTop(top);
+  }
 </script>
 
 <OutlineSidebar

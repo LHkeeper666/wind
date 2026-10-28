@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { tick } from 'svelte';
 import type PdfPreviewPanel from '$lib/components/PdfPreviewPanel.svelte';
 import type PdfTocSidebar from '$lib/components/PdfTocSidebar.svelte';
 import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
@@ -14,12 +15,14 @@ export interface PdfCacheData {
   pdfTocFocused: boolean;
   pdfTocExpanded: string[];
   pdfTocSelectedIndex: number;
+  pdfTocScrollTop: number;
   pdfScale: number;
   pdfScrollTop: number;
 }
 
 interface PdfStateDeps {
   getFilePath: () => string | null;
+  isPreviewActive?: () => boolean;
   onToast: (msg: string) => void;
 }
 
@@ -50,15 +53,18 @@ export interface PdfStateAPI {
   jumpToPage: (page: number, y: number) => void;
   focusPanel: () => boolean;
   focusToc: (silent?: boolean) => void;
+  cancelTocFocus: () => void;
   reset: () => void;
   applyPendingScroll: () => void;
 
   // Load integration
   loadPdfInfo: (path: string, gen: number) => Promise<boolean>;
+  invalidatePendingLoads: (gen: number) => void;
 
   // Cache integration
   toCacheSnapshot: () => PdfCacheData;
   fromCacheSnapshot: (data: PdfCacheData) => void;
+  restoreReadingPosition: (data: PdfCacheData) => void;
 }
 
 export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
@@ -72,6 +78,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   let pdfTocFocused: boolean = $state(false);
   let pdfTocExpanded: string[] = $state([]);
   let pdfTocSelectedIndex: number = $state(-1);
+  let pdfTocScrollTop = 0;
   let pdfScale: number = 0;
   let tocSidebarStatePending = false;
   let pdfTocSidebar: PdfTocSidebar | undefined = $state(undefined);
@@ -80,6 +87,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   // Track generation to discard stale async results
   let lastLoadGen: number = 0;
   let pendingPdfScrollTop: number = -1;
+  let scrollRequest = 0;
   // Invalidates in-flight focus retries when focus moves elsewhere.
   let focusRequest: number = 0;
 
@@ -110,6 +118,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   function applyTocSidebarState() {
     if (!tocSidebarStatePending || !pdfTocSidebar) return;
     pdfTocSidebar.setSelectedIndex(pdfTocSelectedIndex);
+    pdfTocSidebar.setScrollTop(pdfTocScrollTop);
     tocSidebarStatePending = false;
   }
 
@@ -124,6 +133,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
   function focusToc(silent = false) {
     const request = ++focusRequest;
+    const path = deps.getFilePath();
     pdfTocFocused = true;
     if (!silent) deps.onToast('Focus: TOC');
     // The sidebar may not be mounted yet on the tick right after a tab restore.
@@ -131,9 +141,9 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     // stay on an element belonging to the previous tab.
     let attempts = 0;
     const tryFocus = () => {
-      if (request !== focusRequest) return;
+      if (request !== focusRequest || deps.getFilePath() !== path || deps.isPreviewActive?.() === false) return;
       if (pdfTocSidebar?.focus()) return;
-      if (++attempts >= 10) {
+      if (++attempts >= 120) {
         pdfTocFocused = false;
         pdfPreviewPanel?.focusPanel();
         return;
@@ -154,6 +164,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     pdfTocFocused = false;
     pdfTocExpanded = [];
     pdfTocSelectedIndex = -1;
+    pdfTocScrollTop = 0;
     pdfScale = 0;
     pdfPreviewPanel?.resetScale();
     tocSidebarStatePending = false;
@@ -162,6 +173,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
   async function loadPdfInfo(path: string, gen: number): Promise<boolean> {
     lastLoadGen = gen;
+    scrollRequest++;
     try {
       const info = await invoke<{
         page_count: number;
@@ -178,6 +190,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
       pdfPageDimensions = info.page_dimensions;
       pdfTocExpanded = [];
       pdfTocSelectedIndex = -1;
+      pdfTocScrollTop = 0;
       pdfScale = 0;
       pdfPreviewPanel?.resetScale();
       tocSidebarStatePending = true;
@@ -210,6 +223,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   function toCacheSnapshot(): PdfCacheData {
     if (pdfTocSidebar) {
       pdfTocSelectedIndex = pdfTocSidebar.getSelectedIndex();
+      pdfTocScrollTop = pdfTocSidebar.getScrollTop();
     }
     if (pdfPreviewPanel) pdfScale = pdfPreviewPanel.getScale();
     return {
@@ -221,6 +235,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
       pdfTocFocused,
       pdfTocExpanded: [...pdfTocExpanded],
       pdfTocSelectedIndex,
+      pdfTocScrollTop,
       pdfScale,
       pdfScrollTop: pdfPreviewPanel?.getScrollTop() ?? 0,
     };
@@ -235,24 +250,46 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     pdfTocFocused = data.pdfTocFocused ?? false;
     pdfTocExpanded = data.pdfTocExpanded ?? [];
     pdfTocSelectedIndex = data.pdfTocSelectedIndex ?? -1;
+    pdfTocScrollTop = data.pdfTocScrollTop ?? 0;
     pdfScale = data.pdfScale ?? 0;
     tocSidebarStatePending = true;
-    applyTocSidebarState();
+    void tick().then(applyTocSidebarState);
     applyPdfScale();
-    focusRequest++;
     pendingPdfScrollTop = data.pdfScrollTop ?? 0;
+    scrollRequest++;
+  }
+
+  function restoreReadingPosition(data: PdfCacheData) {
+    pdfCurrentPage = Math.min(Math.max(0, data.pdfCurrentPage), Math.max(0, pdfPageCount - 1));
+    pdfTocOpen = data.pdfTocOpen;
+    pdfTocFocused = data.pdfTocFocused;
+    pdfTocExpanded = [...data.pdfTocExpanded];
+    pdfTocSelectedIndex = data.pdfTocSelectedIndex;
+    pdfTocScrollTop = data.pdfTocScrollTop ?? 0;
+    tocSidebarStatePending = true;
+    void tick().then(applyTocSidebarState);
+    pendingPdfScrollTop = Math.max(0, data.pdfScrollTop);
+    scrollRequest++;
   }
 
   function applyPendingScroll() {
     if (pendingPdfScrollTop < 0) return;
     const top = pendingPdfScrollTop;
     pendingPdfScrollTop = -1;
-    // Double rAF ensures PdfPreviewPanel has completed initScale and layout
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        pdfPreviewPanel?.setScrollTop(top);
-      });
-    });
+    const request = ++scrollRequest;
+    // Wait for the rebuilt panel and its first layout before restoring position.
+    let attempts = 0;
+    const apply = () => {
+      if (request !== scrollRequest) return;
+      if (pdfPreviewPanel && attempts > 0) {
+        pdfPreviewPanel.setScrollTop(top);
+      } else if (++attempts < 120) {
+        requestAnimationFrame(apply);
+      } else {
+        pendingPdfScrollTop = top;
+      }
+    };
+    requestAnimationFrame(apply);
   }
 
   return {
@@ -279,7 +316,6 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
     setPage(page: number) { pdfCurrentPage = page; },
     setTocFocused(focused: boolean) {
-      if (!focused) focusRequest++;
       pdfTocFocused = focused;
     },
 
@@ -289,10 +325,13 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     jumpToPage,
     focusPanel,
     focusToc,
+    cancelTocFocus() { focusRequest++; pdfTocFocused = false; },
     reset,
     applyPendingScroll,
     loadPdfInfo,
+    invalidatePendingLoads(gen: number) { lastLoadGen = gen; scrollRequest++; focusRequest++; },
     toCacheSnapshot,
     fromCacheSnapshot,
+    restoreReadingPosition,
   };
 }

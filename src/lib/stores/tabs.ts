@@ -9,6 +9,7 @@ export interface PreviewSlot {
   previewScrollTop: number;
   pdfCurrentPage: number;
   tocOpen: boolean;
+  focusTarget?: 'content' | 'editor' | 'outline';
 }
 
 export interface SelectionPreview {
@@ -43,6 +44,7 @@ export interface TabState {
   isModified: boolean;
   pdfCurrentPage: number;
   activeColumn: 'parent' | 'current' | 'preview' | 'terminal';
+  focusTarget?: 'parent' | 'current' | 'content' | 'editor' | 'outline' | 'terminal';
   tocOpen: boolean;
   leftMode: 'auto' | 'manual';
   leftPath: string;
@@ -190,6 +192,13 @@ function createTabsStore() {
     saveActiveSlot(snapshot: Pick<PreviewSlot, 'editorMode' | 'isModified' | 'previewScrollTop' | 'pdfCurrentPage' | 'tocOpen'>) {
       update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
         ? { ...tab, slots: tab.slots.map(slot => slot.id === tab.activeSlotId ? { ...slot, ...snapshot } : slot) } : tab) }));
+    },
+
+    saveFocusTarget(target: NonNullable<TabState['focusTarget']>) {
+      update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
+        ? { ...tab, focusTarget: target, slots: target === 'content' || target === 'editor' || target === 'outline'
+          ? tab.slots.map(slot => slot.id === tab.activeSlotId ? { ...slot, focusTarget: target } : slot)
+          : tab.slots } : tab) }));
     },
 
     createTab(inheritPath?: string) {

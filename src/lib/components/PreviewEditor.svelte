@@ -18,6 +18,7 @@
   import { handleInsertModeShiftTab, handleInsertModeTab } from '$lib/utils/editor-text-keys';
   import {
     type TextContentSnapshot,
+    type TabEditorCache,
     TabCacheManager,
     collectExpandedLines,
     restoreExpandedLines,
@@ -48,6 +49,7 @@
     onBatchRenameCancel = () => {},
     activeColumn = '',
     selectedEntryIsDir = null,
+    restoreFocusTarget = undefined as 'outline' | 'content' | 'editor' | undefined,
   }: {
     filePath: string | null;
     currentTabId?: number;
@@ -63,6 +65,7 @@
     onBatchRenameCancel?: () => void;
     activeColumn?: string;
     selectedEntryIsDir?: boolean | null;
+    restoreFocusTarget?: 'outline' | 'content' | 'editor';
   } = $props();
 
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
@@ -92,6 +95,7 @@
 
   const pdfState = createPdfState({
     getFilePath: () => filePath,
+    isPreviewActive: () => get(layout).activeColumn === 'preview',
     onToast,
   });
 
@@ -116,13 +120,14 @@
       : undefined;
     pdfState.pdfPreviewPanel = session?.panel;
     if (session?.panel && get(layout).activeColumn === 'preview' && document.activeElement === panelElement) {
-      requestAnimationFrame(() => session.panel?.focusPanel());
+      requestAnimationFrame(() => {
+        if (document.activeElement === panelElement && !pdfState.getPdfTocFocused()
+            && renderTabId === session.tabId && filePath === session.path) session.panel?.focusPanel();
+      });
     }
   });
 
-  const tocState = createMarkdownTocState({
-    getPanelElement: () => panelElement,
-  });
+  const tocState = createMarkdownTocState();
 
   const fileWatcher = createFileWatcher({
     getFilePath: () => filePath,
@@ -134,6 +139,8 @@
       const b = filePath.replace(/\//g, '\\').toLowerCase();
       if (a !== b) return;
       if (mode !== 'global-normal') return;
+      cacheTabState(renderTabId);
+      const reading = tabCache.get(renderTabId);
       tabCache.delete(renderTabId);
       removePdfSession(renderTabId);
       previewPane?.clearActiveSlot();
@@ -141,7 +148,7 @@
         await invoke('invalidate_pdf_document', { path: filePath })
           .catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`));
       }
-      await loadFile(filePath);
+      await loadFile(filePath, reading);
     },
   });
 
@@ -233,6 +240,7 @@
   let directEdit = $derived(!!filePath && !binaryContent && !isDirectory && isDirectEditorFile(filePath));
   let editorTargetLine: number = -1;
   let pendingEditorPos: number = -1;
+  let pendingEditorSelection: { anchor: number; head: number } | null = null;
   let pendingEditorScrollTop: number = -1;
   let pendingRestoreScrollRatio: number = $state(-1);
 
@@ -304,10 +312,13 @@
       filePath, content, savedContent, binaryContent,
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
+      editorSelectionAnchor: editorView?.state.selection.main.anchor ?? 0,
+      editorSelectionHead: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
       isModified, ...pdfState.toCacheSnapshot(), fileMtime,
       ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
+      tocScrollTop: previewPane?.getTocScrollTop() ?? 0,
     });
     const session = pdfSessions.find(item => item.tabId === tabId);
     if (session) session.lastUsed = performance.now();
@@ -325,7 +336,7 @@
     mode = 'global-normal';
     // TOC focus is not persisted per tab, and unmounting the focused sidebar
     // does not reliably fire blur, so clear it before the next tab restores.
-    pdfState.setTocFocused(false);
+    pdfState.cancelTocFocus();
   }
 
   export function getEditorStateSnapshot(): {
@@ -453,6 +464,7 @@
       }
       if (untrack(() => activateEditorSession(renderTabId, textSnapshot.path))) {
         pendingEditorPos = -1;
+        pendingEditorSelection = null;
         pendingEditorScrollTop = -1;
         if (editorTargetLine >= 0 && editorView) { textEditorHost?.moveCursorToLine(editorTargetLine); editorTargetLine = -1; }
         if (changed && activeColumn === 'preview') focusActiveEditor();
@@ -463,6 +475,7 @@
           if (!textEditorHost?.hasSession(textSnapshot.tabId) || textEditorHost?.getEditorSession(textSnapshot.tabId)?.filePath !== textSnapshot.path) {
             untrack(() => initEditor(textSnapshot));
             pendingEditorPos = -1;
+            pendingEditorSelection = null;
             pendingEditorScrollTop = -1;
             if (activeColumn === 'preview') focusActiveEditor();
           }
@@ -580,7 +593,7 @@
       panelElement?.focus({ preventScroll: true });
       requestAnimationFrame(() => {
         if (mode === 'global-normal' && filePath && isPdfFile(filePath)
-            && get(layout).activeColumn === 'preview') {
+            && get(layout).activeColumn === 'preview' && !pdfState.getPdfTocFocused()) {
           pdfState.focusPanel();
         }
       });
@@ -593,8 +606,9 @@
   // handleTocFocusChange is now tocState.handleTocFocusChange
 
 
-  async function loadFile(path: string) {
+  async function loadFile(path: string, reading?: TabEditorCache) {
     const gen = ++loadGeneration;
+    pdfState.invalidatePendingLoads(gen);
     pdfReadyPath = null;
     pdfError = null;
     pdfState.pdfPreviewPanel = undefined;
@@ -617,6 +631,12 @@
     }
 
     const loadTabId = renderTabId;
+    const restoreOutlineAfterLoad = () => {
+      void tick().then(() => {
+        if (gen === loadGeneration && loadTabId === renderTabId && filePath === path
+            && restoreFocusTarget === 'outline' && activeColumn === 'preview') focusToc(true);
+      });
+    };
     const cached = tabCache.get(loadTabId);
     logDebug('file-load', `START tabId=${loadTabId} gen=${gen} path=${path} cache=${cached ? 'hit' : 'miss'} cachedPath=${cached?.filePath ?? '(none)'}`);
     if (cached && cached.filePath === path && !browsingArchive) {
@@ -645,10 +665,12 @@
       if (isPdfFile(path) && pdfState.getPdfPageDimensions().length === 0) {
         if (!await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) pdfError = 'Failed to load PDF';
         if (gen !== loadGeneration) return;
+        pdfState.restoreReadingPosition(cached);
       }
       tocState.fromCacheSnapshot(cached);
       fileWatcher.setFileMtime(cached.fileMtime);
       previewPane?.setPendingTocSelectedIndex(cached.tocSelectedIndex);
+      previewPane?.setPendingTocScrollTop(cached.tocScrollTop ?? 0);
       pendingTocExpanded = new Set(cached.tocExpandedLines);
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -660,8 +682,9 @@
         }
       }
       mode = cached.mode;
-      if (cached.mode !== 'global-normal' && cached.editorCursorPos > 0) {
+      if (cached.mode !== 'global-normal') {
         pendingEditorPos = cached.editorCursorPos;
+        pendingEditorSelection = { anchor: cached.editorSelectionAnchor ?? cached.editorCursorPos, head: cached.editorSelectionHead ?? cached.editorCursorPos };
         pendingEditorScrollTop = cached.editorScrollTop;
       }
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
@@ -671,9 +694,10 @@
       if (isPdfFile(path)) {
         // PDF: use double-rAF via applyPendingScroll to wait for PdfPreviewPanel initScale
         pdfState.applyPendingScroll();
-      } else if (cached.previewScrollTop > 0) {
+      } else if (cached.previewScrollTop >= 0) {
         const savedScroll = cached.previewScrollTop;
         requestAnimationFrame(() => {
+          if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
           const slot = previewPane?.getActiveSlot();
           slot?.scrollTo(0, savedScroll);
         });
@@ -681,11 +705,13 @@
       fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number }>('get_file_metadata', { path })
         .then(async meta => {
+          if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
           const shouldReload = meta.modified !== cached.fileMtime && (mode === 'global-normal' || !cached.isModified);
           logDebug('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} size=${meta.size} mtime=${meta.modified} cachedMtime=${cached.fileMtime} reload=${shouldReload}`);
-          if (shouldReload) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path); }
+          if (shouldReload) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path, cached); }
         })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
+      restoreOutlineAfterLoad();
       return;
     }
 
@@ -697,7 +723,19 @@
     readyTextContent = null;
     previewPane?.bumpContentGeneration();
     pendingRestoreScrollTop = -1;
+    pendingEditorPos = -1;
+    pendingEditorSelection = null;
+    pendingEditorScrollTop = -1;
+    if (reading?.filePath === path) {
+      pendingRestoreScrollTop = Math.max(0, reading.previewScrollTop);
+      previewPane?.setPendingTocSelectedIndex(reading.tocSelectedIndex);
+      previewPane?.setPendingTocScrollTop(reading.tocScrollTop ?? 0);
+      pendingTocExpanded = new Set(reading.tocExpandedLines);
+      tocState.setTocOpen(reading.tocOpen);
+      tocState.setTocFocused(reading.tocFocused);
+    }
     previewPane?.setPendingTocSelectedIndex(-1);
+    previewPane?.setPendingTocScrollTop(-1);
     pendingTocExpanded = null;
     isModified = false;
     isDirectory = false;
@@ -792,8 +830,15 @@
           if (gen === loadGeneration && filePath === path) fileWatcher.setFileMtime(meta.modified);
         })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
-      if (await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) pdfReadyPath = path;
+      if (await pdfState.loadPdfInfo(path, gen) && gen === loadGeneration) {
+        pdfReadyPath = path;
+        if (reading?.filePath === path) {
+          pdfState.restoreReadingPosition(reading);
+          pdfState.applyPendingScroll();
+        }
+      }
       else if (gen === loadGeneration) pdfError = 'Failed to load PDF';
+      restoreOutlineAfterLoad();
       return;
     }
 
@@ -845,6 +890,7 @@
       mode = 'global-normal'; renderTrigger++;
     }
     fileWatcher.startWatching(path);
+    restoreOutlineAfterLoad();
   }
 
   function scrollPreview(deltaY: number, deltaX: number = 0) {
@@ -1054,6 +1100,8 @@
       isDirectory={isDirectory}
       renderTrigger={renderTrigger}
       mode={mode}
+      activeColumn={activeColumn}
+      {restoreFocusTarget}
       onTocJump={(_line) => {}}
       onTocFocusChange={tocState.handleTocFocusChange}
       onRenderComplete={() => {
@@ -1083,6 +1131,7 @@
       savedContent={savedContent}
       mode={mode}
       pendingEditorPos={pendingEditorPos}
+      pendingEditorSelection={pendingEditorSelection}
       pendingEditorScrollTop={pendingEditorScrollTop}
       editorTargetLine={editorTargetLine}
       activeColumn={activeColumn}

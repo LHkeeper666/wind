@@ -131,7 +131,6 @@
       if (pendingSelectedIndex < items.length) {
         selectedId = items[pendingSelectedIndex].node.id;
         pendingSelectedIndex = -1;
-        scrollToSelected();
       }
       return;
     }
@@ -151,7 +150,7 @@
   export function setSelectedIndex(index: number): void {
     if (index < 0) return;
     if (index < flatItems.length) {
-      selectIndex(index, true);
+      selectIndex(index);
     } else {
       pendingSelectedIndex = index;
     }
@@ -174,6 +173,15 @@
     if (!panelElement) return false;
     panelElement.focus({ preventScroll: true });
     return document.activeElement === panelElement;
+  }
+
+  export function getScrollTop(): number {
+    return panelElement?.querySelector('.toc-content')?.scrollTop ?? 0;
+  }
+
+  export function setScrollTop(top: number): void {
+    const content = panelElement?.querySelector('.toc-content');
+    if (content) content.scrollTop = Math.max(0, top);
   }
 
   // Focus moving between the panel and its own search input is not a focus

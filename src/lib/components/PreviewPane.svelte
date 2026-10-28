@@ -28,6 +28,8 @@
     isDirectory = false,
     renderTrigger = 0,
     mode = 'global-normal' as 'global-normal' | 'editor-normal' | 'editor-insert',
+    activeColumn = '',
+    restoreFocusTarget = undefined as 'outline' | 'content' | 'editor' | undefined,
     onTocJump = (line: number) => {},
     onTocFocusChange = (focused: boolean) => {},
     onRenderComplete = () => {},
@@ -53,6 +55,8 @@
     isDirectory: boolean;
     renderTrigger: number;
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
+    activeColumn?: string;
+    restoreFocusTarget?: 'outline' | 'content' | 'editor';
     onTocJump?: (line: number) => void;
     onTocFocusChange?: (focused: boolean) => void;
     onRenderComplete?: () => void;
@@ -68,6 +72,8 @@
   let _renderRequestId: number = 0;
   let _contentGeneration: number = 0;
   let pendingTocSelectedIndex: number = $state(-1);
+  let pendingTocScrollTop: number = $state(-1);
+  let tocFocusRequest = 0;
   let renderInFlight: boolean = false;
   let renderQueued: boolean = false;
   let scrollObserver: IntersectionObserver | undefined;
@@ -283,19 +289,11 @@
     if (slotRendered && slotPath === path
         && slotMtime === String(snapMtime)) {
       logInfo('PreviewPane', `renderPreviewOnce SKIP (cached) path=${path.split(/[/\\]/).pop()}`);
+      slot.dataset.renderVersion = String(tabVersion);
       const savedScroll = pendingRestoreScrollTop;
       pendingRestoreScrollTop = -1;
-      if (savedScroll >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll; }); }
+      if (savedScroll >= 0) { requestAnimationFrame(() => { if (isCurrentTabRender(tabId, path, tabVersion)) slot.scrollTop = savedScroll; }); }
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
-      if (tocOpen && (pendingTocSelectedIndex >= 0 || tocFocused)) {
-        requestAnimationFrame(() => {
-          if (pendingTocSelectedIndex >= 0 && tocSidebar) {
-            tocSidebar.setSelectedTocIndex(pendingTocSelectedIndex);
-            pendingTocSelectedIndex = -1;
-          }
-          if (tocFocused) tocSidebar?.focus();
-        });
-      }
       return;
     }
 
@@ -317,7 +315,8 @@
     else { delete slot.dataset.originalFileSize; }
 
     const previewContent: string | ArrayBuffer = snapBinary ?? snapContent;
-    await getPreviewRouter().preview(path, previewContent, slot);
+    await getPreviewRouter().preview(path, previewContent, slot,
+      () => requestId === _renderRequestId && isCurrentTabRender(tabId, path, tabVersion) && snapGen === _contentGeneration);
     if (requestId !== _renderRequestId || !isCurrentTabRender(tabId, path, tabVersion)) {
       logInfo('PreviewPane', `renderPreviewOnce ABORT (requestId/version mismatch) path=${path.split(/[/\\]/).pop()}`);
       return;
@@ -334,19 +333,10 @@
 
     const savedScroll2 = pendingRestoreScrollTop;
     pendingRestoreScrollTop = -1;
-    if (savedScroll2 >= 0) { requestAnimationFrame(() => { slot.scrollTop = savedScroll2; }); }
+    if (savedScroll2 >= 0) { requestAnimationFrame(() => { if (isCurrentTabRender(tabId, path, tabVersion)) slot.scrollTop = savedScroll2; }); }
     if (pendingTocExpanded && tocHeadings.length > 0) {
       restoreExpandedLines(tocHeadings, pendingTocExpanded);
       pendingTocExpanded = null; tocHeadings = [...tocHeadings];
-    }
-    if (tocOpen && (pendingTocSelectedIndex >= 0 || tocFocused)) {
-      requestAnimationFrame(() => {
-        if (pendingTocSelectedIndex >= 0 && tocSidebar) {
-          tocSidebar.setSelectedTocIndex(pendingTocSelectedIndex);
-          pendingTocSelectedIndex = -1;
-        }
-        if (tocFocused) tocSidebar?.focus();
-      });
     }
     if (isMarkdown) { setupScrollObserver(); }
     onRenderComplete();
@@ -456,12 +446,23 @@
   }
 
   export function focusToc() {
+    const request = ++tocFocusRequest;
+    const tabId = renderTabId;
+    const path = filePath;
     tocFocused = true;
-    tocSidebar?.focus();
     onTocFocusChange(true);
+    let attempts = 0;
+    const tryFocus = () => {
+      if (request !== tocFocusRequest || renderTabId !== tabId || filePath !== path
+          || mode !== 'global-normal' || activeColumn !== 'preview') return;
+      if (tocSidebar?.focus()) return;
+      if (++attempts < 120) requestAnimationFrame(tryFocus);
+    };
+    tryFocus();
   }
 
   export function focusContent() {
+    tocFocusRequest++;
     tocFocused = false;
     onTocFocusChange(false);
     if (previewWithToc) {
@@ -478,9 +479,60 @@
     return tocSidebar?.getSelectedIndex() ?? -1;
   }
 
+  export function getTocScrollTop(): number {
+    return tocSidebar?.getScrollTop() ?? Math.max(0, pendingTocScrollTop);
+  }
+
+  export function setPendingTocScrollTop(top: number): void {
+    pendingTocScrollTop = top < 0 ? -1 : Math.max(0, top);
+  }
+
+  $effect(() => {
+    const sidebar = tocSidebar;
+    const top = pendingTocScrollTop;
+    const tabId = renderTabId;
+    const path = filePath;
+    if (!sidebar || top < 0 || !isMarkdown || !tocOpen || tocHeadings.length === 0) return;
+    void tick().then(() => {
+      if (renderTabId !== tabId || filePath !== path || pendingTocScrollTop !== top) return;
+      requestAnimationFrame(() => {
+        if (renderTabId !== tabId || filePath !== path || pendingTocScrollTop !== top) return;
+        sidebar.setScrollTop(top);
+        pendingTocScrollTop = -1;
+      });
+    });
+  });
+
   export function setPendingTocSelectedIndex(index: number) {
     pendingTocSelectedIndex = index;
   }
+
+  $effect(() => {
+    const sidebar = tocSidebar;
+    const index = pendingTocSelectedIndex;
+    const tabId = renderTabId;
+    const path = filePath;
+    if (!sidebar || index < 0 || !isMarkdown || !tocOpen || tocHeadings.length === 0) return;
+    void tick().then(() => {
+      if (tocSidebar !== sidebar || renderTabId !== tabId || filePath !== path || pendingTocSelectedIndex !== index) return;
+      sidebar.setSelectedTocIndex(index);
+      pendingTocSelectedIndex = -1;
+    });
+  });
+
+  $effect(() => {
+    const sidebar = tocSidebar;
+    const tabId = renderTabId;
+    const path = filePath;
+    if (!sidebar || !isMarkdown || !tocOpen || tocHeadings.length === 0
+        || restoreFocusTarget !== 'outline' || activeColumn !== 'preview' || mode !== 'global-normal') return;
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (tocSidebar === sidebar && renderTabId === tabId && filePath === path
+            && restoreFocusTarget === 'outline' && activeColumn === 'preview' && mode === 'global-normal') sidebar.focus();
+      });
+    });
+  });
 
   function handleTocFocusChangeInternal(focused: boolean) {
     tocFocused = focused;

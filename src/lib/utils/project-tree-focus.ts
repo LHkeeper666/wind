@@ -23,3 +23,8 @@ export function getCollapseSelectionTarget(
   if (!selectedPath) return null;
   return isProjectTreePathWithin(selectedPath, collapsedDirPath) ? collapsedDirPath : selectedPath;
 }
+
+/** Restoring a tab selection must not open a new selection preview. */
+export function projectSelectionNotify(skipAutoSelect: boolean | undefined): 'silent' | 'immediate' {
+  return skipAutoSelect ? 'silent' : 'immediate';
+}

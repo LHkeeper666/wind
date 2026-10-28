@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { clampEditorSelection } from '$lib/utils/workspace-restore';
   import { onMount, onDestroy, tick } from 'svelte';
   import { EditorView } from 'codemirror';
   import { logDebug } from '$lib/utils/log';
@@ -49,6 +50,7 @@
     savedContent = '',
     mode = 'global-normal' as 'global-normal' | 'editor-normal' | 'editor-insert',
     pendingEditorPos = -1,
+    pendingEditorSelection = null as { anchor: number; head: number } | null,
     pendingEditorScrollTop = -1,
     editorTargetLine = -1,
     activeColumn = '',
@@ -74,6 +76,7 @@
     savedContent: string;
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
     pendingEditorPos: number;
+    pendingEditorSelection: { anchor: number; head: number } | null;
     pendingEditorScrollTop: number;
     editorTargetLine: number;
     activeColumn: string;
@@ -139,8 +142,11 @@
     onClipboardBridgeChange(clipboardBridge);
     onEditorViewChange(editorView);
     let savedTopToRestore: number | null = null;
-    if (pendingEditorPos >= 0 && pendingEditorPos <= session.view.state.doc.length) {
-      session.view.dispatch({ selection: { anchor: pendingEditorPos } });
+    if (pendingEditorSelection) {
+      const length = session.view.state.doc.length;
+      session.view.dispatch({ selection: clampEditorSelection(pendingEditorSelection, length) });
+    } else if (pendingEditorPos >= 0) {
+      session.view.dispatch({ selection: { anchor: Math.min(pendingEditorPos, session.view.state.doc.length) } });
     }
     if (pendingEditorScrollTop >= 0) {
       savedTopToRestore = pendingEditorScrollTop;
@@ -378,7 +384,8 @@
     const restorePos = pendingEditorPos >= 0 ? pendingEditorPos : 0;
     const state = EditorState.create({
       doc: initialContent, extensions,
-      selection: pendingEditorPos >= 0 ? { anchor: pendingEditorPos }
+      selection: pendingEditorSelection ? clampEditorSelection(pendingEditorSelection, initialContent.length)
+        : pendingEditorPos >= 0 ? { anchor: Math.min(pendingEditorPos, initialContent.length) }
         : editorTargetLine >= 0 ? { anchor: getPosAtLine(initialContent, editorTargetLine) }
         : undefined,
     });

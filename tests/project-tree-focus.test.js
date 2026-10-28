@@ -2,7 +2,9 @@ import {
   getCollapseSelectionTarget,
   isProjectTreePathWithin,
   projectTreePathKey,
-} from '../src/lib/utils/project-tree-focus.js';
+  projectSelectionNotify,
+// @ts-ignore Node's type stripping requires the source extension.
+} from '../src/lib/utils/project-tree-focus.ts';
 
 /**
  * @param {unknown} actual
@@ -17,6 +19,8 @@ function assertEqual(actual, expected, message) {
 
 assertEqual(projectTreePathKey('C:/Work/App/'), 'c:\\work\\app', 'normalizes slashes and trailing separators');
 assertEqual(projectTreePathKey('C:'), 'c:\\', 'keeps drive roots addressable');
+assertEqual(projectSelectionNotify(true), 'silent', 'restoring a project tab does not reopen its selection preview');
+assertEqual(projectSelectionNotify(false), 'immediate', 'interactive project selection still previews');
 
 assertEqual(
   isProjectTreePathWithin('C:\\repo\\src\\file.ts', 'C:\\repo\\src'),

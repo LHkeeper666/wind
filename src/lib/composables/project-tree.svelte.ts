@@ -6,6 +6,7 @@ import {
   getCollapseSelectionTarget,
   isProjectTreePathWithin as isTreePathWithin,
   projectTreePathKey as treePathKey,
+  projectSelectionNotify,
 } from '$lib/utils/project-tree-focus';
 import type { FileEntry, TreeNode, SelectOptions, ProjectTreeState } from '$lib/types/file-explorer';
 
@@ -202,6 +203,7 @@ export function createProjectTree(deps: ProjectTreeDeps): ProjectTreeAPI {
 
   async function setProjectMode(enabled: boolean, state?: ProjectTreeState): Promise<boolean> {
     if (!enabled) {
+      ++projectRestoreGeneration;
       projectMode = false;
       projectRoot = null;
       deps.clearSelection();
@@ -221,8 +223,9 @@ export function createProjectTree(deps: ProjectTreeDeps): ProjectTreeAPI {
     for (const expandedPath of state?.expandedPaths ?? []) {
       const node = findTreeNode(expandedPath);
       if (node?.entry.is_dir) await expandTreeNode(node, generation);
+      if (generation !== projectRestoreGeneration) return false;
     }
-    if (state?.selectedPath) selectTreePathOrAncestor(state.selectedPath);
+    if (state?.selectedPath) selectTreePathOrAncestor(state.selectedPath, { notify: projectSelectionNotify(state.skipAutoSelect) });
     else if (!state?.skipAutoSelect) deps.selectByIndex(0);
     if (state?.scrollOffset) deps.setScrollOffset(state.scrollOffset);
     return true;

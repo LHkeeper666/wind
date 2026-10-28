@@ -15,6 +15,8 @@ export interface TabEditorCache {
   binaryContent: ArrayBuffer | null;
   mode: 'global-normal' | 'editor-normal' | 'editor-insert';
   editorCursorPos: number;
+  editorSelectionAnchor: number;
+  editorSelectionHead: number;
   editorScrollTop: number;
   previewScrollTop: number;
   isModified: boolean;
@@ -26,6 +28,7 @@ export interface TabEditorCache {
   pdfTocFocused: boolean;
   pdfTocExpanded: string[];
   pdfTocSelectedIndex: number;
+  pdfTocScrollTop: number;
   pdfScale: number;
   pdfScrollTop: number;
   fileMtime: number;
@@ -35,6 +38,7 @@ export interface TabEditorCache {
   tocActiveLine: number;
   tocFocused: boolean;
   tocSelectedIndex: number;
+  tocScrollTop: number;
 }
 
 export function collectExpandedLines(headings: TocHeading[]): number[] {

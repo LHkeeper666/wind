@@ -10,10 +10,6 @@ export interface MarkdownTocCacheData {
   tocSelectedIndex: number;
 }
 
-interface MarkdownTocDeps {
-  getPanelElement: () => HTMLElement | undefined;
-}
-
 export interface MarkdownTocAPI {
   // Getters
   getTocHeadings: () => TocHeading[];
@@ -40,7 +36,7 @@ export interface MarkdownTocAPI {
   fromCacheSnapshot: (data: MarkdownTocCacheData) => void;
 }
 
-export function createMarkdownTocState(deps: MarkdownTocDeps): MarkdownTocAPI {
+export function createMarkdownTocState(): MarkdownTocAPI {
   let tocHeadings: TocHeading[] = $state([]);
   let tocActiveLine: number = $state(-1);
   let tocFocused: boolean = $state(false);
@@ -57,10 +53,6 @@ export function createMarkdownTocState(deps: MarkdownTocDeps): MarkdownTocAPI {
 
   function handleTocFocusChange(focused: boolean) {
     tocFocused = focused;
-    if (!focused) {
-      const el = deps.getPanelElement();
-      if (el) el.focus();
-    }
   }
 
   function reset() {

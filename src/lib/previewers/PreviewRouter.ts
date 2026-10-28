@@ -30,7 +30,7 @@ export class PreviewRouter {
     return this.previewers.find(p => p.match(filePath)) || null;
   }
 
-  async preview(filePath: string, content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
+  async preview(filePath: string, content: string | ArrayBuffer, container: HTMLElement, isCurrent: () => boolean = () => true): Promise<void> {
     const oldPreviewer = this.currentPreviewer;
 
     // Find matching previewer
@@ -48,7 +48,7 @@ export class PreviewRouter {
     const normalizedPath = filePath.replace(/\//g, '\\').toLowerCase();
     const lastNormalized = this.lastFilePath.replace(/\//g, '\\').toLowerCase();
     if (previewer === oldPreviewer && normalizedPath === lastNormalized && previewer.update) {
-      previewer.onHeadings = this.onHeadings;
+      previewer.onHeadings = headings => { if (isCurrent()) this.onHeadings?.(headings); };
       await previewer.update(content, container);
       return;
     }
@@ -65,7 +65,7 @@ export class PreviewRouter {
         staging.dataset[key] = container.dataset[key];
       }
     }
-    previewer.onHeadings = this.onHeadings;
+    previewer.onHeadings = headings => { if (isCurrent()) this.onHeadings?.(headings); };
     try {
       await previewer.render(content, staging);
     } catch (err) {
@@ -75,7 +75,8 @@ export class PreviewRouter {
 
     // Staleness check: if container.dataset.filePath changed during the async render
     // (e.g. user selected a different file), skip the swap to prevent stale content flash.
-    if (container.dataset.filePath !== filePath) {
+    if (container.dataset.filePath !== filePath || !isCurrent()) {
+      if (this.lastFilePath === filePath) this.lastFilePath = '';
       logInfo('PreviewRouter', `SWAP_SKIP stale path: expected=${filePath} actual=${container.dataset.filePath || '(empty)'}`);
       staging.remove();
       return;
