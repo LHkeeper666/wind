@@ -503,14 +503,7 @@
         loadedFiles = await invoke<FileEntry[]>('list_drives');
       } else if (archiveState) {
         // Archive mode: list entries within the archive
-        const archiveEntries = await invokeArchiveWithOptionalPassword<FileEntry[]>(
-          'read_archive_directory',
-          {
-            archivePath: archiveState.archivePath,
-            internalPath: archiveState.internalPath,
-          },
-          'password'
-        );
+        const archiveEntries = await readArchiveDirectory(archiveState.archivePath, archiveState.internalPath);
         if (archiveEntries === null) {
           if (archiveState.internalPath === '') {
             layout.clearArchiveState();

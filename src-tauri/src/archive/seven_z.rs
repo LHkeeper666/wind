@@ -128,6 +128,31 @@ pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> R
     result.ok_or_else(|| format!("Entry not found in archive: {}", internal))
 }
 
+pub(crate) fn preview_file(path: &str, internal: &str, password: Option<&str>) -> Result<super::ArchivePreview, String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut reader = sevenz_rust::SevenZReader::new(&mut file, file_len, make_7z_password(password))
+        .map_err(|e| map_7z_error(path, e))?;
+    let target = normalize_internal(internal);
+    let entry = reader.archive().files.iter().find(|entry| {
+        entry.name.replace('\\', "/").trim_end_matches('/') == target && !entry.is_directory
+    }).ok_or_else(|| format!("Entry not found in archive: {}", internal))?;
+    if let Some(result) = super::preview_size(entry.size) { return Ok(result); }
+    let mut result = None;
+    reader.for_each_entries(|entry, input| {
+        if entry.name.replace('\\', "/").trim_end_matches('/') == target && !entry.is_directory {
+            result = Some(super::read_preview(input, entry.size).map_err(|message| sevenz_rust::Error::io(std::io::Error::other(message)))?);
+            return Ok(false);
+        }
+        if !entry.is_directory {
+            std::io::copy(input, &mut std::io::sink()).map_err(sevenz_rust::Error::io)?;
+        }
+        Ok(true)
+    }).map_err(|e| map_7z_error(path, e))?;
+    remember_archive_password(path, password);
+    result.ok_or_else(|| format!("Entry not found in archive: {}", internal))
+}
+
 pub(crate) fn extract_files(
     path: &str,
     internal_paths: &[String],

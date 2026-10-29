@@ -151,6 +151,30 @@ fn read_file_impl<R: Read>(
     Err(format!("Entry not found in archive: {}", internal))
 }
 
+fn preview_file_impl<R: Read>(archive: &mut tar::Archive<R>, path: &str, internal: &str) -> Result<super::ArchivePreview, String> {
+    let entries = archive.entries().map_err(|e| format!("Failed to read tar: {}", e))?;
+    let target = normalize_internal(internal);
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let name = decode_tar_name(path, &entry);
+        if name.replace('\\', "/").trim_end_matches('/') == target {
+            if entry.header().entry_type().is_dir() { return Err(format!("'{}' is a directory, not a file", internal)); }
+            let size = entry.size();
+            return super::read_preview(&mut entry, size);
+        }
+    }
+    Err(format!("Entry not found in archive: {}", internal))
+}
+
+pub(crate) fn preview_file(path: &str, internal: &str, gz: bool) -> Result<super::ArchivePreview, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    if gz {
+        preview_file_impl(&mut tar::Archive::new(flate2::read::GzDecoder::new(file)), path, internal)
+    } else {
+        preview_file_impl(&mut tar::Archive::new(file), path, internal)
+    }
+}
+
 pub(crate) fn read_file(path: &str, internal: &str) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|e| {
         log::error!("[archive] read_file failed: {}", e);

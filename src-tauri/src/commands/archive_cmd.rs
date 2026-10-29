@@ -26,10 +26,10 @@ pub async fn read_archive_file(
     archive_path: String,
     internal_path: String,
     password: Option<String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<crate::archive::ArchivePreview, String> {
     log::info!("[archive_cmd] read_archive_file: {}/{}", archive_path, internal_path);
     tokio::task::spawn_blocking(move || {
-        crate::archive::read_file_bytes(&archive_path, &internal_path, password)
+        crate::archive::preview_file(&archive_path, &internal_path, password)
     })
     .await
     .map_err(|e| {

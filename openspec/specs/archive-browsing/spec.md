@@ -4,7 +4,7 @@
 TBD - created by archiving change archive-browsing-and-management. Update Purpose after archive.
 ## Requirements
 ### Requirement: Archive virtual directory navigation
-The system SHALL allow users to enter a supported archive file (.zip, .tar, .tar.gz, .7z, .rar) as a virtual directory using the `l` key, and navigate within it using the same `j/k/l/h` keybindings as regular directories.
+The system SHALL allow users to enter a supported archive file (.zip, .tar, .tar.gz, .7z, .rar) as a virtual directory using the `l` key, and navigate within it using the same `j/k/l/h` keybindings as regular directories. Archive entry content preview SHALL respect the backend size limit.
 
 #### Scenario: Enter archive with l key
 - **WHEN** user presses `l` on a supported archive file in the current panel
@@ -33,20 +33,30 @@ The system SHALL allow users to enter a supported archive file (.zip, .tar, .tar
 - **AND** the path bar updates accordingly
 
 #### Scenario: Preview file within archive
-- **WHEN** user presses `l` or Enter on a file entry within an archive
+- **WHEN** user presses `l` or Enter on a file entry within a ZIP, TAR, TAR.GZ, or 7Z archive whose uncompressed size is at most 10 MiB and whose size can be bounded during reading
 - **THEN** the file content is loaded and displayed in the preview panel
-- **AND** file type detection and previewer routing works identically to regular files
+- **AND** file type detection and previewer routing work as for regular files, except for video entries
 
 #### Scenario: Preview encrypted file within archive
-- **WHEN** user presses `l` or Enter on a file entry within an encrypted `zip`, `7z`, or `rar` archive
+- **WHEN** user presses `l` or Enter on a file entry within an encrypted `zip`, `7z`, or `rar` archive and its content is eligible for preview
 - **THEN** the system shows the password prompt if the backend requires credentials
 - **AND** after a correct password, the file content is loaded and displayed in the preview panel
-- **AND** file type detection and previewer routing works identically to regular files
+- **AND** the same content size limit applies
 
 #### Scenario: Large file preview limited
-- **WHEN** a file within an archive exceeds 10MB
-- **THEN** the system reads only the first 1MB for preview
-- **AND** displays a note that the preview is truncated
+- **WHEN** a file within an archive exceeds 10 MiB of uncompressed content
+- **THEN** the system SHALL NOT read or transmit the entry content for preview
+- **AND** the preview SHALL show the file type, available size, and a clear size-limit message
+
+#### Scenario: Video entry preview
+- **WHEN** user selects a video entry within an archive
+- **THEN** the system SHALL NOT request the complete video bytes for preview
+- **AND** the preview SHALL show available file information and instruct the user to extract the video before opening it in the system player
+
+#### Scenario: RAR entry preview
+- **WHEN** user selects a file entry within a RAR archive
+- **THEN** the system SHALL show file information and an extract-to-open instruction without reading its content
+- **AND** RAR directory browsing and full extraction SHALL remain available
 
 #### Scenario: Refresh archive directory
 - **WHEN** user presses `R` in archive mode
@@ -219,3 +229,19 @@ The system SHALL cache successful archive passwords in memory until the applicat
 - **WHEN** a file has an extension not in the supported set (zip, tar, tar.gz, tgz, 7z, rar)
 - **THEN** the ArchivePreviewer SHALL NOT match the file
 - **AND** the file SHALL be handled by other previewers in the chain
+
+### Requirement: Archive preview content is bounded before allocation
+The archive preview backend MUST enforce a 10 MiB limit on the uncompressed bytes of a single entry before allocating or returning its content. This protection SHALL apply to all supported archive formats and to callers that invoke the preview command directly. A declared size alone MUST NOT allow unbounded output from a malformed entry. Formats without a bounded content reader, currently RAR, SHALL return a no-content placeholder for every entry.
+
+#### Scenario: Oversized entry requested directly
+- **WHEN** the archive preview command is called for an entry larger than 10 MiB
+- **THEN** it SHALL return a structured no-content result that identifies the size-limit reason
+- **AND** it SHALL NOT allocate or transmit the full entry bytes
+
+#### Scenario: Entry size cannot be safely bounded
+- **WHEN** an archive format or entry has no trustworthy size and its reader cannot enforce the output limit
+- **THEN** the backend SHALL return a no-content result before attempting an unbounded read
+
+#### Scenario: Extraction remains available
+- **WHEN** an archive entry is too large for content preview
+- **THEN** the user SHALL still be able to extract it through the existing transfer path

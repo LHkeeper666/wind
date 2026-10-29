@@ -43,7 +43,7 @@
     headings = [];
     pdf.reset();
     await tick();
-    const valid = () => generation === gen && workspaceId === workspace && path === selectedPath;
+    const valid = () => generation === gen && workspaceId === workspace && path === selectedPath && archivePath === archive;
     if (!valid() || !body) { nextRouter.dispose(); return; }
     const ctx: LoadContext = {
       gen, loadTabId: workspace, path: selectedPath, archivePath: archive,

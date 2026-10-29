@@ -4,8 +4,11 @@ import { logError, logInfo } from './log';
 import type { FileEntry } from '$lib/types/file-explorer';
 import type { TextContentSnapshot } from '$lib/utils/tab-cache';
 import type { PdfPageDimensions } from '$lib/utils/pdf-shared';
-import { isTextFile, isImageFile, formatSize } from '$lib/utils/file-types';
+import { isTextFile, isImageFile, isVideoFile, formatSize } from '$lib/utils/file-types';
 import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
+import { ArchivePreviewRequests } from '$lib/utils/archive-preview-requests';
+import { archivePreviewSkipReason, archivePreviewMessage } from '$lib/utils/archive-preview-policy';
+import { getArchiveEntrySize } from '$lib/utils/archive-browser';
 
 export interface LoadContext {
   gen: number;
@@ -31,6 +34,20 @@ export interface ArchiveFileResult {
   binaryContent: ArrayBuffer | null;
   readyTextContent: TextContentSnapshot | null;
   isBinary: boolean;
+  placeholder?: boolean;
+}
+
+export type ArchivePreviewResponse =
+  | { status: 'content'; bytes: number[]; size: number }
+  | { status: 'placeholder'; size: number | null; reason: 'size_limit' | 'unknown_size' | 'rar_unbounded' };
+
+const archiveReads = new ArchivePreviewRequests<ArchivePreviewResponse | null>();
+
+function archivePlaceholder(path: string, size: number | null, reason: string): ArchiveFileResult {
+  const type = path.split('.').pop()?.toUpperCase() || 'FILE';
+  const details = `${type} · ${size == null ? 'Size unknown' : formatSize(size)}`;
+  const message = archivePreviewMessage(reason);
+  return { type: 'archive-file', content: `ARCHIVE_PREVIEW_PLACEHOLDER\n${details}\n${message}`, binaryContent: null, readyTextContent: null, isBinary: false, placeholder: true };
 }
 
 export interface DirectoryResult {
@@ -105,16 +122,22 @@ export async function loadArchiveDirectory(
 export async function loadArchiveFile(
   ctx: LoadContext,
   checkGen: () => boolean,
+  knownSize: number | null = getArchiveEntrySize(ctx.archivePath, ctx.path),
 ): Promise<ArchiveFileResult | LoadAborted> {
-  const bytes = await invokeArchiveWithOptionalPassword<number[]>(
-    'read_archive_file',
-    { archivePath: ctx.archivePath, internalPath: ctx.path },
-    'password',
-  );
-  if (bytes === null) return { aborted: true };
   if (!checkGen()) return { aborted: true };
+  const skip = archivePreviewSkipReason(isVideoFile(ctx.path), knownSize);
+  if (skip) return archivePlaceholder(ctx.path, knownSize, skip);
+  const key = `${ctx.loadTabId}\0${ctx.archivePath}\0${ctx.path}`;
+  const response = await archiveReads.run(key, checkGen, () => invokeArchiveWithOptionalPassword<ArchivePreviewResponse>(
+      'read_archive_file',
+      { archivePath: ctx.archivePath, internalPath: ctx.path },
+      'password',
+    ));
+  if (response === null) return { aborted: true };
+  if (!checkGen()) return { aborted: true };
+  if (response.status === 'placeholder') return archivePlaceholder(ctx.path, response.size, response.reason);
 
-  const uint8 = new Uint8Array(bytes);
+  const uint8 = new Uint8Array(response.bytes);
   const isBinary = isTextFile(ctx.path) ? false : uint8.slice(0, Math.min(uint8.length, 8192)).some(b => b === 0);
 
   if (isBinary) {

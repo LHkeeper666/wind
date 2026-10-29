@@ -822,7 +822,8 @@
     if (!isMarkdown) { tocState.reset(); }
 
     // Archive file: read from archive
-    const checkGen = () => gen === loadGeneration;
+    const checkGen = () => gen === loadGeneration && loadTabId === renderTabId && filePath === path
+      && (!browsingArchive || get(layout).archiveState?.archivePath === archiveStateVal?.archivePath);
     const ctx = { gen, loadTabId, path, archivePath: archiveStateVal?.archivePath ?? null, archiveInternalPath: path, selectedEntryIsDir };
 
     if (browsingArchive && archiveStateVal) {
@@ -845,7 +846,7 @@
         content = result.content;
         binaryContent = result.binaryContent;
         readyTextContent = result.readyTextContent;
-        if (isTextFile(path)) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error' };
+        if (isTextFile(path) && !result.placeholder) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error' };
         if (result.isBinary) {
           destroyEditorSession(loadTabId);
           mode = 'global-normal';

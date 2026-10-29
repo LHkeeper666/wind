@@ -9,6 +9,8 @@ mod zip;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use log::debug;
+use serde::Serialize;
+use std::io::Read;
 
 use crate::FileEntry;
 
@@ -76,6 +78,42 @@ pub enum ArchiveFormat {
     TarGz,
     SevenZ,
     Rar,
+}
+
+pub const PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ArchivePreview {
+    Content { bytes: Vec<u8>, size: u64 },
+    Placeholder { size: Option<u64>, reason: &'static str },
+}
+
+pub(crate) fn preview_size(size: u64) -> Option<ArchivePreview> {
+    (size > PREVIEW_LIMIT).then_some(ArchivePreview::Placeholder { size: Some(size), reason: "size_limit" })
+}
+
+pub(crate) fn read_preview<R: Read + ?Sized>(reader: &mut R, size: u64) -> Result<ArchivePreview, String> {
+    if let Some(placeholder) = preview_size(size) { return Ok(placeholder); }
+    let mut bytes = Vec::with_capacity(size as usize);
+    reader.take(PREVIEW_LIMIT + 1).read_to_end(&mut bytes).map_err(|e| format!("Failed to read entry: {}", e))?;
+    if bytes.len() as u64 > PREVIEW_LIMIT {
+        return Ok(ArchivePreview::Placeholder { size: None, reason: "size_limit" });
+    }
+    Ok(ArchivePreview::Content { size: bytes.len() as u64, bytes })
+}
+
+pub fn preview_file(archive_path: &str, internal_path: &str, password: Option<String>) -> Result<ArchivePreview, String> {
+    let format = ArchiveFormat::from_path(archive_path)
+        .ok_or_else(|| format!("Unsupported archive format: {}", archive_path))?;
+    let password = password::resolve_archive_password(archive_path, password);
+    match format {
+        ArchiveFormat::Zip => zip::preview_file(archive_path, internal_path, password.as_deref()),
+        ArchiveFormat::Tar => tar::preview_file(archive_path, internal_path, false),
+        ArchiveFormat::TarGz => tar::preview_file(archive_path, internal_path, true),
+        ArchiveFormat::SevenZ => seven_z::preview_file(archive_path, internal_path, password.as_deref()),
+        ArchiveFormat::Rar => rar::preview_file(archive_path, internal_path, password.as_deref()),
+    }
 }
 
 impl ArchiveFormat {
@@ -287,4 +325,18 @@ pub fn create_entry(
 
 pub fn compress_files(sources: &[String], dest_path: &str) -> Result<u64, String> {
     zip::compress_files(sources, dest_path)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn preview_limit_checks_declared_and_actual_output() {
+        assert!(matches!(preview_size(PREVIEW_LIMIT + 1), Some(ArchivePreview::Placeholder { reason: "size_limit", .. })));
+        let inside = vec![7; PREVIEW_LIMIT as usize];
+        assert!(matches!(read_preview(&mut inside.as_slice(), PREVIEW_LIMIT).unwrap(), ArchivePreview::Content { size: PREVIEW_LIMIT, .. }));
+        let forged = vec![7; PREVIEW_LIMIT as usize + 1];
+        assert_eq!(read_preview(&mut forged.as_slice(), 1).unwrap(), ArchivePreview::Placeholder { size: None, reason: "size_limit" });
+    }
 }

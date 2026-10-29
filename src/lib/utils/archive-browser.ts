@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { invokeArchiveWithOptionalPassword } from '$lib/utils/archive-password';
 import type { ArchiveFormat } from '$lib/stores/layout';
+import type { ArchivePreviewResponse } from '$lib/utils/file-loaders';
 
 export interface ArchiveState {
   archivePath: string;
@@ -20,6 +21,11 @@ export function isArchiveBusyError(error: unknown): boolean {
 }
 
 export const ARCHIVE_BUSY_MESSAGE = 'Archive is being extracted';
+const entrySizes = new Map<string, number>();
+
+export function getArchiveEntrySize(archivePath: string | null, internalPath: string): number | null {
+  return archivePath ? entrySizes.get(`${archivePath}\0${internalPath}`) ?? null : null;
+}
 
 export function getArchiveFormat(name: string): ArchiveFormat {
   const lower = name.toLowerCase();
@@ -62,17 +68,24 @@ export async function readArchiveDirectory(
   archivePath: string,
   internalPath: string
 ): Promise<{ name: string; path: string; is_dir: boolean; size: number | null }[] | null> {
-  return invokeArchiveWithOptionalPassword(
+  const entries = await invokeArchiveWithOptionalPassword<{ name: string; path: string; is_dir: boolean; size: number | null }[]>(
     'read_archive_directory',
     { archivePath, internalPath },
     'password'
   );
+  if (entries) {
+    entrySizes.clear();
+    for (const entry of entries) {
+      if (!entry.is_dir && entry.size != null) entrySizes.set(`${archivePath}\0${entry.path}`, entry.size);
+    }
+  }
+  return entries;
 }
 
 export async function readArchiveFile(
   archivePath: string,
   internalPath: string
-): Promise<number[] | null> {
+): Promise<ArchivePreviewResponse | null> {
   return invokeArchiveWithOptionalPassword(
     'read_archive_file',
     { archivePath, internalPath },

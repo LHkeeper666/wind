@@ -33,6 +33,20 @@ export class PreviewRouter {
   async preview(filePath: string, content: string | ArrayBuffer, container: HTMLElement, isCurrent: () => boolean = () => true): Promise<void> {
     const oldPreviewer = this.currentPreviewer;
 
+    if (typeof content === 'string' && content.startsWith('ARCHIVE_PREVIEW_PLACEHOLDER\n')) {
+      oldPreviewer?.dispose();
+      container.replaceChildren();
+      const message = document.createElement('div');
+      message.className = 'preview-unsupported';
+      message.style.whiteSpace = 'pre-line';
+      message.textContent = content.slice('ARCHIVE_PREVIEW_PLACEHOLDER\n'.length);
+      container.appendChild(message);
+      this.currentPreviewer = null;
+      this.lastFilePath = '';
+      this.onHeadings?.([]);
+      return;
+    }
+
     // Find matching previewer
     const previewer = this.match(filePath);
     if (!previewer) {

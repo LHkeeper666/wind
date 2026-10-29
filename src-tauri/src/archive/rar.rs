@@ -128,6 +128,30 @@ pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> R
     Err(format!("Entry not found in archive: {}", internal))
 }
 
+pub(crate) fn preview_file(path: &str, internal: &str, password: Option<&str>) -> Result<super::ArchivePreview, String> {
+    let _guard = super::try_lock_busy().ok_or_else(|| super::archive_busy_error(path))?;
+    let archive = open_rar_archive(path, password);
+    let mut opened = archive.open_for_processing().map_err(|e| map_unrar_error(path, e))?;
+    let target = normalize_internal(internal);
+    loop {
+        let header = match opened.read_header() {
+            Ok(Some(header)) => header,
+            Ok(None) => break,
+            Err(e) => return Err(map_unrar_error(path, e)),
+        };
+        let name = header.entry().filename.to_string_lossy().replace('\\', "/");
+        if name.trim_end_matches('/') == target && header.entry().is_file() {
+            if header.entry().is_encrypted() && password.is_none() {
+                return Err(password_required_error(path));
+            }
+            let size = header.entry().unpacked_size;
+            return Ok(super::ArchivePreview::Placeholder { size: Some(size), reason: "rar_unbounded" });
+        }
+        opened = header.skip().map_err(|e| map_unrar_error(path, e))?;
+    }
+    Err(format!("Entry not found in archive: {}", internal))
+}
+
 pub(crate) fn extract_files(
     path: &str,
     internal_paths: &[String],

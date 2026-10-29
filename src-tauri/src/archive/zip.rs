@@ -379,6 +379,31 @@ pub(crate) fn read_file(path: &str, internal: &str, password: Option<&str>) -> R
     Err(format!("Entry not found in archive: {}", internal))
 }
 
+pub(crate) fn preview_file(path: &str, internal: &str, password: Option<&str>) -> Result<super::ArchivePreview, String> {
+    let cd_entries = parse_zip_central_dir(path).unwrap_or_default();
+    let file = File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| map_zip_error(path, e))?;
+    if zip_entry_requires_password(&mut archive)?.is_some() {
+        match password {
+            Some(pw) => validate_zip_password(&mut archive, path, pw)?,
+            None => return Err(password_required_error(path)),
+        }
+    }
+    let target = normalize_internal(internal);
+    for i in 0..archive.len() {
+        let mut entry = read_zip_entry(&mut archive, path, i, password)?;
+        let name = decode_cd_entry_name(&cd_entries, i, &entry, path);
+        if name.replace('\\', "/").trim_end_matches('/') == target {
+            if entry.is_dir() { return Err(format!("'{}' is a directory, not a file", internal)); }
+            let size = entry.size();
+            let result = super::read_preview(&mut entry, size)?;
+            remember_archive_password(path, password);
+            return Ok(result);
+        }
+    }
+    Err(format!("Entry not found in archive: {}", internal))
+}
+
 pub(crate) fn extract_files(
     path: &str,
     internal_paths: &[String],
