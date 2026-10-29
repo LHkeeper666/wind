@@ -303,13 +303,15 @@
             ondrop={(e: DragEvent) => handleItemDrop(e, entry)}
             ondragend={handleItemDragEnd}
           >
-            <!-- Unified single-line layout for all states -->
+            <!-- Responsive layout for all states -->
             <span class="drag-handle" class:disabled={entry.status !== 'queued'}>≡</span>
             <span class="row-icon">{getStatusIcon(entry)}</span>
-            <span class="row-source">{transfer.util.shortPath(entry.source)}</span>
-            <span class="row-arrow">→</span>
-            <span class="row-dest">{transfer.util.shortPath(entry.destination)}</span>
-            <span class="row-meta">
+            <span class="row-paths">
+              <span class="row-source" title={entry.source}>{transfer.util.shortPath(entry.source)}</span>
+              <span class="row-arrow">→</span>
+              <span class="row-dest" title={entry.destination}>{transfer.util.shortPath(entry.destination)}</span>
+            </span>
+            <span class="row-meta" class:indeterminate={entry.status === 'running' && isIndeterminateEntry(entry)}>
               {#if entry.status === 'running'}
                 {#if isIndeterminateEntry(entry)}
                   <span class="entry-text" title={entry.entryName}>Extracting {transfer.util.shortPath(entry.entryName ?? '')}</span>
@@ -444,6 +446,7 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    container-type: inline-size;
   }
 
   .empty-state {
@@ -467,7 +470,8 @@
 
   /* Transfer row */
   .transfer-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1.6fr) minmax(0, 2.4fr) auto;
     align-items: center;
     padding: 3px 12px;
     cursor: pointer;
@@ -519,7 +523,14 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 300px;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+  .row-paths {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
   }
   .row-source { color: var(--text-primary); }
   .row-dest { color: var(--text-secondary); }
@@ -529,11 +540,39 @@
   }
 
   .row-meta {
-    margin-left: auto;
+    display: grid;
+    grid-template-columns: 4ch minmax(0, 1fr) minmax(0, 20ch) minmax(0, 12ch) minmax(0, 13ch);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     color: var(--text-secondary);
     font-size: 11px;
     white-space: nowrap;
-    flex-shrink: 0;
+  }
+  .row-meta > :not(.mini-progress) {
+    width: auto;
+    min-width: 0;
+  }
+  .row-meta :is(.size-text, .done-size, .speed-text, .done-speed, .eta-text, .done-time) {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .progress-text, .entry-text { grid-column: 1; }
+  .mini-progress { grid-column: 2; }
+  .size-text, .done-size { grid-column: 3; justify-self: end; }
+  .speed-text, .done-speed { grid-column: 4; justify-self: end; }
+  .eta-text, .done-time, .queued-label { grid-column: 5; justify-self: end; }
+  .error-text { grid-column: 1 / -1; }
+  .meta-text { grid-column: 5; justify-self: end; }
+  .row-meta.indeterminate .entry-text { grid-column: 1 / 3; }
+  .row-meta.indeterminate .mini-progress,
+  .row-meta.indeterminate .size-text { grid-row: 2; }
+  .row-meta .entry-text,
+  .row-meta .error-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .error-text {
@@ -579,12 +618,12 @@
   }
 
   .mini-progress {
-    width: 120px;
+    width: 100%;
+    min-width: 0;
     height: 4px;
     background-color: var(--bg-primary);
     border-radius: 2px;
     overflow: hidden;
-    flex-shrink: 0;
   }
 
   .mini-progress-fill {
@@ -699,5 +738,57 @@
   .scroll-bottom-btn:hover {
     background-color: var(--accent);
     color: var(--bg-primary);
+  }
+
+  @container (max-width: 720px) {
+    .transfer-row {
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      row-gap: calc(2px * var(--zoom-level, 1));
+    }
+    .row-paths { grid-column: 3; grid-row: 1; }
+    .row-meta {
+      grid-column: 3;
+      grid-row: 2;
+      grid-template-columns: 4ch minmax(0, 1fr) minmax(0, 20ch);
+    }
+    .speed-text, .done-speed { grid-column: 2; grid-row: 2; justify-self: start; }
+    .eta-text, .done-time, .queued-label { grid-column: 3; grid-row: 2; }
+    .meta-text { grid-column: 3; }
+    .row-action { grid-column: 4; grid-row: 1 / span 2; }
+  }
+
+  @container (max-width: 520px) {
+    .row-paths { flex-wrap: wrap; }
+    .row-source, .row-dest { flex-basis: 100%; }
+    .row-arrow { display: none; }
+    .row-meta { grid-template-columns: 4ch minmax(0, 1fr) 12ch; }
+  }
+
+  .transfer-panel {
+    font-size: calc(14px * var(--zoom-level, 1));
+    line-height: 1.2;
+  }
+  .transfer-panel * { font-size: inherit; }
+  .transfer-panel :is(.transfer-title, .active-count, .header-btn, .batch-divider, .row-action, .scroll-bottom-btn) {
+    font-size: calc(11px * var(--zoom-level, 1));
+  }
+  .transfer-panel .row-meta {
+    font-size: calc(12px * var(--zoom-level, 1));
+  }
+  .transfer-row {
+    min-height: calc(21px * var(--zoom-level, 1));
+    padding-top: calc(2px * var(--zoom-level, 1));
+    padding-bottom: calc(2px * var(--zoom-level, 1));
+    column-gap: calc(6px * var(--zoom-level, 1));
+  }
+  .transfer-header {
+    padding: calc(3px * var(--zoom-level, 1)) 12px;
+  }
+  .mini-progress {
+    height: calc(6px * var(--zoom-level, 1));
+  }
+  .row-action, .header-btn {
+    padding: calc(1px * var(--zoom-level, 1)) calc(6px * var(--zoom-level, 1));
   }
 </style>

@@ -36,11 +36,16 @@ The system SHALL constrain the zoom level between 0.5 (50%) and 2.0 (200%) inclu
 - **THEN** the zoom level remains at 0.5
 
 ### Requirement: Zoom does not affect layout
-The system SHALL apply zoom only to `.panel` content areas and SHALL NOT affect column widths, resize handles, or the status bar.
+The system SHALL apply zoom to `.panel` content areas and Transfer Manager text and its supporting row dimensions. It SHALL NOT change column widths, the Transfer Manager's outer height or resize handle behavior, or the status bar.
 
 #### Scenario: Column widths unchanged after zoom
 - **WHEN** the user changes the zoom level
 - **THEN** the three-column grid layout maintains its original column width ratios
+
+#### Scenario: Transfer Manager outer layout unchanged after zoom
+- **WHEN** the user changes the zoom level while the Transfer Manager is visible
+- **THEN** the panel text scales with the zoom level
+- **AND** its outer height and the surrounding workspace layout remain unchanged
 
 ### Requirement: Zoom via mouse wheel
 The system SHALL adjust zoom level when the user scrolls the mouse wheel while holding Ctrl.
