@@ -43,7 +43,6 @@
     getEditorInitialLine, setEditorInitialLine,
     handleFullscreenEditor as doFullscreenEditor,
     handleCloseFullscreen as doCloseFullscreen,
-    handleSaveFullscreen as doSaveFullscreen,
     handleCloseImageViewer as doCloseImageViewer,
     handleClosePdfViewer as doClosePdfViewer,
     handleCloseVideoPlayer as doCloseVideoPlayer,
@@ -774,8 +773,8 @@
     doCloseFullscreen(focusPanel);
   }
 
-  function handleSaveFullscreen(content: string) {
-    doSaveFullscreen(content, previewEditor);
+  function handleSaveFullscreen(content: string, path: string) {
+    return previewEditor?.saveFullscreenContent(path, content) ?? Promise.resolve(false);
   }
 
   async function handleBatchRenameStart(files: { path: string; name: string }[]) {

@@ -18,20 +18,20 @@ pub fn file_exists(path: String) -> bool {
 pub struct FileMetadata {
     pub size: u64,
     pub modified: u64,
+    pub modified_ns: String,
 }
 
 #[tauri::command]
 pub fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
     let metadata = fs::metadata(&path).map_err(|e| format!("Failed to read metadata: {}", e))?;
-    let modified = metadata
+    let modified_time = metadata
         .modified()
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
     Ok(FileMetadata {
         size: metadata.len(),
-        modified,
+        modified: modified_time.map(|d| d.as_secs()).unwrap_or(0),
+        modified_ns: modified_time.map(|d| d.as_nanos().to_string()).unwrap_or_default(),
     })
 }
 

@@ -55,6 +55,11 @@ Handles loading file content for the preview system, including text/binary detec
 - **WHEN** 从文件 A 切换到缓存中的文件 B，且两者大小不同
 - **THEN** 加载状态使用 B 的大小，不使用 A 的大小
 
+#### Scenario: 缓存恢复更新文件版本
+
+- **WHEN** 从文件 A 切换到缓存中的文件 B
+- **THEN** 加载状态与缓存使用 B 的文件版本，不沿用 A 的版本
+
 ### Requirement: 编辑入口反映实际加载状态
 
 系统 SHALL 根据当前文件的加载状态决定按 `e` 后的行为。仅在读取仍进行时提示“文件加载中”；读取失败时显示错误和重试途径；成功加载的文本即使为空也 SHALL 允许进入编辑。

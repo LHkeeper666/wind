@@ -59,6 +59,7 @@ export interface TextBinaryResult {
   originalFileSize: number;
   savedContent: string;
   fileMtime: number;
+  fileMtimeNs: string;
   error?: string;
 }
 
@@ -212,11 +213,13 @@ export async function loadTextOrBinary(
 ): Promise<TextBinaryResult | LoadAborted> {
   let originalFileSize = 0;
   let fileMtime = 0;
+  let fileMtimeNs = '';
   try {
-    const meta = await invoke<{ size: number; modified: number }>('get_file_metadata', { path: ctx.path });
+    const meta = await invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path: ctx.path });
     if (!checkGen()) return { aborted: true };
     originalFileSize = meta.size;
     fileMtime = meta.modified;
+    fileMtimeNs = meta.modified_ns;
   } catch (error) {
     logInfo('file-load', `METADATA_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${error}`);
   }
@@ -233,10 +236,10 @@ export async function loadTextOrBinary(
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+      return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs };
     } catch {
       if (!checkGen()) return { aborted: true };
-      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: '读取二进制文件失败' };
+      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs, error: '读取二进制文件失败' };
     }
   }
 
@@ -256,10 +259,10 @@ export async function loadTextOrBinary(
         const binary = atob(base64);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+        return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs };
       } catch {
         if (!checkGen()) return { aborted: true };
-        return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: '读取文件失败' };
+        return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs, error: '读取文件失败' };
       }
     }
 
@@ -271,6 +274,7 @@ export async function loadTextOrBinary(
       originalFileSize,
       savedContent: newContent,
       fileMtime,
+      fileMtimeNs,
     };
   } catch (error) {
     if (!checkGen()) return { aborted: true };
@@ -283,11 +287,11 @@ export async function loadTextOrBinary(
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime };
+      return { type: 'text-binary', content: '', binaryContent: bytes.buffer, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs };
     } catch (binaryError) {
       if (!checkGen()) return { aborted: true };
       logInfo('file-load', `BINARY_FALLBACK_FAILED tabId=${ctx.loadTabId} gen=${ctx.gen} path=${ctx.path} error=${binaryError}`);
-      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, error: `读取文件失败: ${error}` };
+      return { type: 'text-binary', content: '', binaryContent: null, readyTextContent: null, originalFileSize, savedContent: '', fileMtime, fileMtimeNs, error: `读取文件失败: ${error}` };
     }
   }
 }

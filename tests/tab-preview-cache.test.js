@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isSamePreviewIdentity, isValidTextCache, shouldReloadCachedFile, TabCacheManager, textEditAction } from '../src/lib/utils/tab-cache.ts';
+import { isSamePreviewIdentity, isValidTextCache, shouldReloadCachedFile, TabCacheManager, textEditAction, textSaveRejection } from '../src/lib/utils/tab-cache.ts';
 import { previewSlotKey } from '../src/lib/utils/preview-slot-key.ts';
 
 const identity = (workspaceId, slotId, path) => ({ tabId: previewSlotKey(workspaceId, slotId), path });
@@ -58,4 +58,19 @@ test('damaged empty text reloads even with unchanged mtime, without reloading PD
   assert.equal(shouldReloadCachedFile(empty, { size: 4, modified: 123 }, false), false);
   assert.equal(shouldReloadCachedFile(cached({ content: '', isModified: true, fileMtime: 123 }), { size: 4, modified: 123 }, true), false);
   assert.equal(shouldReloadCachedFile(cached({ content: '', originalFileSize: 0, fileMtime: 123 }), { size: 0, modified: 123 }, true), false);
+});
+
+test('same-second changes invalidate cached text through nanosecond version', () => {
+  const entry = cached({ fileMtime: 123, fileMtimeNs: '123000000001' });
+  assert.equal(shouldReloadCachedFile(entry, { size: 4, modified: 123, modified_ns: '123000000002' }, true), true);
+  assert.equal(shouldReloadCachedFile(entry, { size: 4, modified: 123, modified_ns: '123000000001' }, true), false);
+});
+
+test('save guard rejects transitional and unexplained empty content but permits deliberate clearing', () => {
+  assert.match(textSaveRejection('transition', '100', '', 4, false), /加载/);
+  assert.match(textSaveRejection('error', '100', 'body', 4, true), /加载/);
+  assert.match(textSaveRejection('ready', '', 'body', 4, true), /加载/);
+  assert.match(textSaveRejection('ready', '100', '', 4, false), /空内容/);
+  assert.equal(textSaveRejection('ready', '100', '', 4, true), null);
+  assert.equal(textSaveRejection('ready', '100', '', 0, false), null);
 });

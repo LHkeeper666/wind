@@ -355,16 +355,142 @@ pub async fn read_image_thumbnail(path: String) -> Result<ImageThumbnail, String
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     let file_path = Path::new(&path);
+    let operation_id = next_legacy_write_id();
+    let before = file_path.metadata().ok().and_then(|metadata| text_save_version(&metadata).ok());
+    log::warn!("[text-save] id={} entry=legacy-write-file path={} before_size={} before_version={} bytes={} result=requested",
+        operation_id, path, before.as_ref().map(|v| v.size.to_string()).unwrap_or_else(|| "missing".into()),
+        before.as_ref().map(|v| v.modified_ns.as_str()).unwrap_or("missing"), content.len());
 
     // Create parent directories if they don't exist
     if let Some(parent) = file_path.parent() {
         if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create parent directories: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                log::error!("[text-save] id={} result=io_error stage=create_parent error={}", operation_id, e);
+                format!("Failed to create parent directories: {}", e)
+            })?;
         }
     }
 
-    fs::write(file_path, content).map_err(|e| format!("Failed to write file: {}", e))
+    let result = fs::write(file_path, content);
+    let after = file_path.metadata().ok().and_then(|metadata| text_save_version(&metadata).ok());
+    match result {
+        Ok(()) => {
+            log::warn!("[text-save] id={} result=success after_size={} after_version={}", operation_id,
+                after.as_ref().map(|v| v.size.to_string()).unwrap_or_else(|| "unknown".into()),
+                after.as_ref().map(|v| v.modified_ns.as_str()).unwrap_or("unknown"));
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("[text-save] id={} result=io_error stage=write after_size={} after_version={} error={}", operation_id,
+                after.as_ref().map(|v| v.size.to_string()).unwrap_or_else(|| "unknown".into()),
+                after.as_ref().map(|v| v.modified_ns.as_str()).unwrap_or("unknown"), e);
+            Err(format!("Failed to write file: {}", e))
+        }
+    }
+}
+
+fn next_legacy_write_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    format!("legacy-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSaveVersion {
+    pub size: u64,
+    pub modified: u64,
+    pub modified_ns: String,
+}
+
+fn text_save_version(metadata: &fs::Metadata) -> Result<TextSaveVersion, String> {
+    let duration = metadata.modified()
+        .map_err(|e| format!("无法读取文件修改时间: {e}"))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("文件修改时间无效: {e}"))?;
+    Ok(TextSaveVersion {
+        size: metadata.len(),
+        modified: duration.as_secs(),
+        modified_ns: duration.as_nanos().to_string(),
+    })
+}
+
+fn text_save_rejection(current: &TextSaveVersion, expected_size: u64,
+    expected_modified_ns: &str, pending_bytes: usize, allow_empty: bool) -> Option<&'static str> {
+    if expected_modified_ns.is_empty() || current.size != expected_size || current.modified_ns != expected_modified_ns {
+        return Some("文件已被外部修改，保存已取消；请先重新加载并处理冲突");
+    }
+    if pending_bytes == 0 && current.size > 0 && !allow_empty {
+        return Some("空内容缺少有效编辑来源，保存已取消；请重新加载文件");
+    }
+    None
+}
+
+#[tauri::command]
+pub fn save_text_file(
+    path: String, content: String, expected_size: u64, expected_modified_ns: String,
+    allow_empty: bool, entry: String, operation_id: String,
+) -> Result<TextSaveVersion, String> {
+    use std::io::Write;
+    let bytes = content.as_bytes();
+    let file_path = Path::new(&path);
+    log::info!("[text-save] id={} entry={} path={} expected_size={} expected_version={} bytes={} empty_source={} result=requested",
+        operation_id, entry, path, expected_size, expected_modified_ns, bytes.len(),
+        if allow_empty { "edited" } else { "loaded" });
+    let mut file = fs::OpenOptions::new().write(true).open(file_path)
+        .map_err(|e| { log::error!("[text-save] id={} result=io_error reason=open error={}", operation_id, e); format!("无法打开文件: {e}") })?;
+    let current_metadata = file.metadata().map_err(|e| {
+        log::error!("[text-save] id={} result=io_error stage=metadata_before error={}", operation_id, e);
+        format!("无法读取文件信息: {e}")
+    })?;
+    let current = text_save_version(&current_metadata).map_err(|e| {
+        log::error!("[text-save] id={} result=io_error stage=version_before error={}", operation_id, e);
+        e
+    })?;
+    log::info!("[text-save] id={} before_size={} before_version={} bytes={} version_check=start", operation_id, current.size, current.modified_ns, bytes.len());
+    if let Some(reason) = text_save_rejection(&current, expected_size, &expected_modified_ns, bytes.len(), allow_empty) {
+        let conflict = current.size != expected_size || current.modified_ns != expected_modified_ns || expected_modified_ns.is_empty();
+        log::warn!("[text-save] id={} result={} before_size={} before_version={} version_check={} reason={}", operation_id,
+            if conflict { "conflict" } else { "rejected" }, current.size, current.modified_ns,
+            if conflict { "failed" } else { "passed" },
+            if conflict { "disk_version_changed" } else { "unverified_empty" });
+        return Err(reason.to_string());
+    }
+    log::info!("[text-save] id={} stage=truncate_start version_check=passed", operation_id);
+    file.set_len(0).map_err(|e| {
+        log::error!("[text-save] id={} result=io_error stage=truncate after_size={} error={}", operation_id,
+            file.metadata().map(|m| m.len().to_string()).unwrap_or_else(|_| "unknown".into()), e);
+        format!("无法清空文件: {e}")
+    })?;
+    log::info!("[text-save] id={} stage=truncate_done after_size=0", operation_id);
+    file.write_all(bytes).map_err(|e| {
+        log::error!("[text-save] id={} result=io_error stage=write after_size={} error={}", operation_id,
+            file.metadata().map(|m| m.len().to_string()).unwrap_or_else(|_| "unknown".into()), e);
+        format!("写入文件失败: {e}")
+    })?;
+    let updated_metadata = file.metadata().map_err(|e| {
+        log::error!("[text-save] id={} result=unknown_written stage=metadata_after bytes={} error={}", operation_id, bytes.len(), e);
+        format!("无法读取保存后版本: {e}")
+    })?;
+    let updated = text_save_version(&updated_metadata).map_err(|e| {
+        log::error!("[text-save] id={} result=unknown_written stage=version_after bytes={} error={}", operation_id, bytes.len(), e);
+        e
+    })?;
+    log::info!("[text-save] id={} result=success version_check=passed after_size={} after_version={}", operation_id, updated.size, updated.modified_ns);
+    Ok(updated)
+}
+
+#[cfg(test)]
+mod text_save_tests {
+    use super::{text_save_rejection, TextSaveVersion};
+
+    #[test]
+    fn rejects_same_second_version_changes_and_unverified_empty_content() {
+        let current = TextSaveVersion { size: 4, modified: 123, modified_ns: "123000000002".into() };
+        assert!(text_save_rejection(&current, 4, "123000000001", 4, true).unwrap().contains("外部修改"));
+        assert!(text_save_rejection(&current, 4, "123000000002", 0, false).unwrap().contains("空内容"));
+        assert!(text_save_rejection(&current, 4, "123000000002", 0, true).is_none());
+    }
 }
 
 #[cfg(test)]

@@ -104,11 +104,18 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
                         {
                             *file = Some(f);
                             *current_date = today;
+                        } else {
+                            eprintln!("[logging] failed to open log file: {}", log_path.display());
                         }
                     }
                     if let Some(ref mut f) = file {
                         use std::io::Write;
-                        let _ = writeln!(f, "{}", record.args());
+                        if let Err(e) = writeln!(f, "{}", record.args()) {
+                            eprintln!("[logging] failed to write log file: {e}; {}", record.args());
+                            *file = None;
+                        }
+                    } else {
+                        eprintln!("{}", record.args());
                     }
                 }));
                 file_logging_ok = true;
@@ -120,16 +127,18 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
         }
     }
 
-    dispatch.apply().ok();
+    if let Err(e) = dispatch.apply() {
+        eprintln!("[logging] failed to initialize logger: {e}");
+    }
 }
 
-/// Clean up log files older than 7 days
+/// Clean up log files older than 30 days
 fn cleanup_old_logs(app_handle: &tauri::AppHandle) {
     if let Ok(log_dir) = app_handle.path().app_local_data_dir().map(|p| p.join("logs")) {
         if !log_dir.exists() {
             return;
         }
-        let cutoff = chrono::Local::now() - chrono::Duration::days(7);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(30);
         if let Ok(entries) = std::fs::read_dir(&log_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -257,6 +266,7 @@ pub fn run() {
             commands::file_io::read_binary_file_partial,
             commands::file_io::read_image_thumbnail,
             commands::file_io::write_file,
+            commands::file_io::save_text_file,
             commands::terminal_cmd::terminal_spawn,
             commands::terminal_cmd::terminal_input,
             commands::terminal_cmd::terminal_resize,

@@ -24,6 +24,7 @@
     isValidTextCache,
     shouldReloadCachedFile,
     textEditAction,
+    textSaveRejection,
     collectExpandedLines,
     restoreExpandedLines,
   } from '$lib/utils/tab-cache';
@@ -142,7 +143,11 @@
       const a = changedPath.replace(/\//g, '\\').toLowerCase();
       const b = filePath.replace(/\//g, '\\').toLowerCase();
       if (a !== b) return;
-      if (mode !== 'global-normal') return;
+      logInfo('file-load', `WATCH_EVENT tabId=${renderTabId} path=${filePath} mode=${mode} state=${textLoad?.state ?? 'none'} modified=${isModified} contentLen=${content.length} expectedSize=${originalFileSize} expectedVersion=${fileMtimeNs}`);
+      if (mode !== 'global-normal') {
+        logInfo('file-load', `WATCH_SKIP tabId=${renderTabId} path=${filePath} reason=editor_active`);
+        return;
+      }
       cacheTabState(renderTabId);
       const reading = tabCache.get(renderTabId);
       tabCache.delete(renderTabId);
@@ -162,6 +167,8 @@
   let thumbnailMeta: { width: number; height: number; originalSize: number; isThumbnail: boolean } | null = $state(null);
   let videoMeta: VideoMeta | null = $state(null);
   let originalFileSize: number = $state(0);
+  let fileMtimeNs: string = $state('');
+  let draftEdited: boolean = $state(false);
   let textLoad = $state<{ tabId: number; path: string; state: 'loading' | 'ready' | 'error' | 'transition'; error?: string } | null>(null);
   let isModified: boolean = $state(false);
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
@@ -261,6 +268,31 @@
     destroyEditorSession(tabId);
   }
 
+  type SavedTextVersion = { size: number; modified: number; modifiedNs: string };
+
+  async function saveTextDraft(path: string, draft: string, state: 'ready' | 'loading' | 'error' | 'transition',
+    size: number, modifiedNs: string, edited: boolean, entry: string): Promise<SavedTextVersion> {
+    const operationId = crypto.randomUUID();
+    const bytes = new TextEncoder().encode(draft).length;
+    logInfo('text-save', `id=${operationId} entry=${entry} path=${path} original_size=${size} bytes=${bytes} source=${edited ? 'edited' : 'loaded'} state=${state} result=requested`);
+    const rejection = textSaveRejection(state, modifiedNs, draft, size, edited);
+    if (rejection) {
+      logInfo('text-save', `id=${operationId} result=rejected reason=${state !== 'ready' || !modifiedNs ? 'not_ready' : 'unverified_empty'}`);
+      throw new Error(rejection);
+    }
+    try {
+      const version = await invoke<SavedTextVersion>('save_text_file', {
+        path, content: draft, expectedSize: size, expectedModifiedNs: modifiedNs,
+        allowEmpty: edited, entry, operationId,
+      });
+      logInfo('text-save', `id=${operationId} result=success afterSize=${version.size} afterVersion=${version.modifiedNs}`);
+      return version;
+    } catch (error) {
+      logError('text-save', `id=${operationId} result=failed reason=${String(error).includes('外部修改') ? 'version_conflict' : 'backend_rejected_or_io_error'}`);
+      throw error;
+    }
+  }
+
   export async function resolveSlotChanges(tabId: number, choice: 'save' | 'discard'): Promise<boolean> {
     const current = tabId === renderTabId;
     const cached = current ? null : tabCache.get(tabId);
@@ -277,11 +309,11 @@
             content: Array.from(new TextEncoder().encode(draft)),
           });
         } else {
-          await invoke('write_file', { path, content: draft });
-          const meta = await invoke<{ modified: number; size: number }>('get_file_metadata', { path }).catch(() => null);
-          if (meta && current) fileWatcher.setFileMtime(meta.modified);
-          if (meta && current) originalFileSize = meta.size;
-          if (meta && cached) { cached.fileMtime = meta.modified; cached.originalFileSize = meta.size; }
+          const state = current ? (textLoad?.tabId === tabId && textLoad.path === path ? textLoad.state : 'transition') : (cached?.textLoadState ?? 'transition');
+          const meta = await saveTextDraft(path, draft, state, current ? originalFileSize : (cached?.originalFileSize ?? 0),
+            current ? fileMtimeNs : (cached?.fileMtimeNs ?? ''), current ? draftEdited : !!cached?.draftEdited, 'slot-switch');
+          if (current) { fileWatcher.setFileMtime(meta.modified); originalFileSize = meta.size; fileMtimeNs = meta.modifiedNs; draftEdited = false; }
+          if (cached) { cached.fileMtime = meta.modified; cached.originalFileSize = meta.size; cached.fileMtimeNs = meta.modifiedNs; cached.draftEdited = false; }
         }
       } catch (error) {
         onToast(`Failed to save: ${error}`);
@@ -298,10 +330,12 @@
       content = choice === 'save' ? draft : original;
       savedContent = content;
       isModified = false;
+      draftEdited = false;
     } else if (cached) {
       cached.content = choice === 'save' ? draft : original;
       cached.savedContent = cached.content;
       cached.isModified = false;
+      cached.draftEdited = false;
     }
     return true;
   }
@@ -309,9 +343,12 @@
   export function cacheTabState(tabId: number) {
     if (!filePath) return;
     const textState = textLoad?.tabId === tabId && textLoad.path === filePath ? textLoad.state : 'transition';
-    if (isTextFile(filePath) && (textState !== 'ready' || (!isModified && content === '' && originalFileSize > 0))) return;
+    if (isTextFile(filePath) && (textState !== 'ready' || (!isModified && content === '' && originalFileSize > 0))) {
+      logInfo('file-load', `CACHE_SKIP tabId=${tabId} path=${filePath} state=${textState} contentLen=${content.length} originalSize=${originalFileSize} version=${fileMtimeNs} modified=${isModified} reason=${textState !== 'ready' ? 'not_ready' : 'unverified_empty'}`);
+      return;
+    }
     const fileMtime = fileWatcher.getFileMtime();
-    const cacheDetails = `tabId=${tabId} renderTabId=${renderTabId} gen=${loadGeneration} path=${filePath} contentLen=${content.length} binary=${binaryContent !== null} size=${originalFileSize} mtime=${fileMtime} mode=${mode}`;
+    const cacheDetails = `tabId=${tabId} renderTabId=${renderTabId} gen=${loadGeneration} path=${filePath} contentLen=${content.length} binary=${binaryContent !== null} size=${originalFileSize} version=${fileMtimeNs} modified=${isModified} draftEdited=${draftEdited} mode=${mode}`;
     if (!content && !binaryContent && originalFileSize > 0 && isTextFile(filePath)) {
       logInfo('file-load', `CACHE_EMPTY ${cacheDetails}`);
     } else {
@@ -325,7 +362,7 @@
       editorSelectionHead: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, ...pdfState.toCacheSnapshot(), fileMtime, originalFileSize, textLoadState: textState,
+      isModified, ...pdfState.toCacheSnapshot(), fileMtime, fileMtimeNs, originalFileSize, textLoadState: textState, draftEdited,
       ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
       tocScrollTop: previewPane?.getTocScrollTop() ?? 0,
     });
@@ -340,7 +377,10 @@
     // when mode changes to 'global-normal'. Without this, the render effect would
     // start an async render with old content, clearing the slot and causing a blank
     // flash + scroll position loss when loadFile subsequently sets new content.
-    if (textLoad) textLoad = { ...textLoad, state: 'transition' };
+    if (textLoad) {
+      logInfo('file-load', `TRANSITION tabId=${textLoad.tabId} path=${textLoad.path} state=${textLoad.state} contentLen=${content.length} size=${originalFileSize} version=${fileMtimeNs} modified=${isModified}`);
+      textLoad = { ...textLoad, state: 'transition' };
+    }
     content = '';
     binaryContent = null;
     mode = 'global-normal';
@@ -655,13 +695,15 @@
     };
     let cached = tabCache.get(loadTabId);
     if (cached?.filePath === path && isTextFile(path) && !isValidTextCache(cached)) {
+      logInfo('file-load', `CACHE_EVICT tabId=${loadTabId} gen=${gen} path=${path} reason=invalid_text_state state=${cached.textLoadState} contentLen=${cached.content.length} size=${cached.originalFileSize} version=${cached.fileMtimeNs ?? 'unknown'} modified=${cached.isModified}`);
       tabCache.delete(loadTabId);
       cached = undefined;
     }
+    if (isTextFile(path)) logInfo('file-load', `LOAD_START tabId=${loadTabId} gen=${gen} path=${path} cache=${cached?.filePath === path ? 'hit' : 'miss'}`);
     logDebug('file-load', `START tabId=${loadTabId} gen=${gen} path=${path} cache=${cached ? 'hit' : 'miss'} cachedPath=${cached?.filePath ?? '(none)'}`);
     if (cached && cached.filePath === path && !browsingArchive) {
       if (gen !== loadGeneration) return;
-      const cacheDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${cached.content.length} binary=${cached.binaryContent !== null} mtime=${cached.fileMtime} mode=${cached.mode}`;
+      const cacheDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${cached.content.length} binary=${cached.binaryContent !== null} size=${cached.originalFileSize} version=${cached.fileMtimeNs ?? 'unknown'} modified=${cached.isModified} draftEdited=${cached.draftEdited ?? false} mode=${cached.mode}`;
       if (!cached.content && !cached.binaryContent && isTextFile(path)) {
         logInfo('file-load', `CACHE_RESTORE_EMPTY ${cacheDetails}`);
       } else {
@@ -674,6 +716,8 @@
       savedContent = cached.savedContent;
       binaryContent = cached.binaryContent;
       originalFileSize = cached.originalFileSize ?? 0;
+      fileMtimeNs = cached.fileMtimeNs ?? '';
+      draftEdited = cached.draftEdited ?? false;
       if (isTextFile(path)) textLoad = { tabId: loadTabId, path, state: 'ready' };
       readyTextContent = cached.binaryContent ? null : {
         tabId: loadTabId,
@@ -725,12 +769,17 @@
         });
       }
       fileWatcher.startWatching(path);
-      invoke<{ size: number; modified: number }>('get_file_metadata', { path })
+      invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path })
         .then(async meta => {
           if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
           const shouldReload = shouldReloadCachedFile(cached, meta, isTextFile(path));
-          logDebug('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} size=${meta.size} mtime=${meta.modified} cachedMtime=${cached.fileMtime} reload=${shouldReload}`);
-          if (shouldReload) { tabCache.delete(loadTabId); removePdfSession(loadTabId); if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`)); if (loadTabId === renderTabId && filePath === path) loadFile(path, cached); }
+          if (isTextFile(path)) logInfo('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} diskSize=${meta.size} diskVersion=${meta.modified_ns} cachedSize=${cached.originalFileSize} cachedVersion=${cached.fileMtimeNs ?? 'unknown'} reload=${shouldReload}`);
+          if (shouldReload) {
+            logInfo('file-load', `CACHE_EVICT tabId=${loadTabId} gen=${gen} path=${path} reason=metadata_changed diskSize=${meta.size} diskVersion=${meta.modified_ns} cachedSize=${cached.originalFileSize} cachedVersion=${cached.fileMtimeNs ?? 'unknown'}`);
+            tabCache.delete(loadTabId); removePdfSession(loadTabId);
+            if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`));
+            if (loadTabId === renderTabId && filePath === path) loadFile(path, cached);
+          }
         })
         .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       restoreOutlineAfterLoad();
@@ -760,6 +809,8 @@
     previewPane?.setPendingTocScrollTop(-1);
     pendingTocExpanded = null;
     isModified = false;
+    draftEdited = false;
+    fileMtimeNs = '';
     isDirectory = false;
     fileWatcher.setFileMtime(0);
     mode = 'global-normal';
@@ -891,15 +942,17 @@
         logDebug('file-load', `ABORT tabId=${loadTabId} gen=${gen} currentGen=${loadGeneration} path=${path}`);
         return;
       }
-      const loadDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${result.content.length} binary=${result.binaryContent !== null} size=${result.originalFileSize} mtime=${result.fileMtime}`;
+      const loadDetails = `tabId=${loadTabId} gen=${gen} path=${path} contentLen=${result.content.length} binary=${result.binaryContent !== null} size=${result.originalFileSize} version=${result.fileMtimeNs} state=${result.readyTextContent ? 'ready' : 'error'}`;
       if (!result.content && !result.binaryContent && result.originalFileSize > 0 && isTextFile(path)) {
         logInfo('file-load', `READ_EMPTY ${loadDetails}`);
       } else {
-        logDebug('file-load', `READ_DONE ${loadDetails}`);
+        if (isTextFile(path)) logInfo('file-load', `READ_DONE ${loadDetails}`);
+        else logDebug('file-load', `READ_DONE ${loadDetails}`);
       }
       content = result.content; binaryContent = result.binaryContent;
       readyTextContent = result.readyTextContent;
       originalFileSize = result.originalFileSize;
+      fileMtimeNs = result.fileMtimeNs;
       savedContent = result.savedContent;
       fileWatcher.setFileMtime(result.fileMtime);
       if (isTextFile(path)) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error', error: result.error ?? '读取文件失败' };
@@ -975,8 +1028,15 @@
     else if (event.ctrlKey && event.code === 'KeyS') { event.preventDefault(); saveFile(); }
   }
 
-  async function saveFile() {
-    if (!filePath || !isModified) return;
+  export async function saveCurrentContent(entry = 'editor'): Promise<boolean> {
+    return saveFile(entry);
+  }
+
+  async function saveFile(entry = 'editor'): Promise<boolean> {
+    if (!filePath || !isModified) return false;
+    const savePath = filePath;
+    const saveTabId = renderTabId;
+    const saveContent = content;
     try {
       if (archiveEditPath && archiveEditInternalPath) {
         // Save to archive (ZIP only)
@@ -988,29 +1048,54 @@
           content: bytes,
         });
       } else {
-        await invoke('write_file', { path: filePath, content });
-        // Get actual file mtime after save so metadata check doesn't
-        // falsely invalidate cached content on tab switch
-        const meta = await invoke<{ modified: number; size: number }>('get_file_metadata', { path: filePath });
+        if (!isDisplaying(saveTabId, savePath)) {
+          logInfo('text-save', `id=${crypto.randomUUID()} entry=${entry} tabId=${saveTabId} path=${savePath} bytes=${new TextEncoder().encode(saveContent).length} result=rejected reason=identity_changed`);
+          throw new Error('编辑目标已切换，请返回原文件重试');
+        }
+        const state = textLoad?.tabId === saveTabId && textLoad.path === savePath ? textLoad.state : 'transition';
+        const meta = await saveTextDraft(savePath, saveContent, state, originalFileSize, fileMtimeNs, draftEdited, entry);
+        if (filePath !== savePath || renderTabId !== saveTabId) throw new Error('保存完成，但当前显示目标已切换');
         fileWatcher.setFileMtime(meta.modified);
         originalFileSize = meta.size;
+        fileMtimeNs = meta.modifiedNs;
         const cached = tabCache.get(renderTabId);
         if (cached && cached.filePath === filePath) {
           cached.content = content;
-          cached.savedContent = content;
-          cached.isModified = false;
+          cached.savedContent = saveContent;
+          cached.isModified = content !== saveContent;
           cached.fileMtime = meta.modified;
           cached.originalFileSize = meta.size;
+          cached.fileMtimeNs = meta.modifiedNs;
+          cached.draftEdited = content !== saveContent;
         }
       }
-      savedContent = content; isModified = false;
+      savedContent = saveContent; isModified = content !== saveContent;
+      draftEdited = isModified;
       const saveSlot = previewPane?.getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
-    } catch (error) { logError('PreviewEditor', `Failed to save file: ${error}`); }
+      onToast('文件已保存');
+      return true;
+    } catch (error) { logError('PreviewEditor', `Failed to save file: ${error}`); onToast(`保存失败：${error}`); return false; }
   }
 
   function getFileName(): string { if (!filePath) return ''; return filePath.split('\\').pop() || filePath.split('/').pop() || ''; }
   export function setContent(newContent: string) { content = newContent; savedContent = newContent; isModified = false; }
+  export async function saveFullscreenContent(path: string, newContent: string): Promise<boolean> {
+    if (!filePath || filePath !== path || !isDisplaying(renderTabId, path)) {
+      logInfo('text-save', `id=${crypto.randomUUID()} entry=fullscreen path=${path} bytes=${new TextEncoder().encode(newContent).length} result=rejected reason=identity_changed`);
+      onToast('保存失败：编辑目标已切换');
+      return false;
+    }
+    try {
+      const state = textLoad?.tabId === renderTabId && textLoad.path === path ? textLoad.state : 'transition';
+      const meta = await saveTextDraft(path, newContent, state, originalFileSize, fileMtimeNs, true, 'fullscreen');
+      if (filePath !== path) return false;
+      content = newContent; savedContent = newContent; isModified = false; draftEdited = false;
+      originalFileSize = meta.size; fileMtimeNs = meta.modifiedNs; fileWatcher.setFileMtime(meta.modified);
+      onToast('文件已保存');
+      return true;
+    } catch (error) { onToast(`保存失败：${error}`); return false; }
+  }
   export function getContent(): string { return content; }
   export function getFile(): string | null { return filePath; }
   export function getPdfInfo(): { currentPage: number; pageCount: number; filePath: string | null } { return { currentPage: pdfState.getPdfCurrentPage(), pageCount: pdfState.getPdfPageCount(), filePath }; }
@@ -1183,7 +1268,7 @@
       batchRenameTempPath={batchRenameTempPath}
       isDirectEditorFile={codeFileDirectEdit}
       onModeChange={(m) => { mode = m; }}
-      onContentChange={(c) => { content = c; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
+      onContentChange={(c) => { content = c; draftEdited = true; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
       onSavedContentChange={(c) => { savedContent = c; }}
       onModifiedChange={(m) => { isModified = m; }}
       onClipboardBridgeChange={(b) => { clipboardBridge = b; }}
@@ -1204,7 +1289,7 @@
       isModified={isModified}
       batchRenameTempPath={batchRenameTempPath}
       onModeChange={(m) => { mode = m; }}
-      onContentChange={(c) => { content = c; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
+      onContentChange={(c) => { content = c; draftEdited = true; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
       onSavedContentChange={(c) => { savedContent = c; }}
       onModifiedChange={(m) => { isModified = m; }}
       onToast={(msg) => onToast(msg)}

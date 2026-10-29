@@ -152,3 +152,9 @@ TBD - created by archiving change mru-tab-switcher. Update Purpose after archive
 - **THEN** 系统仍以 B 的 tab 和预览槽身份恢复 B 独立的编辑状态
 - **AND** 不把 A 的内容状态当成 B 已完成的恢复
 
+#### Scenario: 返回原 tab
+
+- **WHEN** 用户预览其他 tab 后返回原 tab 并退出切换器
+- **THEN** 原 tab 内容保持可见
+- **AND** 原有不更新 MRU 的语义保持不变
+

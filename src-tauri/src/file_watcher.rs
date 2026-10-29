@@ -81,7 +81,10 @@ impl FileWatcher {
                         || p_str.to_lowercase() == normalized.to_lowercase()
                 });
                 if matched {
-                    info!("[file_watcher] Emitting file-changed for {}", normalized);
+                    match crate::commands::file_info::get_file_metadata(normalized.clone()) {
+                        Ok(meta) => info!("[file_watcher] event=changed path={} kind={:?} size={} version={} action=emit", normalized, evt.kind, meta.size, meta.modified_ns),
+                        Err(e) => info!("[file_watcher] event=changed path={} kind={:?} metadata=unavailable reason={} action=emit", normalized, evt.kind, e),
+                    }
                     if let Err(e) = app_handle.emit("file-changed", normalized.clone()) {
                         error!("[file_watcher] Emit error: {}", e);
                     }

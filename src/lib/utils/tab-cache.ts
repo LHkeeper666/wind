@@ -32,8 +32,10 @@ export interface TabEditorCache {
   pdfScale: number;
   pdfScrollTop: number;
   fileMtime: number;
+  fileMtimeNs?: string;
   originalFileSize: number;
   textLoadState: 'ready' | 'loading' | 'error' | 'transition';
+  draftEdited?: boolean;
   tocOpen: boolean;
   tocHeadings: TocHeading[];
   tocExpandedLines: number[];
@@ -49,10 +51,11 @@ export function isValidTextCache(entry: TabEditorCache): boolean {
     && !(entry.content === '' && entry.originalFileSize > 0);
 }
 
-export function shouldReloadCachedFile(entry: TabEditorCache, meta: { size: number; modified: number }, isText: boolean): boolean {
+export function shouldReloadCachedFile(entry: TabEditorCache, meta: { size: number; modified: number; modified_ns?: string }, isText: boolean): boolean {
   if (entry.isModified) return false;
   return (isText && meta.size > 0 && entry.content === '' && entry.binaryContent === null)
-    || meta.modified !== entry.fileMtime;
+    || meta.modified !== entry.fileMtime
+    || (!!entry.fileMtimeNs && !!meta.modified_ns && meta.modified_ns !== entry.fileMtimeNs);
 }
 
 export function isSamePreviewIdentity(
@@ -65,6 +68,13 @@ export function isSamePreviewIdentity(
 export function textEditAction(state: 'loading' | 'ready' | 'error' | 'transition' | null): 'wait' | 'error' | 'edit' {
   if (state === 'error') return 'error';
   return state === 'ready' ? 'edit' : 'wait';
+}
+
+export function textSaveRejection(state: 'loading' | 'ready' | 'error' | 'transition',
+  modifiedNs: string, content: string, originalSize: number, edited: boolean): string | null {
+  if (state !== 'ready' || !modifiedNs) return '文件尚未成功加载，请重新加载后保存';
+  if (content === '' && originalSize > 0 && !edited) return '空内容缺少有效编辑来源，请重新加载文件';
+  return null;
 }
 
 export function collectExpandedLines(headings: TocHeading[]): number[] {

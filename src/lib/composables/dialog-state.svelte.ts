@@ -128,15 +128,9 @@ export async function handleUnsavedSave() {
   const action = pendingAction;
   pendingActionPath = '';
   const filePath = _selectedFile?.();
-  const content = _previewEditor?.()?.getContent();
-  if (filePath && content !== undefined) {
-    try {
-      await invoke('write_file', { path: filePath, content });
-      _previewEditor?.()?.setContent(content);
-    } catch (e) {
-      _showToast?.(`Failed to save: ${e}`);
-      return;
-    }
+  const editor = _previewEditor?.();
+  if (filePath && editor) {
+    if (editor.getFile() !== filePath || !await editor.saveCurrentContent('unsaved-prompt')) return;
   }
   dispatchPendingAction(targetPath, action);
 }

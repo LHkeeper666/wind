@@ -37,13 +37,13 @@
     content = '',
     initialLine = 0,
     onClose = () => {},
-    onSave = (content: string) => {},
+    onSave = async (_content: string, _path: string) => false,
   }: {
     filePath: string | null;
     content: string;
     initialLine?: number;
     onClose?: () => void;
-    onSave?: (content: string) => void;
+    onSave?: (content: string, path: string) => Promise<boolean>;
   } = $props();
 
   let editorContainer: HTMLElement | undefined = $state(undefined);
@@ -215,9 +215,9 @@
         onClose();
       }
     } else if (trimmed === 'wq' || trimmed === 'x') {
-      saveFile().then(() => { onClose(); });
+      saveFile().then(saved => { if (saved) onClose(); });
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
-      saveFile().then(() => { onClose(); });
+      saveFile().then(saved => { if (saved) onClose(); });
     } else if (editorView) {
       const cm = getCM(editorView);
       if (cm) { Vim.handleEx(cm as any, trimmed); }
@@ -518,15 +518,17 @@
     }
   }
 
-  async function saveFile() {
-    if (!filePath || !isModified) return;
+  async function saveFile(): Promise<boolean> {
+    if (!filePath) return false;
+    if (!isModified) return true;
     try {
-      await invoke('write_file', { path: filePath, content });
+      if (!await onSave(content, filePath)) return false;
       savedContent = content;
       isModified = false;
-      onSave(content);
+      return true;
     } catch (error) {
       logError('FullscreenEditor', `Failed to save file: ${error}`);
+      return false;
     }
   }
 
