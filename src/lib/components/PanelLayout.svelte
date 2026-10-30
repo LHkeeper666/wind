@@ -1219,6 +1219,7 @@
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
+        onModifiedChange={(tabId, slotId, path, modified) => tabs.setSlotModified(tabId, slotId, path, modified)}
         onToggleLayout={togglePreviewLayout}
         batchRenameTempPath={batchRenameTempPath}
         onBatchRenameSave={handleBatchRenameSave}

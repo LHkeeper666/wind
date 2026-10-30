@@ -5,7 +5,7 @@ import { Vim } from '@replit/codemirror-vim';
 import { vimOptions } from './vim-options';
 
 export interface VimCommandCallbacks {
-  save: () => Promise<void>;
+  save: () => Promise<boolean>;
   quit: () => void;
   forceQuit: () => void;
   isModified: () => boolean;
@@ -42,8 +42,8 @@ export function createVimCommandHandler(
         if (callbacks.isModified()) { onStatus?.('E37: No write since last change (add ! to override)'); return; }
         callbacks.quit(); return;
       }
-      if (trimmed === 'wq' || trimmed === 'wq!' || trimmed === 'x' || trimmed === 'x!') { callbacks.save().then(() => callbacks.quit()); return; }
-      if (trimmed === 'wqall' || trimmed === 'wqall!') { callbacks.save().then(() => callbacks.forceQuit()); return; }
+      if (trimmed === 'wq' || trimmed === 'wq!' || trimmed === 'x' || trimmed === 'x!') { callbacks.save().then(saved => { if (saved) callbacks.quit(); }); return; }
+      if (trimmed === 'wqall' || trimmed === 'wqall!') { callbacks.save().then(saved => { if (saved) callbacks.forceQuit(); }); return; }
       if (trimmed.startsWith('!')) {
         const shellCmd = trimmed.slice(1).trim();
         if (!shellCmd) { onStatus?.('E471: Argument required'); return; }

@@ -194,6 +194,17 @@ function createTabsStore() {
         ? { ...tab, slots: tab.slots.map(slot => slot.id === tab.activeSlotId ? { ...slot, ...snapshot } : slot) } : tab) }));
     },
 
+    setSlotModified(tabId: number, slotId: number, filePath: string, isModified: boolean) {
+      const currentSlot = get({ subscribe }).tabs.find(tab => tab.id === tabId)?.slots
+        .find(slot => slot.id === slotId && slot.filePath === filePath);
+      if (!currentSlot || currentSlot.isModified === isModified) return;
+      update(state => {
+        return { ...state, tabs: state.tabs.map(item => item.id === tabId
+          ? { ...item, slots: item.slots.map(slot => slot.id === slotId && slot.filePath === filePath ? { ...slot, isModified } : slot) }
+          : item) };
+      });
+    },
+
     saveFocusTarget(target: NonNullable<TabState['focusTarget']>) {
       update(state => ({ ...state, tabs: state.tabs.map(tab => tab.id === state.activeTabId
         ? { ...tab, focusTarget: target, slots: target === 'content' || target === 'editor' || target === 'outline'

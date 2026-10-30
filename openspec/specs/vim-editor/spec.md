@@ -456,3 +456,27 @@ The system SHALL apply the same tab-sensitive file policy in both the preview pa
 - **AND** 编辑器处于 insert 模式
 - **AND** 用户按下 `Enter`
 - **THEN** 两个编辑器界面用相同的递增 marker 延续列表
+
+### Requirement: 保存并退出命令等待保存结果
+
+预览编辑器的 `:wq` 和 `:x` SHALL 等待保存操作完成，仅在保存成功且当前草稿无未保存修改时退出编辑模式。保存失败 SHALL 向用户显示原因并保持编辑模式。
+
+#### Scenario: 保存成功后退出
+
+- **WHEN** 用户修改文件并执行 `:wq`，保存成功且没有后续修改
+- **THEN** 编辑器在保存完成后退出编辑模式
+
+#### Scenario: 保存失败时保留编辑模式
+
+- **WHEN** 用户执行 `:wq`，保存因冲突或写入错误而失败
+- **THEN** 编辑器显示失败原因，保留编辑模式和未保存草稿
+
+#### Scenario: 保存期间继续修改
+
+- **WHEN** 用户执行 `:wq` 后、保存完成前再次修改草稿
+- **THEN** 编辑器保留编辑模式，且新修改仍标记为未保存
+
+#### Scenario: 无修改时退出
+
+- **WHEN** 用户对无未保存修改的文件执行 `:wq`
+- **THEN** 系统先核对磁盘版本；若外部版本已变化，重新加载该版本后退出编辑模式

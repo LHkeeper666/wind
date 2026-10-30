@@ -27,7 +27,7 @@
     onToast = (message: string) => {},
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
-    onSaveFile = () => {},
+    onSaveFile = async () => false,
   }: {
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
     editorView: EditorView | undefined;
@@ -47,7 +47,7 @@
     onToast?: (message: string) => void;
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
-    onSaveFile?: () => void;
+    onSaveFile?: () => Promise<boolean>;
   } = $props();
 
   let overlayElement: HTMLElement | undefined = $state(undefined);
@@ -247,7 +247,7 @@
     }
   }
 
-  function processOverlayCommand(cmd: string) {
+  async function processOverlayCommand(cmd: string) {
     const trimmed = cmd.trim();
     if (trimmed.startsWith('!')) {
       const shellCmd = trimmed.slice(1).trim();
@@ -266,10 +266,10 @@
       else onModeChange('global-normal');
     } else if (trimmed === 'wq' || trimmed === 'x') {
       if (batchRenameTempPath) onBatchRenameSave(content);
-      else { onSaveFile(); onModeChange('global-normal'); }
+      else if (await onSaveFile()) onModeChange('global-normal');
     } else if (trimmed === 'wqall' || trimmed === 'wqall!') {
       if (batchRenameTempPath) onBatchRenameSave(content);
-      else onSaveFile();
+      else await onSaveFile();
     } else if (trimmed === 'reg' || trimmed === 'registers') {
       const regOutput = getRegistersOutput();
       outputText = regOutput;

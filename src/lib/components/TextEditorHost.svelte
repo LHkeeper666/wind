@@ -56,7 +56,6 @@
     activeColumn = '',
     onModeChange = (mode: 'global-normal' | 'editor-normal' | 'editor-insert') => {},
     onContentChange = (content: string) => {},
-    onSavedContentChange = (content: string) => {},
     onModifiedChange = (isModified: boolean) => {},
     onOutputVisibleChange = undefined as ((visible: boolean) => void) | undefined,
     onOutputTextChange = undefined as ((text: string) => void) | undefined,
@@ -67,7 +66,7 @@
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
     isDirectEditorFile = false,
-    onSaveFile = () => {},
+    onSaveFile = async () => false,
     onToast = (_msg: string) => {},
   }: {
     tabId: number;
@@ -82,7 +81,6 @@
     activeColumn: string;
     onModeChange: (mode: 'global-normal' | 'editor-normal' | 'editor-insert') => void;
     onContentChange: (content: string) => void;
-    onSavedContentChange: (content: string) => void;
     onModifiedChange: (isModified: boolean) => void;
     onOutputVisibleChange?: (visible: boolean) => void;
     onOutputTextChange?: (text: string) => void;
@@ -93,7 +91,7 @@
     onBatchRenameSave: (content: string) => void;
     onBatchRenameCancel: () => void;
     isDirectEditorFile: boolean;
-    onSaveFile: () => void;
+    onSaveFile: () => Promise<boolean>;
     onToast: (msg: string) => void;
   } = $props();
 
@@ -313,7 +311,7 @@
     return editorFilePath;
   }
 
-  export function initEditor(textSnapshot: { tabId: number; path: string; content: string; generation: number }): void {
+  export function initEditor(textSnapshot: { tabId: number; path: string; content: string; generation: number }, baselineContent: string): void {
     if (!editorContainer) return;
     if (activateEditorSession(textSnapshot.tabId, textSnapshot.path)) return;
     destroyEditorSession(textSnapshot.tabId);
@@ -344,7 +342,7 @@
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
-          save: async () => { if (batchRenameTempPath) onBatchRenameSave(content); else onSaveFile(); },
+          save: async () => { if (batchRenameTempPath) { onBatchRenameSave(content); return true; } return onSaveFile(); },
           quit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!isDirectEditorFile) onModeChange('global-normal'); },
           forceQuit: () => { if (batchRenameTempPath) onBatchRenameCancel(); else if (!isDirectEditorFile) { onContentChange(savedContent); onModifiedChange(false); onModeChange('global-normal'); } },
           isModified: () => content !== savedContent,
@@ -393,8 +391,7 @@
     const view = new EditorView({ state, parent: host });
     editorView = view;
     onEditorViewChange(view);
-    onSavedContentChange(view.state.doc.toString());
-    onModifiedChange(false);
+    onModifiedChange(view.state.doc.toString() !== baselineContent);
 
     // Clamp editor scroll on container resize (terminal drag, panel resize, etc.)
     const resizeObserver = new ResizeObserver(() => {

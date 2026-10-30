@@ -48,6 +48,7 @@
     onFullscreen = () => {},
     onSwitchPanel = (direction: 'left' | 'right') => {},
     onToast = (message: string) => {},
+    onModifiedChange = (_tabId: number, _slotId: number, _path: string, _modified: boolean) => {},
     onToggleLayout = () => {},
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
@@ -64,6 +65,7 @@
     onFullscreen?: () => void;
     onSwitchPanel?: (direction: 'left' | 'right') => void;
     onToast?: (message: string) => void;
+    onModifiedChange?: (tabId: number, slotId: number, path: string, modified: boolean) => void;
     onToggleLayout?: () => void;
     batchRenameTempPath?: string | null;
     onBatchRenameSave?: (content: string) => void;
@@ -144,6 +146,11 @@
       const b = filePath.replace(/\//g, '\\').toLowerCase();
       if (a !== b) return;
       logInfo('file-load', `WATCH_EVENT tabId=${renderTabId} path=${filePath} mode=${mode} state=${textLoad?.state ?? 'none'} modified=${isModified} contentLen=${content.length} expectedSize=${originalFileSize} expectedVersion=${fileMtimeNs}`);
+      if (isTextFile(filePath) && !get(layout).archiveState) {
+        if (savesInFlight > 0) { checkAfterSave = true; return; }
+        await reconcileTextFileVersion(false);
+        return;
+      }
       if (mode !== 'global-normal') {
         logInfo('file-load', `WATCH_SKIP tabId=${renderTabId} path=${filePath} reason=editor_active`);
         return;
@@ -171,6 +178,10 @@
   let draftEdited: boolean = $state(false);
   let textLoad = $state<{ tabId: number; path: string; state: 'loading' | 'ready' | 'error' | 'transition'; error?: string } | null>(null);
   let isModified: boolean = $state(false);
+  let externalChangePending = $state<{ tabId: number; path: string; version: string } | null>(null);
+  let externalCheckInFlight: { tabId: number; path: string; promise: Promise<boolean> } | null = null;
+  let savesInFlight = 0;
+  let checkAfterSave = false;
   let mode: 'global-normal' | 'editor-normal' | 'editor-insert' = $state('global-normal');
   let panelElement: HTMLElement | undefined = $state(undefined);
   let editorView: EditorView | undefined = $state(undefined);
@@ -393,6 +404,62 @@
     return displayedIdentity !== null && isSamePreviewIdentity(displayedIdentity, { tabId, path });
   }
 
+  async function reconcileTextFileVersion(showError: boolean): Promise<boolean> {
+    if (!filePath || !isTextFile(filePath) || get(layout).archiveState) return true;
+    const path = filePath;
+    const tabId = renderTabId;
+    if (externalCheckInFlight?.tabId === tabId && externalCheckInFlight.path === path) {
+      return externalCheckInFlight.promise;
+    }
+    const promise = (async () => {
+      try {
+        const meta = await invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path });
+        if (!isDisplaying(tabId, path)) return false;
+        if (textLoad?.tabId !== tabId || textLoad.path !== path || textLoad.state !== 'ready') return true;
+        if (meta.size === originalFileSize && meta.modified_ns === fileMtimeNs) {
+          if (externalChangePending?.tabId === tabId && externalChangePending.path === path) externalChangePending = null;
+          return true;
+        }
+        if (isModified) {
+          if (externalChangePending?.tabId !== tabId || externalChangePending.path !== path || externalChangePending.version !== meta.modified_ns) {
+            onToast('文件已被外部修改；当前草稿已保留，保存时会检查冲突。放弃草稿可用 :q!');
+          }
+          externalChangePending = { tabId, path, version: meta.modified_ns };
+          return false;
+        }
+        externalChangePending = null;
+        const restoreMode = mode;
+        tabCache.delete(tabId);
+        destroyEditorSession(tabId);
+        await loadFile(path);
+        if (!isDisplaying(tabId, path)) return false;
+        if (textLoad?.tabId !== tabId || textLoad.path !== path || textLoad.state !== 'ready') {
+          if (showError) onToast('文件重新加载失败');
+          return false;
+        }
+        if (restoreMode !== 'global-normal') {
+          mode = restoreMode;
+        }
+        onToast('文件已从磁盘更新');
+        return true;
+      } catch (error) {
+        logError('PreviewEditor', `Failed to check external file version: ${error}`);
+        if (showError) onToast(`无法检查文件版本：${error}`);
+        return false;
+      }
+    })();
+    externalCheckInFlight = { tabId, path, promise };
+    try { return await promise; }
+    finally { if (externalCheckInFlight?.promise === promise) externalCheckInFlight = null; }
+  }
+
+  $effect(() => {
+    const pending = externalChangePending;
+    if (pending && !isModified && pending.tabId === renderTabId && pending.path === filePath) {
+      void reconcileTextFileVersion(false);
+    }
+  });
+
   export function getEditorStateSnapshot(): {
     mode: 'global-normal' | 'editor-normal' | 'editor-insert';
     previewScrollTop: number;
@@ -563,6 +630,9 @@
       }
       if (changed && codeFileDirectEdit) {
         previewPane?.clearActiveSlot();
+      }
+      if (changed && filePath && isTextFile(filePath) && !get(layout).archiveState) {
+        void reconcileTextFileVersion(false);
       }
       if (changed && panelElement && !tocState.getTocFocused() && activeColumn === 'preview') {
         panelElement.focus();
@@ -774,9 +844,14 @@
           if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
           const shouldReload = shouldReloadCachedFile(cached, meta, isTextFile(path));
           if (isTextFile(path)) logInfo('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} diskSize=${meta.size} diskVersion=${meta.modified_ns} cachedSize=${cached.originalFileSize} cachedVersion=${cached.fileMtimeNs ?? 'unknown'} reload=${shouldReload}`);
+          if (cached.isModified && isTextFile(path)
+              && (meta.size !== cached.originalFileSize || meta.modified_ns !== cached.fileMtimeNs)) {
+            void reconcileTextFileVersion(false);
+          }
           if (shouldReload) {
             logInfo('file-load', `CACHE_EVICT tabId=${loadTabId} gen=${gen} path=${path} reason=metadata_changed diskSize=${meta.size} diskVersion=${meta.modified_ns} cachedSize=${cached.originalFileSize} cachedVersion=${cached.fileMtimeNs ?? 'unknown'}`);
             tabCache.delete(loadTabId); removePdfSession(loadTabId);
+            if (isTextFile(path)) destroyEditorSession(loadTabId);
             if (isPdfFile(path)) await invoke('invalidate_pdf_document', { path }).catch(e => logError('PreviewEditor', `PDF cache invalidation failed: ${e}`));
             if (loadTabId === renderTabId && filePath === path) loadFile(path, cached);
           }
@@ -844,6 +919,7 @@
         const result = await loadArchiveFile(ctx, checkGen);
         if ('aborted' in result) return;
         content = result.content;
+        savedContent = result.content;
         binaryContent = result.binaryContent;
         readyTextContent = result.readyTextContent;
         if (isTextFile(path) && !result.placeholder) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error' };
@@ -991,7 +1067,7 @@
 
   function initEditor(textSnapshot: TextContentSnapshot) {
     if (!isCurrentTextSnapshot(textSnapshot)) return;
-    textEditorHost?.initEditor(textSnapshot);
+    textEditorHost?.initEditor(textSnapshot, savedContent);
   }
 
   let clipboardBridge: ClipboardBridge | null = null;
@@ -1003,15 +1079,17 @@
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!filePath || !isTextFile(filePath)) { onToast('此文件类型不支持编辑'); return; }
-      const currentLoad = textLoad?.tabId === renderTabId && textLoad.path === filePath ? textLoad : null;
-      const action = textEditAction(currentLoad?.state ?? null);
-      if (action === 'wait') {
-        onToast('文件加载中，请稍候'); return;
-      }
-      if (action === 'error') {
-        onToast(`${currentLoad?.error ?? '文件读取失败'}，按 r 重试`); return;
-      }
-      editorTargetLine = getVisibleLine(); mode = 'editor-normal';
+      const editPath = filePath;
+      const editTabId = renderTabId;
+      void (async () => {
+        const diskReady = await reconcileTextFileVersion(true);
+        if ((!diskReady && !isModified) || !isDisplaying(editTabId, editPath)) return;
+        const currentLoad = textLoad?.tabId === editTabId && textLoad.path === editPath ? textLoad : null;
+        const action = textEditAction(currentLoad?.state ?? null);
+        if (action === 'wait') { onToast('文件加载中，请稍候'); return; }
+        if (action === 'error') { onToast(`${currentLoad?.error ?? '文件读取失败'}，按 r 重试`); return; }
+        editorTargetLine = getVisibleLine(); mode = 'editor-normal';
+      })();
     }
     else if (event.code === 'KeyR' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey
         && filePath && textLoad?.tabId === renderTabId && textLoad.path === filePath && textLoad.state === 'error') {
@@ -1034,10 +1112,14 @@
   }
 
   async function saveFile(entry = 'editor'): Promise<boolean> {
-    if (!filePath || !isModified) return false;
+    if (!filePath) return false;
+    if (!isModified) return reconcileTextFileVersion(true);
     const savePath = filePath;
+    const saveWorkspaceId = previewTabId ?? currentTabId;
+    const saveSlotId = slotId;
     const saveTabId = renderTabId;
     const saveContent = content;
+    savesInFlight++;
     try {
       if (archiveEditPath && archiveEditInternalPath) {
         // Save to archive (ZIP only)
@@ -1048,6 +1130,7 @@
           internalPath: archiveEditInternalPath,
           content: bytes,
         });
+        if (!isDisplaying(saveTabId, savePath)) throw new Error('保存完成，但当前显示目标已切换');
       } else {
         if (!isDisplaying(saveTabId, savePath)) {
           logInfo('text-save', `id=${crypto.randomUUID()} entry=${entry} tabId=${saveTabId} path=${savePath} bytes=${new TextEncoder().encode(saveContent).length} result=rejected reason=identity_changed`);
@@ -1072,11 +1155,19 @@
       }
       savedContent = saveContent; isModified = content !== saveContent;
       draftEdited = isModified;
+      onModifiedChange(saveWorkspaceId, saveSlotId, savePath, isModified);
       const saveSlot = previewPane?.getActiveSlot();
       if (saveSlot) { delete saveSlot.dataset.rendered; }
-      onToast('文件已保存');
-      return true;
+      onToast(isModified ? '文件已保存，但仍有新的未保存修改' : '文件已保存');
+      return !isModified;
     } catch (error) { logError('PreviewEditor', `Failed to save file: ${error}`); onToast(`保存失败：${error}`); return false; }
+    finally {
+      savesInFlight--;
+      if (savesInFlight === 0 && checkAfterSave) {
+        checkAfterSave = false;
+        void reconcileTextFileVersion(false);
+      }
+    }
   }
 
   function getFileName(): string { if (!filePath) return ''; return filePath.split('\\').pop() || filePath.split('/').pop() || ''; }
@@ -1270,8 +1361,7 @@
       isDirectEditorFile={codeFileDirectEdit}
       onModeChange={(m) => { mode = m; }}
       onContentChange={(c) => { content = c; draftEdited = true; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
-      onSavedContentChange={(c) => { savedContent = c; }}
-      onModifiedChange={(m) => { isModified = m; }}
+      onModifiedChange={(m) => { isModified = m; if (filePath) onModifiedChange(previewTabId ?? currentTabId, slotId, filePath, m); }}
       onClipboardBridgeChange={(b) => { clipboardBridge = b; }}
       onEditorViewChange={(v) => { editorView = v; }}
       onSaveFile={() => saveFile()}
@@ -1292,7 +1382,7 @@
       onModeChange={(m) => { mode = m; }}
       onContentChange={(c) => { content = c; draftEdited = true; if (filePath) textLoad = { tabId: renderTabId, path: filePath, state: 'ready' }; }}
       onSavedContentChange={(c) => { savedContent = c; }}
-      onModifiedChange={(m) => { isModified = m; }}
+      onModifiedChange={(m) => { isModified = m; if (filePath) onModifiedChange(previewTabId ?? currentTabId, slotId, filePath, m); }}
       onToast={(msg) => onToast(msg)}
       onBatchRenameSave={onBatchRenameSave}
       onBatchRenameCancel={onBatchRenameCancel}

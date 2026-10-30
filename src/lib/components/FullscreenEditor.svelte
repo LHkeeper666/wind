@@ -408,7 +408,7 @@
       vim({ status: false }),
       createVimCommandHandler(
         () => ({
-          save: async () => { await saveFile(); },
+          save: async () => saveFile(),
           quit: () => { onClose(); },
           forceQuit: () => { onClose(); },
           isModified: () => isModified,
