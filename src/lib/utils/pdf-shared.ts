@@ -26,6 +26,103 @@ export interface PdfSearchState {
   currentMatchIndex: number;
 }
 
+export interface PdfTextCharacter {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfPageTextLayout {
+  page: number;
+  characters: PdfTextCharacter[];
+}
+
+export class PdfTextLayoutCache {
+  private pages = new Map<string, PdfPageTextLayout>();
+  private pending = new Map<string, Promise<PdfPageTextLayout>>();
+  constructor(private readonly maxPages = 12) {}
+
+  async get(pathRevision: string, path: string, page: number): Promise<PdfPageTextLayout> {
+    const key = `${pathRevision}:${page}`;
+    const cached = this.pages.get(key);
+    if (cached) {
+      this.pages.delete(key);
+      this.pages.set(key, cached);
+      return cached;
+    }
+    let request = this.pending.get(key);
+    if (!request) {
+      request = invoke<PdfPageTextLayout>('get_pdf_page_text', { path, page });
+      this.pending.set(key, request);
+    }
+    try {
+      const layout = await request;
+      if (this.pending.get(key) === request) {
+        this.pages.set(key, layout);
+        while (this.pages.size > this.maxPages) this.pages.delete(this.pages.keys().next().value!);
+      }
+      return layout;
+    } finally {
+      if (this.pending.get(key) === request) this.pending.delete(key);
+    }
+  }
+
+  clear(): void {
+    this.pages.clear();
+    this.pending.clear();
+  }
+}
+
+export function pdfTextRect(character: PdfTextCharacter, pageHeight: number, scale: number) {
+  return {
+    left: character.x * scale,
+    top: (pageHeight - character.y - character.height) * scale,
+    width: character.width * scale,
+    height: character.height * scale,
+  };
+}
+
+export function shouldExecutePdfSearch(input: string, executed: string, pending: boolean): boolean {
+  return pending || input.trim() !== executed;
+}
+
+export function renderPdfTextLayer(layer: HTMLElement, layout: PdfPageTextLayout, pageHeight: number, scale: number): void {
+  layer.replaceChildren();
+  const fragment = document.createDocumentFragment();
+  for (const character of layout.characters) {
+    if (!character.text || character.text === '\0') continue;
+    const span = document.createElement('span');
+    span.textContent = character.text;
+    const rect = pdfTextRect(character, pageHeight, scale);
+    if (rect.width > 0 && rect.height > 0 && Number.isFinite(rect.left + rect.top + rect.width + rect.height)) {
+      span.style.left = `${rect.left}px`;
+      span.style.top = `${rect.top}px`;
+      span.style.width = `${rect.width}px`;
+      span.style.height = `${rect.height}px`;
+      span.style.fontSize = `${rect.height}px`;
+      span.className = 'pdf-text-character';
+    } else {
+      span.className = 'pdf-text-whitespace';
+    }
+    fragment.appendChild(span);
+  }
+  layer.appendChild(fragment);
+}
+
+export function copyPdfTextSelection(event: ClipboardEvent, root: HTMLElement | undefined): void {
+  const selection = window.getSelection();
+  if (!root || !selection || selection.isCollapsed || selection.rangeCount === 0) return;
+  const anchor = selection.anchorNode?.parentElement?.closest('.pdf-text-layer');
+  const focus = selection.focusNode?.parentElement?.closest('.pdf-text-layer');
+  if (!anchor || !focus || !root.contains(anchor) || !root.contains(focus)) return;
+  const text = selection.getRangeAt(0).cloneContents().textContent;
+  if (!text) return;
+  event.clipboardData?.setData('text/plain', text);
+  event.preventDefault();
+}
+
 export const RENDER_SCALE = 2.0;
 export const PRELOAD_RANGE = 3;
 const PDF_PAGE_SEPARATOR = 1;

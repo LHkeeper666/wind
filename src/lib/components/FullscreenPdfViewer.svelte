@@ -1,10 +1,14 @@
 <script lang="ts">
-import { onMount, onDestroy } from 'svelte';
+import { onMount, onDestroy, tick } from 'svelte';
   import { formatSize } from '$lib/utils/file-types';
   import { logError } from '$lib/utils/log';
   import {
     type PdfPageData,
     type PdfSearchState,
+    PdfTextLayoutCache,
+    renderPdfTextLayer,
+    shouldExecutePdfSearch,
+    copyPdfTextSelection,
     PdfPageCache,
     fetchPdfPage,
     preloadPdfPages,
@@ -36,6 +40,7 @@ import { onMount, onDestroy } from 'svelte';
 
   // Canvas & viewport
   let canvasEl: HTMLCanvasElement | undefined = $state(undefined);
+  let textLayerEl: HTMLDivElement | undefined = $state(undefined);
   let viewportEl: HTMLDivElement | undefined = $state(undefined);
   let overlayEl: HTMLDivElement | undefined = $state(undefined);
 
@@ -59,9 +64,13 @@ import { onMount, onDestroy } from 'svelte';
   let searchState: PdfSearchState = $state({ results: [], currentMatchPage: 0, currentMatchIndex: 0 });
   let isSearching = $state(false);
   let searchStatus = $state('');
+  let executedQuery = '';
+  let searchRequest = 0;
+  let pageRequest = 0;
 
   // Preload cache
   let pageCache = new PdfPageCache(16 * 1024 * 1024);
+  let textCache = new PdfTextLayoutCache(4);
 
   const PAN_STEP = 100;
   const ZOOM_STEP = 0.25;
@@ -90,26 +99,23 @@ import { onMount, onDestroy } from 'svelte';
     }
   }
 
-  // When canvasEl becomes available AND we have page data, draw
-  $effect(() => {
-    const canvas = canvasEl;
-    const data = pageData;
-    if (canvas && data) {
-      drawToCanvas(data);
-    }
-  });
-
   async function goToPage(pageNum: number) {
     if (pageNum < 0 || pageNum >= totalPages) return;
+    const request = ++pageRequest;
     currentPage = pageNum;
     isLoading = true;
     hasError = false;
 
     try {
       const data = await fetchPdfPage(pdfPath, pageNum, pageCache);
+      if (request !== pageRequest) return;
       pageData = data;
       isLoading = false;
+      await tick();
+      await drawToCanvas(data);
+      void loadText(pageNum, request);
     } catch (error) {
+      if (request !== pageRequest) return;
       logError('FullscreenPdfViewer', `Failed to render PDF page ${pageNum}: ${error}`);
       hasError = true;
       errorMessage = `Failed to render page ${pageNum}`;
@@ -119,11 +125,33 @@ import { onMount, onDestroy } from 'svelte';
     preloadPdfPages(pdfPath, pageNum, totalPages, pageCache);
   }
 
+  async function loadText(pageNum: number, request: number) {
+    try {
+      const layout = await textCache.get(pdfPath, pdfPath, pageNum);
+      if (request === pageRequest && textLayerEl && pageData) {
+        renderPdfTextLayer(textLayerEl, layout, pageData.height / RENDER_SCALE, RENDER_SCALE);
+      }
+    } catch { /* Raster rendering remains available. */ }
+  }
+
+  function positionMatch(pageNum: number, index: number) {
+    const match = searchState.results.find(result => result.page === pageNum)?.matches[index];
+    if (!match || !viewportEl || !pageData) return;
+    const x = (match.x + match.width / 2) * RENDER_SCALE;
+    const y = pageData.height - (match.y + match.height / 2) * RENDER_SCALE;
+    translateX = (viewportEl.clientWidth / 2 - (x - pageData.width / 2) * scale - viewportEl.clientWidth / 2) / scale;
+    translateY = (viewportEl.clientHeight / 2 - (y - pageData.height / 2) * scale - viewportEl.clientHeight / 2) / scale;
+  }
+
   // Search
   async function performSearch() {
-    if (!searchQuery.trim()) {
+    const query = searchQuery.trim();
+    const request = ++searchRequest;
+    if (!query) {
+      executedQuery = '';
       searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 };
       searchStatus = '';
+      if (pageData && canvasEl) void drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
       return;
     }
 
@@ -131,7 +159,9 @@ import { onMount, onDestroy } from 'svelte';
     searchStatus = 'Searching...';
 
     try {
-      const results = await searchPdfText(pdfPath, searchQuery);
+      const results = await searchPdfText(pdfPath, query);
+      if (request !== searchRequest) return;
+      executedQuery = query;
       const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
 
       if (totalMatches === 0) {
@@ -146,13 +176,17 @@ import { onMount, onDestroy } from 'svelte';
         searchStatus = `${totalMatches} matches`;
         if (results[0].page !== currentPage) {
           await goToPage(results[0].page);
+        } else if (pageData && canvasEl) {
+          await drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
         }
+        if (request === searchRequest) positionMatch(results[0].page, 0);
       }
     } catch (error) {
+      if (request !== searchRequest) return;
       logError('FullscreenPdfViewer', `Search failed: ${error}`);
       searchStatus = 'Search failed';
     } finally {
-      isSearching = false;
+      if (request === searchRequest) isSearching = false;
     }
   }
 
@@ -168,12 +202,22 @@ import { onMount, onDestroy } from 'svelte';
 
     if (target.page !== currentPage) {
       await goToPage(target.page);
+    } else if (pageData && canvasEl) {
+      await drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
     }
+    positionMatch(target.page, target.index);
+  }
+
+  function submitSearch(direction: 'next' | 'prev') {
+    if (shouldExecutePdfSearch(searchQuery, executedQuery, isSearching)) void performSearch();
+    else void navigateMatch(direction);
   }
 
   function closeSearch() {
     showSearch = false;
     searchQuery = '';
+    executedQuery = '';
+    searchRequest++;
     searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 };
     searchStatus = '';
   }
@@ -187,9 +231,7 @@ import { onMount, onDestroy } from 'svelte';
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        if (event.shiftKey) navigateMatch('prev');
-        else if (searchState.results.length > 0) navigateMatch('next');
-        else performSearch();
+        submitSearch(event.shiftKey ? 'prev' : 'next');
         return;
       }
       return;
@@ -248,11 +290,14 @@ import { onMount, onDestroy } from 'svelte';
   const position = $derived(`${currentPage + 1}/${totalPages}`);
   const zoomPercent = $derived(`${Math.round(scale * 100)}%`);
 
-  onDestroy(() => pageCache.clear());
+  onDestroy(() => { pageCache.clear(); textCache.clear(); pageRequest++; searchRequest++; });
 
   onMount(() => {
+    const handleCopy = (event: ClipboardEvent) => copyPdfTextSelection(event, overlayEl);
+    document.addEventListener('copy', handleCopy);
     requestAnimationFrame(() => overlayEl?.focus());
     goToPage(initialPage);
+    return () => document.removeEventListener('copy', handleCopy);
   });
 </script>
 
@@ -261,7 +306,7 @@ import { onMount, onDestroy } from 'svelte';
   class="pdf-viewer-overlay"
   bind:this={overlayEl}
   onkeydown={handleKeydown}
-  onclick={() => overlayEl?.focus()}
+  onclick={() => { if (window.getSelection()?.isCollapsed) overlayEl?.focus(); }}
   role="dialog"
   aria-label="Fullscreen PDF Viewer"
   tabindex="-1"
@@ -277,8 +322,7 @@ import { onMount, onDestroy } from 'svelte';
         onkeydown={(e) => {
           if (e.key === 'Escape') closeSearch();
           if (e.key === 'Enter') {
-            if (searchState.results.length > 0) navigateMatch(e.shiftKey ? 'prev' : 'next');
-            else performSearch();
+            submitSearch(e.shiftKey ? 'prev' : 'next');
           }
         }}
       />
@@ -294,7 +338,10 @@ import { onMount, onDestroy } from 'svelte';
     {:else if hasError}
       <div class="pdf-viewer-status error">{errorMessage}</div>
     {:else}
-      <canvas bind:this={canvasEl} style={canvasStyle} class="pdf-canvas"></canvas>
+      <div class="pdf-page-surface" style={canvasStyle}>
+        <canvas bind:this={canvasEl} class="pdf-canvas"></canvas>
+        <div bind:this={textLayerEl} class="pdf-text-layer"></div>
+      </div>
     {/if}
   </div>
 
@@ -372,6 +419,11 @@ import { onMount, onDestroy } from 'svelte';
     user-select: none;
     -webkit-user-drag: none;
   }
+  .pdf-page-surface { position: relative; flex: none; }
+  .pdf-page-surface .pdf-text-layer { position: absolute; inset: 0; pointer-events: none; user-select: text; }
+  .pdf-page-surface :global(.pdf-text-character) { position: absolute; display: block; color: transparent; white-space: pre; line-height: 1; overflow: hidden; pointer-events: auto; user-select: text; }
+  .pdf-page-surface :global(.pdf-text-character::selection) { background: rgba(70, 130, 220, 0.45); }
+  .pdf-page-surface :global(.pdf-text-whitespace) { position: absolute; width: 0; height: 0; overflow: hidden; color: transparent; white-space: pre; pointer-events: none; }
 
   .pdf-viewer-status {
     color: var(--text-muted);

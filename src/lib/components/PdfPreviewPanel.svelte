@@ -7,6 +7,10 @@
     type PdfPageDimensions,
     type PdfSearchState,
     type PdfLinkAnnotation,
+    PdfTextLayoutCache,
+    renderPdfTextLayer,
+    shouldExecutePdfSearch,
+    copyPdfTextSelection,
     searchPdfText,
     navigateSearchMatch,
     cumulativePageOffsets,
@@ -68,11 +72,17 @@
   let searchState: PdfSearchState = $state({ results: [], currentMatchPage: 0, currentMatchIndex: 0 });
   let isSearching = $state(false);
   let searchStatus = $state('');
+  let executedQuery = '';
+  let searchRequest = 0;
 
   // Cache
   let tileCache = new PdfTileCache();
   let renderScheduler = new PdfRenderScheduler();
   let linkCache = new Map<number, PdfLinkAnnotation[]>();
+  let textCache = new PdfTextLayoutCache();
+  let loadedText = new Map<number, string>();
+  let selectingText = false;
+  let textPointerStart: { x: number; y: number } | undefined;
   let resizeObserver: ResizeObserver | undefined;
 
   let renderedPages = new Set<number>();
@@ -218,6 +228,7 @@
       wrapper.appendChild(layer);
       slot.appendChild(wrapper);
       loadLinkOverlay(pageNum, wrapper);
+      loadTextLayer(pageNum, wrapper);
     }
     const dim = pageDimensions[pageNum];
     if (dim) {
@@ -225,6 +236,47 @@
       wrapper.style.height = `${dim.height * scale}px`;
     }
     return wrapper.querySelector<HTMLElement>('.pdf-tile-layer')!;
+  }
+
+  async function loadTextLayer(pageNum: number, wrapper: HTMLElement) {
+    const revision = pathRevision;
+    const dim = pageDimensions[pageNum];
+    if (!dim || loadedText.has(pageNum)) return;
+    loadedText.set(pageNum, revision);
+    try {
+      const layout = await textCache.get(revision, pdfPath, pageNum);
+      if (!wrapper.isConnected || pathRevision !== revision || loadedText.get(pageNum) !== revision) return;
+      const layer = document.createElement('div');
+      layer.className = 'pdf-text-layer';
+      layer.dataset.page = String(pageNum);
+      renderPdfTextLayer(layer, layout, dim.height, scale);
+      layer.addEventListener('pointerdown', event => {
+        textPointerStart = { x: event.clientX, y: event.clientY };
+      });
+      layer.addEventListener('click', event => {
+        if (!textPointerStart || Math.hypot(event.clientX - textPointerStart.x, event.clientY - textPointerStart.y) > 4 || !window.getSelection()?.isCollapsed) return;
+        const link = [...wrapper.querySelectorAll<HTMLElement>('.link-rect')]
+          .find(rect => {
+            const bounds = rect.getBoundingClientRect();
+            return event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+          });
+        link?.click();
+      });
+      wrapper.appendChild(layer);
+    } catch {
+      loadedText.delete(pageNum);
+    }
+  }
+
+  function updateTextLayers() {
+    for (const layer of scrollEl?.querySelectorAll<HTMLElement>('.pdf-text-layer') || []) {
+      const pageNum = Number(layer.dataset.page);
+      const dim = pageDimensions[pageNum];
+      if (!dim) continue;
+      void textCache.get(pathRevision, pdfPath, pageNum).then(layout => {
+        if (layer.isConnected) renderPdfTextLayer(layer, layout, dim.height, scale);
+      });
+    }
   }
 
   function appendTile(
@@ -391,7 +443,7 @@
     schedulePageJump(link.target_page, link.target_y);
   }
 
-  function getPageScrollTop(pageNum: number, pdfY = 0): number {
+  function getPageScrollTop(pageNum: number, pdfY = 0, center = false): number {
     if (!scrollEl || pageNum < 0 || pageNum >= pageDimensions.length) return 0;
     const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
     const pageTop = slot
@@ -400,11 +452,11 @@
     const pageHeight = pageDimensions[pageNum]?.height || 0;
     const hasExplicitY = Number.isFinite(pdfY) && pdfY > 0 && pdfY < pageHeight;
     const yOffset = hasExplicitY ? (pageHeight - pdfY) * scale : 0;
-    const target = Math.max(0, pageTop + yOffset);
+    const target = Math.max(0, pageTop + yOffset - (center ? scrollEl.clientHeight / 2 : 0));
     return target;
   }
 
-  function schedulePageJump(pageNum: number, pdfY = 0) {
+  function schedulePageJump(pageNum: number, pdfY = 0, center = false, pdfX = 0) {
     if (!scrollEl || pageNum < 0 || pageNum >= pageDimensions.length) return;
     const token = ++jumpToken;
     renderGeneration++;
@@ -415,10 +467,11 @@
 
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!scrollEl || token !== jumpToken) return;
-      scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY);
+      scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY, center);
+      if (center) scrollEl.scrollLeft = Math.max(0, (pageTrackWidth - pageDimensions[pageNum].width * scale) / 2 + pdfX * scale - scrollEl.clientWidth / 2);
       requestAnimationFrame(() => {
         if (!scrollEl || token !== jumpToken) return;
-        scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY);
+        scrollEl.scrollTop = getPageScrollTop(pageNum, pdfY, center);
         programmaticScroll = false;
         scrollEl.style.overflowAnchor = jumpOverflowAnchor;
       });
@@ -436,6 +489,7 @@
   function destroyPage(pageNum: number, slot: HTMLElement) {
     renderedPages.delete(pageNum);
     loadedLinks.delete(pageNum);
+    loadedText.delete(pageNum);
     for (const [tileKey, tile] of renderedTileData) {
       if (tile.page === pageNum) renderedTileData.delete(tileKey);
     }
@@ -545,9 +599,9 @@
     tileCache.setPinned(visibleRequests.map(request => request.spec.key));
 
     for (const pageNum of Array.from(renderedPages)) {
-      if (pageNum < rangeStart || pageNum > rangeEnd) {
+      if (!selectingText && (pageNum < rangeStart || pageNum > rangeEnd)) {
         const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
-        if (slot) destroyPage(pageNum, slot);
+        if (slot && !window.getSelection()?.containsNode(slot, true)) destroyPage(pageNum, slot);
       }
     }
 
@@ -599,6 +653,7 @@
     const s = scale;
     // Run after Svelte flushes DOM (page-slot heights already updated)
     updateCanvasSizes();
+    updateTextLayers();
   });
 
   function createZoomAnchor(pointer?: { clientX: number; clientY: number }): ZoomAnchor | undefined {
@@ -690,7 +745,7 @@
   function handleKeydown(event: KeyboardEvent) {
     if (showSearch) {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSearch(); return; }
-      if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (searchState.results.length > 0) navigateMatch(event.shiftKey ? 'prev' : 'next'); else performSearch(); return; }
+      if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); submitSearch(event.shiftKey ? 'prev' : 'next'); return; }
       event.stopPropagation();
       return;
     }
@@ -756,33 +811,47 @@
 
   // Search
   async function performSearch() {
-    if (!searchQuery.trim()) { searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 }; searchStatus = ''; return; }
+    const query = searchQuery.trim();
+    const request = ++searchRequest;
+    if (!query) { executedQuery = ''; searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 }; searchStatus = ''; requestAnimationFrame(() => rerenderVisiblePages()); return; }
     isSearching = true; searchStatus = 'Searching...';
     try {
-      const results = await searchPdfText(pdfPath, searchQuery);
+      const results = await searchPdfText(pdfPath, query);
+      if (request !== searchRequest) return;
+      executedQuery = query;
       const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
-      if (totalMatches === 0) { searchState = { results, currentMatchPage: 0, currentMatchIndex: 0 }; searchStatus = 'No results'; }
+      if (totalMatches === 0) { searchState = { results, currentMatchPage: 0, currentMatchIndex: 0 }; searchStatus = 'No results'; requestAnimationFrame(() => rerenderVisiblePages()); }
       else {
         searchState = { results, currentMatchPage: results[0].page, currentMatchIndex: 0 };
         searchStatus = `${totalMatches} matches`;
-        scrollToPage(results[0].page);
+        scrollToMatch(results[0].page, 0);
         // Re-render to show highlights
         requestAnimationFrame(() => rerenderVisiblePages());
       }
-    } catch { searchStatus = 'Search failed'; }
-    finally { isSearching = false; }
+    } catch { if (request === searchRequest) searchStatus = 'Search failed'; }
+    finally { if (request === searchRequest) isSearching = false; }
+  }
+
+  function submitSearch(direction: 'next' | 'prev') {
+    if (shouldExecutePdfSearch(searchQuery, executedQuery, isSearching)) void performSearch();
+    else navigateMatch(direction);
+  }
+
+  function scrollToMatch(pageNum: number, index: number) {
+    const match = searchState.results.find(result => result.page === pageNum)?.matches[index];
+    if (match) schedulePageJump(pageNum, match.y + match.height / 2, true, match.x + match.width / 2);
   }
 
   function navigateMatch(direction: 'next' | 'prev') {
     const target = navigateSearchMatch(direction, searchState);
     if (!target) return;
     searchState = { ...searchState, currentMatchPage: target.page, currentMatchIndex: target.index };
-    scrollToPage(target.page);
+    scrollToMatch(target.page, target.index);
     requestAnimationFrame(() => rerenderVisiblePages());
   }
 
   function closeSearch() {
-    showSearch = false; searchQuery = '';
+    showSearch = false; searchQuery = ''; executedQuery = ''; searchRequest++;
     searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 }; searchStatus = '';
     requestAnimationFrame(() => rerenderVisiblePages());
   }
@@ -833,6 +902,10 @@
       lastPath = path;
       scaleInitialized = false;
       tileCache.clear();
+      textCache.clear();
+      loadedText.clear();
+      searchRequest++;
+      executedQuery = '';
       renderingTiles.clear();
       renderedTileData.clear();
       pathRevision = `${path}:${Date.now()}`;
@@ -875,6 +948,10 @@
   });
 
   onMount(() => {
+    const finishSelection = () => { selectingText = false; updatePageRendering(); };
+    window.addEventListener('pointerup', finishSelection);
+    const handleCopy = (event: ClipboardEvent) => copyPdfTextSelection(event, containerEl);
+    document.addEventListener('copy', handleCopy);
     resizeObserver = new ResizeObserver(() => {
       if (scrollEl) viewportWidth = scrollEl.clientWidth;
       initScale();
@@ -883,6 +960,7 @@
       });
     });
     if (scrollEl) resizeObserver.observe(scrollEl);
+    return () => { window.removeEventListener('pointerup', finishSelection); document.removeEventListener('copy', handleCopy); };
   });
 
   // Set up scroll listener and observer when scrollEl becomes available
@@ -912,6 +990,7 @@
     releaseLowBatch();
     resizeObserver?.disconnect();
     tileCache.clear();
+    textCache.clear();
     renderingTiles.clear();
     renderedTileData.clear();
     if (zoomSession?.settleTimer) clearTimeout(zoomSession.settleTimer);
@@ -968,7 +1047,7 @@
         bind:this={searchInput}
         onkeydown={(e) => {
           if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); }
-          if (e.key === 'Enter') { e.stopPropagation(); if (searchState.results.length > 0) navigateMatch(e.shiftKey ? 'prev' : 'next'); else performSearch(); }
+          if (e.key === 'Enter') { e.stopPropagation(); submitSearch(e.shiftKey ? 'prev' : 'next'); }
           e.stopPropagation();
         }}
       />
@@ -988,7 +1067,10 @@
     </div>
   {:else}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="pdf-scroll-area" bind:this={scrollEl} onclick={() => containerEl?.focus()}>
+    <div class="pdf-scroll-area" bind:this={scrollEl}
+      onpointerdown={(e) => { if ((e.target as HTMLElement).closest('.pdf-text-layer')) selectingText = true; }}
+      onpointerup={() => { selectingText = false; updatePageRendering(); }}
+      onclick={() => { if (window.getSelection()?.isCollapsed) containerEl?.focus(); }}>
       <div class="pdf-page-track" style="width: {pageTrackWidth}px;">
         {#each { length: totalPages } as _, i}
           <div
@@ -1121,8 +1203,27 @@
 
   :global(.link-overlay) {
     pointer-events: none;
-    z-index: 5;
+    z-index: 4;
   }
+  :global(.pdf-text-layer) {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    user-select: text;
+  }
+  :global(.pdf-text-character) {
+    position: absolute;
+    display: block;
+    color: transparent;
+    white-space: pre;
+    line-height: 1;
+    overflow: hidden;
+    pointer-events: auto;
+    user-select: text;
+  }
+  :global(.pdf-text-character::selection) { background: rgba(70, 130, 220, 0.45); }
+  :global(.pdf-text-whitespace) { position: absolute; width: 0; height: 0; overflow: hidden; color: transparent; white-space: pre; pointer-events: none; }
 
   :global(.link-rect) {
     pointer-events: auto;

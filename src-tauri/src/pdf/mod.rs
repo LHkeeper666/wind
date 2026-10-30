@@ -205,6 +205,54 @@ pub struct PdfSearchResult {
     matches: Vec<TextMatch>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct PdfTextCharacter {
+    text: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PdfPageTextLayout {
+    page: u32,
+    characters: Vec<PdfTextCharacter>,
+}
+
+#[tauri::command]
+pub fn get_pdf_page_text(
+    path: String,
+    page: u32,
+    app_handle: tauri::AppHandle,
+) -> Result<PdfPageTextLayout, String> {
+    with_cached_doc(&path, &app_handle, |document| extract_pdf_page_text(document, page))
+}
+
+fn extract_pdf_page_text(document: &PdfDocument, page: u32) -> Result<PdfPageTextLayout, String> {
+    if page >= document.pages().len() as u32 {
+        return Err(format!("Page {} is out of range", page));
+    }
+    let pdf_page = document.pages().get(page as u16)
+        .map_err(|e| format!("Page {}: {:?}", page, e))?;
+    let text_page = pdf_page.text()
+        .map_err(|e| format!("Text {}: {:?}", page, e))?;
+    let mut characters = Vec::new();
+    for character in text_page.chars().iter() {
+        let Some(value) = character.unicode_char() else { continue };
+        if value == '\0' { continue; }
+        let bounds = character.loose_bounds().ok();
+        characters.push(PdfTextCharacter {
+            text: value.to_string(),
+            x: bounds.as_ref().map_or(0.0, |rect| rect.left().value),
+            y: bounds.as_ref().map_or(0.0, |rect| rect.bottom().value),
+            width: bounds.as_ref().map_or(0.0, |rect| rect.width().value),
+            height: bounds.as_ref().map_or(0.0, |rect| rect.height().value),
+        });
+    }
+    Ok(PdfPageTextLayout { page, characters })
+}
+
 fn load_pdfium(app_handle: &tauri::AppHandle) -> Result<Pdfium, String> {
     let lib_name = if cfg!(target_os = "windows") {
         "pdfium.dll"
@@ -770,6 +818,27 @@ pub fn invalidate_pdf_document(path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_unicode_text_and_blank_page() {
+        let dll = Pdfium::pdfium_platform_library_name_at_path(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/resources"),
+        );
+        let bindings = Pdfium::bind_to_library(dll).unwrap();
+        let pdfium = Pdfium::new(bindings);
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/pdf-text-selection.pdf");
+        let document = pdfium.load_pdf_from_file(path, None).unwrap();
+        let first = extract_pdf_page_text(&document, 0).unwrap();
+        let text: String = first.characters.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("中文测试：你好，世界。"), "{text}");
+        assert!(text.contains("First line"), "{text}");
+        assert!(text.contains("Second line"), "{text}");
+        assert!(text.contains("First line\r\nSecond line") || text.contains("First line\nSecond line"), "{text:?}");
+        assert!(first.characters.iter().filter(|c| c.width > 0.0).all(|c| {
+            c.x >= 0.0 && c.y >= 0.0 && c.x + c.width <= 595.0 && c.y + c.height <= 842.0
+        }));
+        assert!(extract_pdf_page_text(&document, 1).unwrap().characters.is_empty());
+    }
 
     #[test]
     fn tile_bounds_scale_page_coordinates() {
