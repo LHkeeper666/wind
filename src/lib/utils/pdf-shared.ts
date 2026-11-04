@@ -651,6 +651,7 @@ export function drawSearchHighlights(
   page: number,
   pageHeight: number,
   searchState: PdfSearchState,
+  renderScale = RENDER_SCALE,
 ): void {
   const pageMatches = searchState.results.find(r => r.page === page);
   if (!pageMatches || pageMatches.matches.length === 0) return;
@@ -661,10 +662,10 @@ export function drawSearchHighlights(
 
     ctx.fillStyle = isActive ? 'rgba(255, 165, 0, 0.5)' : 'rgba(255, 255, 0, 0.35)';
 
-    const x = match.x * RENDER_SCALE;
-    const y = pageHeight - (match.y + match.height) * RENDER_SCALE;
-    const w = match.width * RENDER_SCALE;
-    const h = match.height * RENDER_SCALE;
+    const x = match.x * renderScale;
+    const y = pageHeight - (match.y + match.height) * renderScale;
+    const w = match.width * renderScale;
+    const h = match.height * renderScale;
 
     ctx.fillRect(x, y, w, h);
   }
@@ -675,6 +676,7 @@ export function drawPageWithHighlights(
   data: PdfPageData,
   searchState: PdfSearchState,
   currentPage: number,
+  renderScale = RENDER_SCALE,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const binary = atob(data.data);
@@ -696,7 +698,7 @@ export function drawPageWithHighlights(
       ctx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
 
-      drawSearchHighlights(ctx, currentPage, data.height, searchState);
+      drawSearchHighlights(ctx, currentPage, data.height, searchState, renderScale);
       resolve();
     };
     img.onerror = () => {

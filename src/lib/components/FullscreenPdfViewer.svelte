@@ -1,5 +1,7 @@
 <script lang="ts">
 import { onMount, onDestroy, tick } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { PDF_ZOOM_KEY_STEP, wheelZoomDelta, nextZoomScale, advanceZoomScale } from '$lib/utils/pdf-zoom';
   import { formatSize } from '$lib/utils/file-types';
   import { logError } from '$lib/utils/log';
   import {
@@ -56,6 +58,15 @@ import { onMount, onDestroy, tick } from 'svelte';
   let scale = $state(1);
   let translateX = $state(0);
   let translateY = $state(0);
+  let targetScale = 1;
+  let zoomFrame: number | undefined;
+  let zoomTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastZoomFrame = 0;
+  let zoomAnchor = { x: 0, y: 0 };
+  let zoomRequest = 0;
+  let imageScale = RENDER_SCALE;
+  let displayData: PdfPageData | null = null;
+  let zoomQuiet = false;
 
   // Search
   let showSearch = $state(false);
@@ -73,14 +84,85 @@ import { onMount, onDestroy, tick } from 'svelte';
   let textCache = new PdfTextLayoutCache(4);
 
   const PAN_STEP = 100;
-  const ZOOM_STEP = 0.25;
   const MIN_SCALE = 0.1;
 
+  function cancelZoom() {
+    if (zoomFrame !== undefined) cancelAnimationFrame(zoomFrame);
+    if (zoomTimer !== undefined) clearTimeout(zoomTimer);
+    zoomFrame = undefined;
+    zoomTimer = undefined;
+    lastZoomFrame = 0;
+    zoomRequest++;
+    zoomQuiet = false;
+  }
+
+  function scheduleZoomFrame() {
+    if (zoomFrame !== undefined) return;
+    zoomFrame = requestAnimationFrame((now) => {
+      zoomFrame = undefined;
+      const elapsed = lastZoomFrame ? now - lastZoomFrame : 16;
+      lastZoomFrame = now;
+      const next = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? targetScale : advanceZoomScale(scale, targetScale, elapsed);
+      if (next !== scale) {
+        translateX += zoomAnchor.x * (1 / next - 1 / scale);
+        translateY += zoomAnchor.y * (1 / next - 1 / scale);
+        scale = next;
+      }
+      if (scale !== targetScale) scheduleZoomFrame();
+      else if (zoomQuiet) void sharpenPage();
+    });
+  }
+
+  function changeZoom(delta: number, pointer?: { clientX: number; clientY: number }) {
+    if (!viewportEl || !pageData) return;
+    const bounds = viewportEl.getBoundingClientRect();
+    zoomAnchor = pointer ? {
+      x: pointer.clientX - bounds.left - bounds.width / 2,
+      y: pointer.clientY - bounds.top - bounds.height / 2,
+    } : { x: 0, y: 0 };
+    targetScale = nextZoomScale(targetScale, delta, MIN_SCALE, 5);
+    zoomQuiet = false;
+    zoomRequest++;
+    if (zoomTimer !== undefined) clearTimeout(zoomTimer);
+    scheduleZoomFrame();
+    zoomTimer = setTimeout(() => { zoomQuiet = true; if (scale === targetScale) void sharpenPage(); }, 180);
+  }
+
+  async function sharpenPage() {
+    if (!pageData || !canvasEl || scale !== targetScale || !zoomQuiet) return;
+    zoomQuiet = false;
+    const requiredScale = Math.min(5, Math.max(RENDER_SCALE, scale * RENDER_SCALE * Math.min(devicePixelRatio || 1, 2)));
+    if (requiredScale <= imageScale * 1.15) return;
+    const request = ++zoomRequest;
+    const page = currentPage;
+    const path = pdfPath;
+    try {
+      const data = await invoke<PdfPageData>('render_pdf_page', { path, page, scale: requiredScale });
+      if (request !== zoomRequest || page !== currentPage || path !== pdfPath || !canvasEl) return;
+      const staged = document.createElement('canvas');
+      await drawPageWithHighlights(staged, data, searchState, page, requiredScale);
+      if (request !== zoomRequest || page !== currentPage || path !== pdfPath || !canvasEl) return;
+      canvasEl.width = staged.width;
+      canvasEl.height = staged.height;
+      canvasEl.getContext('2d')?.drawImage(staged, 0, 0);
+      imageScale = requiredScale;
+      displayData = data;
+    } catch (error) { logError('FullscreenPdfViewer', `Failed to sharpen PDF page: ${error}`); }
+  }
+
   // Draw page data onto canvas with search highlights
-  async function drawToCanvas(data: PdfPageData) {
+  async function drawToCanvas(data: PdfPageData, request: number) {
     if (!canvasEl) return;
     try {
-      await drawPageWithHighlights(canvasEl, data, searchState, currentPage);
+      const staged = document.createElement('canvas');
+      await drawPageWithHighlights(staged, data, searchState, currentPage);
+      if (request !== pageRequest || !canvasEl) return;
+      canvasEl.width = staged.width;
+      canvasEl.height = staged.height;
+      canvasEl.getContext('2d')?.drawImage(staged, 0, 0);
+      imageScale = RENDER_SCALE;
+      displayData = data;
       pageWidth = data.width;
       pageHeight = data.height;
 
@@ -89,6 +171,7 @@ import { onMount, onDestroy, tick } from 'svelte';
         const vw = viewportEl.clientWidth;
         const vh = viewportEl.clientHeight;
         scale = Math.min(vw / data.width, vh / data.height, 1);
+        targetScale = scale;
         translateX = 0;
         translateY = 0;
       }
@@ -101,6 +184,7 @@ import { onMount, onDestroy, tick } from 'svelte';
 
   async function goToPage(pageNum: number) {
     if (pageNum < 0 || pageNum >= totalPages) return;
+    cancelZoom();
     const request = ++pageRequest;
     currentPage = pageNum;
     isLoading = true;
@@ -112,7 +196,7 @@ import { onMount, onDestroy, tick } from 'svelte';
       pageData = data;
       isLoading = false;
       await tick();
-      await drawToCanvas(data);
+      await drawToCanvas(data, request);
       void loadText(pageNum, request);
     } catch (error) {
       if (request !== pageRequest) return;
@@ -151,7 +235,7 @@ import { onMount, onDestroy, tick } from 'svelte';
       executedQuery = '';
       searchState = { results: [], currentMatchPage: 0, currentMatchIndex: 0 };
       searchStatus = '';
-      if (pageData && canvasEl) void drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
+      if (pageData && canvasEl) void drawPageWithHighlights(canvasEl, displayData ?? pageData, searchState, currentPage, imageScale);
       return;
     }
 
@@ -177,7 +261,7 @@ import { onMount, onDestroy, tick } from 'svelte';
         if (results[0].page !== currentPage) {
           await goToPage(results[0].page);
         } else if (pageData && canvasEl) {
-          await drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
+          await drawPageWithHighlights(canvasEl, displayData ?? pageData, searchState, currentPage, imageScale);
         }
         if (request === searchRequest) positionMatch(results[0].page, 0);
       }
@@ -203,7 +287,7 @@ import { onMount, onDestroy, tick } from 'svelte';
     if (target.page !== currentPage) {
       await goToPage(target.page);
     } else if (pageData && canvasEl) {
-      await drawPageWithHighlights(canvasEl, pageData, searchState, currentPage);
+      await drawPageWithHighlights(canvasEl, displayData ?? pageData, searchState, currentPage, imageScale);
     }
     positionMatch(target.page, target.index);
   }
@@ -275,11 +359,18 @@ import { onMount, onDestroy, tick } from 'svelte';
     switch (event.key) {
       case 'j': event.preventDefault(); if (currentPage < totalPages - 1) goToPage(currentPage + 1); break;
       case 'k': event.preventDefault(); if (currentPage > 0) goToPage(currentPage - 1); break;
-      case 'h': event.preventDefault(); scale = Math.max(MIN_SCALE, scale - ZOOM_STEP); break;
-      case 'l': event.preventDefault(); scale += ZOOM_STEP; break;
+      case 'h': event.preventDefault(); changeZoom(-PDF_ZOOM_KEY_STEP); break;
+      case 'l': event.preventDefault(); changeZoom(PDF_ZOOM_KEY_STEP); break;
       case 'g': event.preventDefault(); goToPage(0); break;
       case 'G': event.preventDefault(); goToPage(totalPages - 1); break;
     }
+  }
+
+  function handleWheel(event: WheelEvent) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    changeZoom(wheelZoomDelta(event.deltaY, event.deltaMode), event);
   }
 
   const canvasStyle = $derived(
@@ -290,7 +381,7 @@ import { onMount, onDestroy, tick } from 'svelte';
   const position = $derived(`${currentPage + 1}/${totalPages}`);
   const zoomPercent = $derived(`${Math.round(scale * 100)}%`);
 
-  onDestroy(() => { pageCache.clear(); textCache.clear(); pageRequest++; searchRequest++; });
+  onDestroy(() => { cancelZoom(); pageCache.clear(); textCache.clear(); pageRequest++; searchRequest++; });
 
   onMount(() => {
     const handleCopy = (event: ClipboardEvent) => copyPdfTextSelection(event, overlayEl);
@@ -306,6 +397,7 @@ import { onMount, onDestroy, tick } from 'svelte';
   class="pdf-viewer-overlay"
   bind:this={overlayEl}
   onkeydown={handleKeydown}
+  onwheel={handleWheel}
   onclick={() => { if (window.getSelection()?.isCollapsed) overlayEl?.focus(); }}
   role="dialog"
   aria-label="Fullscreen PDF Viewer"
@@ -339,7 +431,7 @@ import { onMount, onDestroy, tick } from 'svelte';
       <div class="pdf-viewer-status error">{errorMessage}</div>
     {:else}
       <div class="pdf-page-surface" style={canvasStyle}>
-        <canvas bind:this={canvasEl} class="pdf-canvas"></canvas>
+        <canvas bind:this={canvasEl} class="pdf-canvas" style={`width:${pageWidth}px;height:${pageHeight}px`}></canvas>
         <div bind:this={textLayerEl} class="pdf-text-layer"></div>
       </div>
     {/if}

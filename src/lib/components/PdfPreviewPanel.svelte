@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { formatSize } from '$lib/utils/file-types';
   import { logInfo, logError } from '$lib/utils/log';
+  import { PDF_ZOOM_KEY_STEP, wheelZoomDelta, nextZoomScale, advanceZoomScale } from '$lib/utils/pdf-zoom';
   import {
     type PdfPageDimensions,
     type PdfSearchState,
@@ -134,6 +135,7 @@
   let programmaticScroll = false;
   let jumpOverflowAnchor = '';
   let zoomSettled = false;
+  let zoomRenderTimer: ReturnType<typeof setTimeout> | undefined;
   let pathRevision = '';
   let tileViewSignature = '';
   let lastScrollTop = 0;
@@ -181,13 +183,14 @@
     rafId: number | undefined;
     settleTimer: ReturnType<typeof setTimeout> | undefined;
     overflowAnchor: string;
+    lastFrameTime: number;
+    inputPending: boolean;
   };
 
   let zoomSession: ZoomSession | undefined;
 
   const BUFFER_PAGES = 1;
   const SCROLL_STEP = 40;
-  const ZOOM_STEP = 0.15;
   const MIN_SCALE = 0.3;
   const MAX_SCALE = 5.0;
 
@@ -299,6 +302,7 @@
       const layer = document.createElement('div');
       layer.className = 'pdf-text-layer';
       layer.dataset.page = String(pageNum);
+      layer.dataset.renderScale = String(scale);
       renderPdfTextLayer(layer, layout, dim.height, scale);
       layer.addEventListener('pointerdown', event => {
         textPointerStart = { x: event.clientX, y: event.clientY };
@@ -320,12 +324,9 @@
 
   function updateTextLayers() {
     for (const layer of scrollEl?.querySelectorAll<HTMLElement>('.pdf-text-layer') || []) {
-      const pageNum = Number(layer.dataset.page);
-      const dim = pageDimensions[pageNum];
-      if (!dim) continue;
-      void textCache.get(pathRevision, pdfPath, pageNum).then(layout => {
-        if (layer.isConnected) renderPdfTextLayer(layer, layout, dim.height, scale);
-      });
+      const renderedAt = Number(layer.dataset.renderScale) || scale;
+      layer.style.transformOrigin = 'top left';
+      layer.style.transform = `scale(${scale / renderedAt})`;
     }
   }
 
@@ -461,9 +462,9 @@
       wrapper.style.width = `${dim.width * scale}px`;
       wrapper.style.height = `${dim.height * scale}px`;
     }
-    for (const [tileKey, data] of renderedTileData) {
-      const canvas = scrollEl?.querySelector<HTMLElement>(`.pdf-tile-canvas[data-tile-key="${tileKey}"]`);
-      if (canvas) tileStyle(canvas, data);
+    for (const canvas of scrollEl?.querySelectorAll<HTMLElement>('.pdf-tile-canvas') || []) {
+      const data = renderedTileData.get(canvas.dataset.tileKey || '');
+      if (data) tileStyle(canvas, data);
     }
   }
 
@@ -611,7 +612,6 @@
       renderScaleKey = nextScaleKey;
       renderScheduler.clear();
       renderingTiles.clear();
-      tileCache.clear();
     }
     const now = performance.now();
     const elapsed = now - lastScrollTime;
@@ -641,9 +641,12 @@
       layers.set(pageNum, layer);
       const pageLeft = (pageTrackWidth - dim.width * scale) / 2;
       const base = getPdfBaseSpec(pathRevision, pageNum, dim, zoomBucket);
-      (pageNum >= visibleStart && pageNum <= visibleEnd ? visibleLowRequests : prefetchLowRequests)
-        .push({ spec: base, page: pageNum, priority: pageNum >= visibleStart && pageNum <= visibleEnd
-          ? Math.abs(pageNum - center) : 1000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
+      const hasTemporaryImage = layer.querySelector('.pdf-tile-canvas') !== null;
+      if (!hasTemporaryImage) {
+        (pageNum >= visibleStart && pageNum <= visibleEnd ? visibleLowRequests : prefetchLowRequests)
+          .push({ spec: base, page: pageNum, priority: pageNum >= visibleStart && pageNum <= visibleEnd
+            ? Math.abs(pageNum - center) : 10_000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
+      }
       if (zoomSettled && !isScrolling && !keyScrollActive) {
         const highVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport);
         const highPrefetch = panelDragging ? [] : getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport, true);
@@ -666,7 +669,7 @@
       if (layers.has(pageNum)) continue;
       const dim = pageDimensions[pageNum];
       if (dim) prefetchLowRequests.push({ spec: getPdfBaseSpec(pathRevision, pageNum, dim, zoomBucket),
-        page: pageNum, priority: 1000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
+        page: pageNum, priority: 10_000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
     }
     const visibleRequests = [...visibleHighRequests, ...visibleLowRequests];
     const signature = `${pathRevision}:${zoomSettled}:${visibleRequests.map(request => request.spec.key).sort().join('|')}`;
@@ -782,11 +785,14 @@
 
   function scheduleZoomCommit(session: ZoomSession) {
     if (session.rafId !== undefined) return;
-    session.rafId = requestAnimationFrame(async () => {
+    session.rafId = requestAnimationFrame(async (now) => {
       session.rafId = undefined;
       if (zoomSession !== session || !scrollEl) return;
 
-      const commitScale = session.targetScale;
+      const elapsed = session.lastFrameTime ? now - session.lastFrameTime : 16;
+      session.lastFrameTime = now;
+      const commitScale = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? session.targetScale : advanceZoomScale(scale, session.targetScale, elapsed);
       if (scale !== commitScale) {
         scale = commitScale;
         await tick();
@@ -807,20 +813,32 @@
 
   function finishZoomSession(session: ZoomSession) {
     if (zoomSession !== session) return;
-    if (session.rafId !== undefined || scale !== session.targetScale) {
-      scheduleZoomCommit(session);
+    if (session.inputPending || session.rafId !== undefined || scale !== session.targetScale) {
+      session.inputPending = false;
+      if (scale !== session.targetScale) scheduleZoomCommit(session);
       session.settleTimer = setTimeout(() => finishZoomSession(session), 16);
       return;
     }
     zoomSession = undefined;
-    zoomSettled = true;
     if (scrollEl) scrollEl.style.overflowAnchor = session.overflowAnchor;
-    tileViewSignature = '';
-    updatePageRendering();
+    // A quick direction reversal should reuse the visible image instead of
+    // starting PDFium work for a scale that is about to be abandoned.
+    if (zoomRenderTimer !== undefined) clearTimeout(zoomRenderTimer);
+    zoomRenderTimer = setTimeout(() => {
+      zoomRenderTimer = undefined;
+      if (destroyed || zoomSession) return;
+      zoomSettled = true;
+      tileViewSignature = '';
+      updatePageRendering();
+    }, 350);
   }
 
   function changeZoom(delta: number, pointer?: { clientX: number; clientY: number }) {
     if (!scrollEl || pageDimensions.length === 0) return;
+    if (zoomRenderTimer !== undefined) {
+      clearTimeout(zoomRenderTimer);
+      zoomRenderTimer = undefined;
+    }
     let session = zoomSession;
     if (!session) {
       const anchor = createZoomAnchor(pointer);
@@ -831,6 +849,8 @@
         rafId: undefined,
         settleTimer: undefined,
         overflowAnchor: scrollEl.style.overflowAnchor,
+        lastFrameTime: 0,
+        inputPending: false,
       };
       zoomSession = session;
       zoomSettled = false;
@@ -839,7 +859,10 @@
       renderScheduler.invalidate(renderGeneration);
     }
 
-    session.targetScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, session.targetScale + delta));
+    // Recalculate from the displayed content for every input, including a moved pointer.
+    session.anchor = createZoomAnchor(pointer) ?? session.anchor;
+    session.targetScale = nextZoomScale(session.targetScale, delta, MIN_SCALE, MAX_SCALE);
+    session.inputPending = true;
     if (session.settleTimer) clearTimeout(session.settleTimer);
     scheduleZoomCommit(session);
     session.settleTimer = setTimeout(() => finishZoomSession(session!), 150);
@@ -861,12 +884,12 @@
     // Ctrl+=/- for zoom
     if (event.ctrlKey && (event.code === 'Equal' || event.code === 'NumpadAdd')) {
       event.preventDefault(); event.stopPropagation();
-      changeZoom(ZOOM_STEP);
+      changeZoom(PDF_ZOOM_KEY_STEP);
       return;
     }
     if (event.ctrlKey && (event.code === 'Minus' || event.code === 'NumpadSubtract')) {
       event.preventDefault(); event.stopPropagation();
-      changeZoom(-ZOOM_STEP);
+      changeZoom(-PDF_ZOOM_KEY_STEP);
       return;
     }
 
@@ -907,7 +930,7 @@
     if (e.ctrlKey) {
       e.preventDefault();
       e.stopPropagation();
-      const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+      const delta = wheelZoomDelta(e.deltaY, e.deltaMode);
       changeZoom(delta, e);
     }
     // Non-Ctrl wheel: let native scroll handle it
@@ -982,6 +1005,12 @@
 
   export function setScale(value: number): void {
     if (!(value > 0)) return;
+    if (zoomRenderTimer !== undefined) clearTimeout(zoomRenderTimer);
+    zoomRenderTimer = undefined;
+    if (zoomSession?.settleTimer) clearTimeout(zoomSession.settleTimer);
+    if (zoomSession?.rafId !== undefined) cancelAnimationFrame(zoomSession.rafId);
+    if (zoomSession && scrollEl) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
+    zoomSession = undefined;
     pendingRestoreScale = value;
     scale = value;
     scaleInitialized = true;
@@ -1016,6 +1045,8 @@
       pathRevision = `${path}:${Date.now()}`;
       tileViewSignature = '';
       zoomSettled = false;
+      if (zoomRenderTimer !== undefined) clearTimeout(zoomRenderTimer);
+      zoomRenderTimer = undefined;
       if (zoomSession?.settleTimer) clearTimeout(zoomSession.settleTimer);
       if (zoomSession?.rafId !== undefined) cancelAnimationFrame(zoomSession.rafId);
       if (zoomSession && scrollEl) scrollEl.style.overflowAnchor = zoomSession.overflowAnchor;
@@ -1101,6 +1132,7 @@
   onDestroy(() => {
     destroyed = true;
     if (scrollSettledTimer !== undefined) clearTimeout(scrollSettledTimer);
+    if (zoomRenderTimer !== undefined) clearTimeout(zoomRenderTimer);
     invalidateViewport();
     if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
     if (resizeTimer !== undefined) clearTimeout(resizeTimer);
