@@ -17,19 +17,32 @@ new Function('exports', 'require', compiled)(exports, name => {
   throw new Error(`Unexpected import: ${name}`);
 });
 
-test('PDF render queue discards stale pending work and prioritizes visible tiles', async () => {
+test('PDF render queue retains, reprioritizes and deduplicates compatible work', async () => {
   const scheduler = new exports.PdfRenderScheduler();
   let releaseRunning;
-  const running = scheduler.enqueue(() => new Promise(resolve => { releaseRunning = resolve; }), 0, 1);
-  const stale = scheduler.enqueue(() => Promise.resolve('stale'), 200, 1);
+  const running = scheduler.enqueue('running', () => new Promise(resolve => { releaseRunning = resolve; }), 0);
+  const stale = scheduler.enqueue('stale', () => Promise.resolve('stale'), 200);
   const order = [];
-  scheduler.invalidate(2);
+  const prefetch = scheduler.enqueue('prefetch', async () => { order.push('prefetch'); }, 200);
+  const same = scheduler.enqueue('prefetch', async () => { throw Error('duplicate'); }, 100);
+  assert.equal(prefetch, same);
+  const visible = scheduler.enqueue('visible', async () => { order.push('visible'); }, 0);
+  scheduler.retain(new Set(['running', 'prefetch', 'visible']));
   await assert.rejects(stale, /stale PDF render request/);
-  const prefetch = scheduler.enqueue(async () => { order.push('prefetch'); }, 200, 2);
-  const visible = scheduler.enqueue(async () => { order.push('visible'); }, 0, 2);
   releaseRunning();
   await Promise.all([running, prefetch, visible]);
   assert.deepEqual(order, ['visible', 'prefetch']);
+});
+
+test('PDF base pixel cap and shared cache budget', () => {
+  const base = exports.getPdfBaseSpec('revision', 2, { width: 5000, height: 4000 }, 1.125);
+  assert.ok(base.width * base.height <= exports.PDF_BASE_MAX_PIXELS + base.width + base.height);
+  assert.match(base.key, /revision:base:2:1.125/);
+  const cache = new exports.PdfTileCache();
+  cache.setPinned([base.key]);
+  cache.set(base, { data: '', format: 'jpeg', width: base.width, height: base.height,
+    page: 2, scale: base.scale, tileX: 0, tileY: 0, lowRes: true });
+  assert.equal(cache.getSizeBytes(), base.width * base.height * 4);
 });
 
 test('PDF coordinates convert from bottom left to top left', () => {

@@ -250,10 +250,12 @@ export class PdfPageCache {
 export const PDF_TILE_SIZE = 512;
 export const PDF_TILE_CACHE_BUDGET = 96 * 1024 * 1024;
 export const PDF_LOW_RES_TILE_CACHE_BUDGET = 16 * 1024 * 1024;
+export const PDF_BASE_MAX_PIXELS = 900_000;
 export const PDF_MAX_DPR = 2;
 export const PDF_MIN_RENDER_DENSITY = 2;
 
 export interface PdfTileData extends PdfPageData {
+  key?: string;
   page: number;
   scale: number;
   tileX: number;
@@ -270,6 +272,14 @@ export interface PdfTileSpec {
   width: number;
   height: number;
   lowRes: boolean;
+  base?: boolean;
+}
+
+export function getPdfBaseSpec(revision: string, page: number, dimensions: PdfPageDimensions, zoom: number): PdfTileSpec {
+  const scale = Math.min(0.5, Math.sqrt(PDF_BASE_MAX_PIXELS / (dimensions.width * dimensions.height)));
+  return { key: `${revision}:base:${page}:${zoom.toFixed(3)}`, page, scale,
+    tileX: 0, tileY: 0, width: Math.max(1, Math.ceil(dimensions.width * scale)),
+    height: Math.max(1, Math.ceil(dimensions.height * scale)), lowRes: true, base: true };
 }
 
 interface CachedPdfTile {
@@ -409,7 +419,7 @@ export class PdfTileCache {
   private removeMatchingLowRes(spec: PdfTileSpec): void {
     for (const [key, entry] of this.cache) {
       const tile = entry.data;
-      if (entry.lowRes && tile.page === spec.page && tile.tileX === spec.tileX && tile.tileY === spec.tileY) {
+      if (entry.lowRes && !key.includes(':base:') && tile.page === spec.page && tile.tileX === spec.tileX && tile.tileY === spec.tileY) {
         this.remove(key);
       }
     }
@@ -425,14 +435,12 @@ export class PdfTileCache {
 
   private evict(): void {
     while (this.lowResBytes > PDF_LOW_RES_TILE_CACHE_BUDGET) {
-      if (!this.evictOne(entry => entry.lowRes, false) && !this.evictOne(entry => entry.lowRes, true)) break;
+      if (!this.evictOne(entry => entry.lowRes, false)) break;
     }
     while (this.totalBytes > PDF_TILE_CACHE_BUDGET) {
       const removed = this.evictOne(entry => entry.lowRes, false)
         || this.evictOne(entry => !entry.lowRes && entry.data.scale !== this.currentScale, false)
-        || this.evictOne(() => true, false)
-        || this.evictOne(entry => entry.lowRes, true)
-        || this.evictOne(() => true, true);
+        || this.evictOne(() => true, false);
       if (!removed) break;
     }
   }
@@ -459,19 +467,20 @@ export async function fetchPdfTile(
 ): Promise<PdfTileData> {
   const cached = cache.get(spec.key);
   if (cached) return cached;
-  const result = await invoke<PdfPageData>('render_pdf_tile', {
-    request: {
-      path,
-      page: spec.page,
-      scale: spec.scale,
-      tileX: spec.tileX,
-      tileY: spec.tileY,
-      width: spec.width,
-      height: spec.height,
-    },
-  });
+  const started = performance.now();
+  const result = spec.base
+    ? await invoke<PdfPageData>('render_pdf_page', { path, page: spec.page, scale: spec.scale })
+    : await invoke<PdfPageData>('render_pdf_tile', {
+      request: { path, page: spec.page, scale: spec.scale, tileX: spec.tileX,
+        tileY: spec.tileY, width: spec.width, height: spec.height },
+    });
+  const elapsed = performance.now() - started;
+  if (spec.base || elapsed >= 100) {
+    logInfo('pdf-perf', `${spec.base ? 'base' : 'tile'} p${spec.page} scale=${spec.scale.toFixed(3)} render=${elapsed.toFixed(1)}ms`);
+  }
   const data = {
     ...result,
+    key: spec.key,
     page: spec.page,
     scale: spec.scale,
     tileX: spec.tileX,
@@ -485,9 +494,9 @@ export async function fetchPdfTile(
 export type PdfRenderPriority = number;
 
 interface PdfRenderJob<T> {
+  key: string;
   priority: PdfRenderPriority;
   sequence: number;
-  generation: number;
   task: () => Promise<T>;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
@@ -495,27 +504,46 @@ interface PdfRenderJob<T> {
 
 export class PdfRenderScheduler {
   private queue: PdfRenderJob<unknown>[] = [];
+  private inFlight = new Map<string, Promise<unknown>>();
   private running = false;
   private sequence = 0;
 
-  enqueue<T>(task: () => Promise<T>, priority: PdfRenderPriority, generation: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      this.queue.push({ priority, sequence: this.sequence++, generation, task, resolve: value => resolve(value as T), reject });
+  enqueue<T>(key: string, task: () => Promise<T>, priority: PdfRenderPriority): Promise<T> {
+    const existing = this.inFlight.get(key);
+    if (existing) {
+      const queued = this.queue.find(job => job.key === key);
+      if (queued) queued.priority = priority;
+      return existing as Promise<T>;
+    }
+    const promise = new Promise<T>((resolve, reject) => {
+      this.queue.push({ key, priority, sequence: this.sequence++, task, resolve: value => resolve(value as T), reject });
       this.pump();
     });
+    this.inFlight.set(key, promise);
+    void promise.finally(() => { if (this.inFlight.get(key) === promise) this.inFlight.delete(key); }).catch(() => {});
+    return promise;
   }
 
-  invalidate(generation: number): void {
-    const stale = this.queue.filter(job => job.generation < generation);
-    this.queue = this.queue.filter(job => job.generation >= generation);
+  retain(keys: ReadonlySet<string>): void {
+    const stale = this.queue.filter(job => !keys.has(job.key));
+    this.queue = this.queue.filter(job => keys.has(job.key));
     for (const job of stale) job.reject(new Error('stale PDF render request'));
   }
+
+  reprioritize(key: string, priority: number): void {
+    const job = this.queue.find(item => item.key === key);
+    if (job) job.priority = priority;
+  }
+
+  invalidate(_generation: number): void { this.clear(); }
 
   clear(): void {
     const pending = this.queue;
     this.queue = [];
     for (const job of pending) job.reject(new Error('PDF render queue cleared'));
   }
+
+  getQueueLength(): number { return this.queue.length; }
 
   private pump(): void {
     if (this.running || this.queue.length === 0) return;

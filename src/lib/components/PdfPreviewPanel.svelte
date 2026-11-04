@@ -24,6 +24,7 @@
     cappedPdfDevicePixelRatio,
     fetchPdfTile,
     getPdfTileSpecs,
+    getPdfBaseSpec,
     pdfTileViewportDistance,
     PDF_MIN_RENDER_DENSITY,
     quantizePdfZoom,
@@ -136,6 +137,15 @@
   let pathRevision = '';
   let tileViewSignature = '';
   let lastScrollTop = 0;
+  let lastScrollTime = 0;
+  let scrollVelocity = 0;
+  let isScrolling = false;
+  let keyScrollActive = false;
+  let scrollSettledTimer: ReturnType<typeof setTimeout> | undefined;
+  let renderScaleKey = '';
+  let peakQueueLength = 0;
+  let peakCacheBytes = 0;
+  let lastPeakLogTime = 0;
   let renderingTiles = new Set<string>();
   let renderedTileData = new Map<string, PdfTileData>();
   let requiredVisibleHighTileKeys = new Set<string>();
@@ -175,7 +185,7 @@
 
   let zoomSession: ZoomSession | undefined;
 
-  const BUFFER_PAGES = 3;
+  const BUFFER_PAGES = 1;
   const SCROLL_STEP = 40;
   const ZOOM_STEP = 0.15;
   const MIN_SCALE = 0.3;
@@ -229,7 +239,7 @@
     }
   }
 
-  function tileStyle(canvas: HTMLCanvasElement, data: PdfTileData) {
+  function tileStyle(canvas: HTMLElement, data: PdfTileData) {
     canvas.style.left = `${(data.tileX / data.scale) * scale}px`;
     canvas.style.top = `${(data.tileY / data.scale) * scale}px`;
     canvas.style.width = `${(data.width / data.scale) * scale}px`;
@@ -265,13 +275,15 @@
       layer.className = 'pdf-tile-layer';
       wrapper.appendChild(layer);
       slot.appendChild(wrapper);
-      loadLinkOverlay(pageNum, wrapper);
-      loadTextLayer(pageNum, wrapper);
     }
     const dim = pageDimensions[pageNum];
     if (dim) {
       wrapper.style.width = `${dim.width * scale}px`;
       wrapper.style.height = `${dim.height * scale}px`;
+    }
+    if (!isScrolling && !keyScrollActive) {
+      loadLinkOverlay(pageNum, wrapper);
+      loadTextLayer(pageNum, wrapper);
     }
     return wrapper.querySelector<HTMLElement>('.pdf-tile-layer')!;
   }
@@ -324,19 +336,48 @@
     onInserted?: () => void,
     onFailed?: () => void,
   ) {
-    const existing = Array.from(layer.querySelectorAll<HTMLCanvasElement>('.pdf-tile-canvas'))
-      .find(canvas => canvas.dataset.tileKey === `${data.page}:${data.scale}:${data.tileX}:${data.tileY}`);
+    const tileKey = data.key || `${data.page}:${data.scale}:${data.tileX}:${data.tileY}`;
+    const existing = Array.from(layer.querySelectorAll<HTMLElement>('.pdf-tile-canvas'))
+      .find(canvas => canvas.dataset.tileKey === tileKey);
     if (existing) {
       tileStyle(existing, data);
       onInserted?.();
       return;
     }
+    if (data.key?.includes(':base:')) {
+      const binary = atob(data.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      const url = URL.createObjectURL(new Blob([bytes.buffer], { type: data.format === 'jpeg' ? 'image/jpeg' : 'image/png' }));
+      const base = new Image();
+      base.className = 'pdf-tile-canvas';
+      base.dataset.tileKey = tileKey;
+      base.dataset.tileQuality = 'low';
+      base.style.zIndex = '1';
+      tileStyle(base, data);
+      base.onload = () => {
+        URL.revokeObjectURL(url);
+        if (generation !== renderGeneration || !layer.isConnected) return;
+        const highScale = Number(renderScaleKey.split(':').pop()).toFixed(3);
+        for (const old of layer.querySelectorAll<HTMLElement>('.pdf-tile-canvas')) {
+          const key = old.dataset.tileKey || '';
+          if (key !== tileKey && !key.startsWith(`${pathRevision}:${data.page}:${highScale}:`)) {
+            renderedTileData.delete(key);
+            old.remove();
+          }
+        }
+        layer.appendChild(base);
+        renderedTileData.set(tileKey, data);
+        onInserted?.();
+      };
+      base.onerror = () => { URL.revokeObjectURL(url); onFailed?.(); };
+      base.src = url;
+      return;
+    }
     const canvas = document.createElement('canvas');
-    const tileKey = `${data.page}:${data.scale}:${data.tileX}:${data.tileY}`;
     canvas.className = 'pdf-tile-canvas';
     canvas.dataset.tileKey = tileKey;
     canvas.dataset.tileQuality = data.lowRes ? 'low' : 'high';
-    if (data.lowRes && lowBatch?.generation === generation) canvas.style.visibility = 'hidden';
     canvas.style.zIndex = data.lowRes ? '1' : '2';
     canvas.width = data.width;
     canvas.height = data.height;
@@ -387,12 +428,14 @@
       appendTile(layer, cached, generation, onInserted, retryVisibleHighTile);
       return;
     }
-    if (renderingTiles.has(spec.key)) return;
+    if (renderingTiles.has(spec.key)) { renderScheduler.reprioritize(spec.key, priority); return; }
     renderingTiles.add(spec.key);
+    const revision = pathRevision;
+    const scaleKey = renderScaleKey;
     renderScheduler.enqueue(
-      () => fetchPdfTile(pdfPath, spec, tileCache, () => generation === renderGeneration),
+      spec.key,
+      () => fetchPdfTile(pdfPath, spec, tileCache, () => revision === pathRevision && scaleKey === renderScaleKey),
       priority,
-      generation,
     ).then(data => {
       if (generation === renderGeneration) appendTile(layer, data, generation, onInserted, retryVisibleHighTile);
     }).catch(error => {
@@ -419,7 +462,7 @@
       wrapper.style.height = `${dim.height * scale}px`;
     }
     for (const [tileKey, data] of renderedTileData) {
-      const canvas = scrollEl?.querySelector<HTMLCanvasElement>(`.pdf-tile-canvas[data-tile-key="${tileKey}"]`);
+      const canvas = scrollEl?.querySelector<HTMLElement>(`.pdf-tile-canvas[data-tile-key="${tileKey}"]`);
       if (canvas) tileStyle(canvas, data);
     }
   }
@@ -563,7 +606,24 @@
     const center = findPageAtOffset(viewport.top + viewport.height / 2);
     const zoomBucket = quantizePdfZoom(scale);
     const highScale = zoomBucket * Math.max(PDF_MIN_RENDER_DENSITY, cappedPdfDevicePixelRatio());
-    const lowScale = Math.min(0.5, highScale);
+    const nextScaleKey = `${pathRevision}:${zoomBucket}:${highScale}`;
+    if (renderScaleKey !== nextScaleKey) {
+      renderScaleKey = nextScaleKey;
+      renderScheduler.clear();
+      renderingTiles.clear();
+      tileCache.clear();
+    }
+    const now = performance.now();
+    const elapsed = now - lastScrollTime;
+    if (elapsed > 0 && elapsed < 250) scrollVelocity = (viewport.top - lastScrollTop) / elapsed;
+    else if (elapsed >= 250) scrollVelocity = 0;
+    lastScrollTime = now;
+    const direction = Math.sign(scrollVelocity);
+    const visibleStart = findPageAtOffset(viewport.top);
+    const visibleEnd = findPageAtOffset(viewport.top + viewport.height);
+    const ahead = Math.min(5, 1 + Math.ceil(Math.abs(scrollVelocity) * 2));
+    const prefetchStart = Math.max(0, visibleStart - (direction < 0 ? ahead : 1));
+    const prefetchEnd = Math.min(totalPages - 1, visibleEnd + (direction > 0 ? ahead : 1));
     const visibleHighRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
     const visibleLowRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
     const prefetchHighRequests: { spec: PdfTileSpec; priority: number; page: number }[] = [];
@@ -580,21 +640,11 @@
       const layer = getTileLayer(pageNum, slot);
       layers.set(pageNum, layer);
       const pageLeft = (pageTrackWidth - dim.width * scale) / 2;
-      const lowVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport);
-      const lowPrefetch = panelDragging ? [] : getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport, true);
-      visibleLowRequests.push(...lowVisible.map(spec => ({
-        spec,
-        page: pageNum,
-        priority: 100_000 + pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
-      })));
-      prefetchLowRequests.push(...lowPrefetch
-        .filter(spec => !lowVisible.some(visible => visible.key === spec.key))
-        .map(spec => ({
-          spec,
-          page: pageNum,
-          priority: 300_000 + pdfTileViewportDistance(spec, pageLeft, pageOffsets[pageNum], scale, viewport),
-        })));
-      if (zoomSettled) {
+      const base = getPdfBaseSpec(pathRevision, pageNum, dim, zoomBucket);
+      (pageNum >= visibleStart && pageNum <= visibleEnd ? visibleLowRequests : prefetchLowRequests)
+        .push({ spec: base, page: pageNum, priority: pageNum >= visibleStart && pageNum <= visibleEnd
+          ? Math.abs(pageNum - center) : 1000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
+      if (zoomSettled && !isScrolling && !keyScrollActive) {
         const highVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport);
         const highPrefetch = panelDragging ? [] : getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport, true);
         visibleHighRequests.push(...highVisible.map(spec => ({
@@ -612,12 +662,17 @@
       }
     }
 
+    for (let pageNum = prefetchStart; pageNum <= prefetchEnd; pageNum++) {
+      if (layers.has(pageNum)) continue;
+      const dim = pageDimensions[pageNum];
+      if (dim) prefetchLowRequests.push({ spec: getPdfBaseSpec(pathRevision, pageNum, dim, zoomBucket),
+        page: pageNum, priority: 1000 + Math.abs(pageNum - (direction >= 0 ? visibleEnd : visibleStart)) });
+    }
     const visibleRequests = [...visibleHighRequests, ...visibleLowRequests];
     const signature = `${pathRevision}:${zoomSettled}:${visibleRequests.map(request => request.spec.key).sort().join('|')}`;
     if (signature !== tileViewSignature || visibleHighGeneration !== renderGeneration) {
       tileViewSignature = signature;
       renderGeneration++;
-      renderScheduler.invalidate(renderGeneration);
       visibleHighGeneration = renderGeneration;
       requiredVisibleHighTileKeys = new Set(visibleHighRequests.map(request => request.spec.key));
       completedVisibleHighTileKeys = new Set();
@@ -625,15 +680,7 @@
       visibleHighRetryCounts = new Map();
     }
     const generation = renderGeneration;
-    if (lowBatch && lowBatch.generation !== generation) releaseLowBatch();
-    if (!lowBatch && lowBatchStartedGeneration !== generation && renderedTileData.size === 0 && visibleLowRequests.length > 0) {
-      lowBatchStartedGeneration = generation;
-      lowBatch = {
-        generation,
-        pending: new Set(visibleLowRequests.map(request => request.spec.key)),
-        timer: setTimeout(releaseLowBatch, 500),
-      };
-    }
+    if (lowBatch) releaseLowBatch();
     tileCache.setCurrentScale(highScale);
     tileCache.setPinned(visibleRequests.map(request => request.spec.key));
 
@@ -648,13 +695,14 @@
       if (generation !== visibleHighGeneration || !requiredVisibleHighTileKeys.has(key)) return;
       completedVisibleHighTileKeys.add(key);
     };
-    const orderedRequests = (lowBatch?.generation === generation
-      ? visibleLowRequests
-      : [...visibleHighRequests, ...visibleLowRequests, ...prefetchHighRequests, ...prefetchLowRequests]
-    ).sort((left, right) => left.priority - right.priority);
+    for (const request of visibleHighRequests) request.priority += 2000;
+    for (const request of prefetchHighRequests) request.priority += 3000;
+    const orderedRequests = [...visibleLowRequests, ...prefetchLowRequests, ...visibleHighRequests, ...prefetchHighRequests]
+      .sort((left, right) => left.priority - right.priority).slice(0, 64);
+    renderScheduler.retain(new Set(orderedRequests.map(request => request.spec.key)));
     for (const { spec, priority, page } of orderedRequests) {
       const layer = layers.get(page);
-      if (!layer) continue;
+      if (!layer && !spec.base) continue;
       const onInserted = requiredVisibleHighTileKeys.has(spec.key)
         ? () => markVisibleHighComplete(spec.key)
         : lowBatch?.generation === generation && lowBatch.pending.has(spec.key)
@@ -664,7 +712,24 @@
             if (lowBatch.pending.size === 0) requestAnimationFrame(releaseLowBatch);
           }
           : undefined;
-      queueTile(spec, layer, priority, generation, onInserted);
+      if (layer) queueTile(spec, layer, priority, generation, onInserted);
+      else if (!renderingTiles.has(spec.key) && !tileCache.has(spec.key)) {
+        renderingTiles.add(spec.key);
+        const revision = pathRevision;
+        renderScheduler.enqueue(spec.key, () => fetchPdfTile(pdfPath, spec, tileCache,
+          () => revision === pathRevision && renderScaleKey === nextScaleKey), priority)
+          .catch(() => {}).finally(() => { renderingTiles.delete(spec.key); scheduleRenderRetry(); });
+      }
+    }
+    const queueLength = renderScheduler.getQueueLength();
+    const cacheBytes = tileCache.getSizeBytes();
+    if (queueLength > peakQueueLength || cacheBytes > peakCacheBytes) {
+      peakQueueLength = Math.max(peakQueueLength, queueLength);
+      peakCacheBytes = Math.max(peakCacheBytes, cacheBytes);
+      if (now - lastPeakLogTime >= 1000) {
+        lastPeakLogTime = now;
+        logInfo('pdf-perf', `preview peaks queue=${peakQueueLength} cache=${(peakCacheBytes / 1048576).toFixed(1)}MiB`);
+      }
     }
     lastScrollTop = viewport.top;
   }
@@ -782,6 +847,7 @@
 
   // Keyboard handler
   function handleKeydown(event: KeyboardEvent) {
+    if (event.code === 'KeyJ' || event.code === 'KeyK') keyScrollActive = true;
     if (showSearch) {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeSearch(); return; }
       if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); submitSearch(event.shiftKey ? 'prev' : 'next'); return; }
@@ -989,11 +1055,17 @@
   onMount(() => {
     const finishSelection = () => { selectingText = false; updatePageRendering(); };
     window.addEventListener('pointerup', finishSelection);
+    const finishKeyScroll = (event: KeyboardEvent) => {
+      if (event.code !== 'KeyJ' && event.code !== 'KeyK') return;
+      keyScrollActive = false;
+      if (!isScrolling) updatePageRendering();
+    };
+    window.addEventListener('keyup', finishKeyScroll);
     const handleCopy = (event: ClipboardEvent) => copyPdfTextSelection(event, containerEl);
     document.addEventListener('copy', handleCopy);
     resizeObserver = new ResizeObserver(observeWidth);
     if (scrollEl) resizeObserver.observe(scrollEl);
-    return () => { window.removeEventListener('pointerup', finishSelection); document.removeEventListener('copy', handleCopy); };
+    return () => { window.removeEventListener('pointerup', finishSelection); window.removeEventListener('keyup', finishKeyScroll); document.removeEventListener('copy', handleCopy); };
   });
 
   // Set up scroll listener and observer when scrollEl becomes available
@@ -1003,6 +1075,13 @@
       // Scroll listener
       let ticking = false;
       const handler = () => {
+        isScrolling = true;
+        if (scrollSettledTimer !== undefined) clearTimeout(scrollSettledTimer);
+        scrollSettledTimer = setTimeout(() => {
+          scrollSettledTimer = undefined;
+          isScrolling = false;
+          updatePageRendering();
+        }, 120);
         if (!ticking) {
           requestAnimationFrame(() => {
             updateCurrentPage();
@@ -1021,6 +1100,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (scrollSettledTimer !== undefined) clearTimeout(scrollSettledTimer);
     invalidateViewport();
     if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
     if (resizeTimer !== undefined) clearTimeout(resizeTimer);
