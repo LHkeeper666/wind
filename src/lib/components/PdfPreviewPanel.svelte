@@ -38,6 +38,7 @@
     onPageChange = (_page: number) => {},
     onFullscreen = () => {},
     active = true,
+    panelDragging = false,
   }: {
     pdfPath: string;
     pageDimensions?: PdfPageDimensions[];
@@ -47,6 +48,7 @@
     onPageChange?: (page: number) => void;
     onFullscreen?: () => void;
     active?: boolean;
+    panelDragging?: boolean;
   } = $props();
 
   // State
@@ -84,6 +86,42 @@
   let selectingText = false;
   let textPointerStart: { x: number; y: number } | undefined;
   let resizeObserver: ResizeObserver | undefined;
+  let observedWidth = -1;
+  let resizeFrame: number | undefined;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  let resizing = false;
+  let destroyed = false;
+
+  function invalidateViewport() {
+    renderGeneration++;
+    renderScheduler.invalidate(renderGeneration);
+  }
+
+  function finishResize() {
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+    resizeTimer = undefined;
+    if (panelDragging || destroyed) return;
+    resizing = false;
+    updatePageRendering();
+  }
+
+  function observeWidth() {
+    if (!scrollEl) return;
+    const width = scrollEl.clientWidth;
+    if (width === observedWidth) return;
+    observedWidth = width;
+    if (resizeFrame !== undefined) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = undefined;
+      if (!scrollEl || scrollEl.clientWidth === viewportWidth) return;
+      viewportWidth = scrollEl.clientWidth;
+      initScale();
+      if (!resizing) invalidateViewport();
+      resizing = true;
+      if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(finishResize, 180);
+    });
+  }
 
   let renderedPages = new Set<number>();
   // Track which pages have link overlays loaded
@@ -510,7 +548,8 @@
   }
 
   function updateTiledPageRendering() {
-    if (!active || !scrollEl || pageOffsets.length < 2) return;
+    if (destroyed || !active || !scrollEl || pageOffsets.length < 2) return;
+    if (resizing || panelDragging) return;
     if (zoomSession && renderedTileData.size > 0) return;
     const viewport = {
       left: scrollEl.scrollLeft,
@@ -542,7 +581,7 @@
       layers.set(pageNum, layer);
       const pageLeft = (pageTrackWidth - dim.width * scale) / 2;
       const lowVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport);
-      const lowPrefetch = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport, true);
+      const lowPrefetch = panelDragging ? [] : getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, lowScale, viewport, true);
       visibleLowRequests.push(...lowVisible.map(spec => ({
         spec,
         page: pageNum,
@@ -557,7 +596,7 @@
         })));
       if (zoomSettled) {
         const highVisible = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport);
-        const highPrefetch = getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport, true);
+        const highPrefetch = panelDragging ? [] : getPdfTileSpecs(pathRevision, pageNum, dim, pageLeft, pageOffsets[pageNum], scale, highScale, viewport, true);
         visibleHighRequests.push(...highVisible.map(spec => ({
           spec,
           page: pageNum,
@@ -952,13 +991,7 @@
     window.addEventListener('pointerup', finishSelection);
     const handleCopy = (event: ClipboardEvent) => copyPdfTextSelection(event, containerEl);
     document.addEventListener('copy', handleCopy);
-    resizeObserver = new ResizeObserver(() => {
-      if (scrollEl) viewportWidth = scrollEl.clientWidth;
-      initScale();
-      requestAnimationFrame(() => {
-        updatePageRendering();
-      });
-    });
+    resizeObserver = new ResizeObserver(observeWidth);
     if (scrollEl) resizeObserver.observe(scrollEl);
     return () => { window.removeEventListener('pointerup', finishSelection); document.removeEventListener('copy', handleCopy); };
   });
@@ -987,6 +1020,10 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
+    invalidateViewport();
+    if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
     releaseLowBatch();
     resizeObserver?.disconnect();
     tileCache.clear();
@@ -999,6 +1036,20 @@
     zoomSession = undefined;
     renderScheduler.clear();
     clearLinkCache();
+  });
+
+  $effect(() => {
+    if (panelDragging) {
+      if (!resizing) invalidateViewport();
+      resizing = true;
+      if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+      resizeTimer = undefined;
+    } else if (resizing) {
+      if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+      resizeFrame = undefined;
+      if (scrollEl) viewportWidth = scrollEl.clientWidth;
+      finishResize();
+    }
   });
 
   $effect(() => {

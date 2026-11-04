@@ -54,6 +54,7 @@
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
     activeColumn = '',
+    panelDragging = false,
     selectedEntryIsDir = null,
     restoreFocusTarget = undefined as 'outline' | 'content' | 'editor' | undefined,
   }: {
@@ -71,6 +72,7 @@
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
     activeColumn?: string;
+    panelDragging?: boolean;
     selectedEntryIsDir?: boolean | null;
     restoreFocusTarget?: 'outline' | 'content' | 'editor';
   } = $props();
@@ -1279,6 +1281,7 @@
                 fileSize={session.size}
                 title={session.title}
                 active={session.tabId === renderTabId && session.path === filePath && mode === 'global-normal'}
+                panelDragging={panelDragging}
                 onPageChange={(page: number) => { if (session.tabId === renderTabId) pdfState.setPage(page); }}
                 onFullscreen={() => { if (session.tabId === renderTabId) onFullscreen(); }}
               />

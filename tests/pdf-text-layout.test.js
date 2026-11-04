@@ -17,6 +17,21 @@ new Function('exports', 'require', compiled)(exports, name => {
   throw new Error(`Unexpected import: ${name}`);
 });
 
+test('PDF render queue discards stale pending work and prioritizes visible tiles', async () => {
+  const scheduler = new exports.PdfRenderScheduler();
+  let releaseRunning;
+  const running = scheduler.enqueue(() => new Promise(resolve => { releaseRunning = resolve; }), 0, 1);
+  const stale = scheduler.enqueue(() => Promise.resolve('stale'), 200, 1);
+  const order = [];
+  scheduler.invalidate(2);
+  await assert.rejects(stale, /stale PDF render request/);
+  const prefetch = scheduler.enqueue(async () => { order.push('prefetch'); }, 200, 2);
+  const visible = scheduler.enqueue(async () => { order.push('visible'); }, 0, 2);
+  releaseRunning();
+  await Promise.all([running, prefetch, visible]);
+  assert.deepEqual(order, ['visible', 'prefetch']);
+});
+
 test('PDF coordinates convert from bottom left to top left', () => {
   assert.deepEqual(
     exports.pdfTextRect({ text: '中', x: 10, y: 30, width: 12, height: 16 }, 100, 2),

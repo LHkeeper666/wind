@@ -138,6 +138,8 @@
 
   // Drag state for column resizing
   let isDragging: 'first' | 'second' | null = $state(null);
+  let resizeFrame: number | undefined;
+  let pendingResizeX: number | undefined;
   let dragStartX: number = 0;
   let dragStartRatios: [number, number, number] = [1, 1, 3];
 
@@ -308,6 +310,9 @@
   let fileOpUnlistens: (() => void)[] = [];
 
   onDestroy(() => {
+    if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+    window.removeEventListener('mousemove', handleResize);
+    window.removeEventListener('mouseup', stopResize);
     fileOpUnlistens.forEach(fn => fn());
     refreshCoordinator?.dispose();
     refreshCoordinator = null;
@@ -996,6 +1001,7 @@
   function startResize(event: MouseEvent, handle: 'first' | 'second') {
     event.preventDefault();
     isDragging = handle;
+    pendingResizeX = undefined;
     dragStartX = event.clientX;
     dragStartRatios = [...$layout.columnRatios] as [number, number, number];
     window.addEventListener('mousemove', handleResize);
@@ -1004,9 +1010,17 @@
 
   function handleResize(event: MouseEvent) {
     if (!isDragging) return;
+    pendingResizeX = event.clientX;
+    if (resizeFrame === undefined) resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = undefined;
+      commitResize();
+    });
+  }
 
+  function commitResize() {
+    if (!isDragging || pendingResizeX === undefined) return;
     const containerWidth = window.innerWidth;
-    const deltaX = event.clientX - dragStartX;
+    const deltaX = pendingResizeX - dragStartX;
     const deltaRatio = (deltaX / containerWidth) * 5; // Scale factor
 
     if (isDragging === 'first') {
@@ -1022,7 +1036,12 @@
     }
   }
 
-  function stopResize() {
+  function stopResize(event: MouseEvent) {
+    if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+    resizeFrame = undefined;
+    pendingResizeX = event.clientX;
+    commitResize();
+    pendingResizeX = undefined;
     isDragging = null;
     window.removeEventListener('mousemove', handleResize);
     window.removeEventListener('mouseup', stopResize);
@@ -1207,6 +1226,7 @@
         <button class="preview-slot-control" title="Cycle layout (Ctrl+W m)" onclick={togglePreviewLayout}>▣</button>
       </div>
       <div class="preview-slot-body"><PreviewEditor
+        panelDragging={isDragging !== null}
         bind:this={previewEditor}
         hideHeader={true}
         filePath={selectedFile}
