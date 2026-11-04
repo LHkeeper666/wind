@@ -650,8 +650,49 @@
     return isTocFocused() ? 'TOC' : 'PREVIEW';
   }
   export function toggleOutline(): void {
-    if (filePath && isPdfFile(filePath)) pdfState.togglePdfToc();
-    else tocState.setTocOpen(!tocState.getTocOpen());
+    setOutlineVisible(!getOutlineState().visible);
+  }
+
+  export function getOutlineState(): { available: boolean; visible: boolean; reason: string } {
+    if (!filePath) return { available: false, visible: false, reason: '当前没有预览文件' };
+    if (mode !== 'global-normal') return { available: false, visible: false, reason: '请先切换到预览模式' };
+    if (isPdfFile(filePath)) return {
+      available: pdfState.getPdfOutline().length > 0,
+      visible: pdfState.getPdfTocOpen(),
+      reason: '当前 PDF 暂无目录（或目录尚未加载）'
+    };
+    if (isMarkdown) return {
+      available: tocState.getTocHeadings().length > 0,
+      visible: tocState.getTocOpen(),
+      reason: '当前 Markdown 暂无标题大纲'
+    };
+    return { available: false, visible: false, reason: '目录命令仅适用于 Markdown 和 PDF 预览' };
+  }
+
+  export function setOutlineVisible(open: boolean): boolean {
+    const state = getOutlineState();
+    if (!state.available) return false;
+    if (filePath && isPdfFile(filePath)) pdfState.setPdfTocOpen(open);
+    else tocState.setTocOpen(open);
+    if (!open) {
+      const closingPath = filePath;
+      const closingTabId = renderTabId;
+      tocState.setTocFocused(false);
+      pdfState.setTocFocused(false);
+      previewPane?.focusContent();
+      void tick().then(() => {
+        if (filePath === closingPath && renderTabId === closingTabId) focusPreviewContent();
+      });
+    }
+    return true;
+  }
+
+  export function getPdfPageCommandState(): { available: boolean; pageCount: number } {
+    return {
+      available: !!filePath && isPdfFile(filePath) && mode === 'global-normal'
+        && pdfSessions.some(session => session.tabId === renderTabId && session.path === filePath),
+      pageCount: pdfState.getPdfPageCount()
+    };
   }
 
   function handlePanelFocus() {

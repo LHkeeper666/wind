@@ -48,6 +48,7 @@ export interface PdfStateAPI {
 
   // Actions
   togglePdfToc: () => void;
+  setPdfTocOpen: (open: boolean) => void;
   togglePdfTocExpanded: (id: string) => void;
   jumpToPdfPage: (page: number) => void;
   jumpToPage: (page: number, y: number) => void;
@@ -92,11 +93,14 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   let focusRequest: number = 0;
 
   function togglePdfToc() {
+    setPdfTocOpen(!pdfTocOpen);
+    if (pdfTocOpen) setTimeout(() => { if (pdfTocOpen) pdfTocSidebar?.focus(); }, 0);
+  }
+
+  function setPdfTocOpen(open: boolean) {
     if (pdfOutline.length === 0) return;
-    pdfTocOpen = !pdfTocOpen;
-    if (pdfTocOpen) {
-      setTimeout(() => pdfTocSidebar?.focus(), 0);
-    }
+    if (pdfTocOpen === open) return;
+    pdfTocOpen = open;
   }
 
   function togglePdfTocExpanded(id: string) {
@@ -320,6 +324,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     },
 
     togglePdfToc,
+    setPdfTocOpen,
     togglePdfTocExpanded,
     jumpToPdfPage,
     jumpToPage,

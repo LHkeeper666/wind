@@ -469,23 +469,32 @@
         actions.onToggleHelp();
         return;
       }
-      // PDF toc command
-      if (q === 'toc') {
-        actions.getPreviewEditor()?.togglePdfToc();
+      // Outline commands for the current main preview.
+      if (q === 'toc' || q === 'toc open' || q === 'toc close') {
+        const preview = actions.getPreviewEditor();
+        const state = preview?.getOutlineState();
+        if (!state?.available) actions.onShowToast(state?.reason ?? '当前没有预览文件');
+        else preview.setOutlineVisible(q === 'toc' ? !state.visible : q === 'toc open');
         visible = false;
         actions.focusPanel('preview');
         return;
       }
 
-      // PDF page jump: :number
-      if (/^\d+$/.test(q)) {
-        const pageNum = parseInt(q);
-        if (pageNum >= 1) {
-          actions.getPreviewEditor()?.jumpToPdfPage(pageNum - 1);
-          visible = false;
-          actions.focusPanel('preview');
-          return;
+      // Both :page N and :N use one-based page numbers.
+      if (q === 'page' || /^page\s/.test(q) || /^\d+$/.test(q)) {
+        const input = q === 'page' ? '' : /^page\s/.test(q) ? q.slice(4).trim() : q;
+        const preview = actions.getPreviewEditor();
+        const state = preview?.getPdfPageCommandState();
+        if (!state?.available || state.pageCount < 1) {
+          actions.onShowToast('页码命令仅适用于已加载的 PDF 预览');
+        } else if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input)) || Number(input) > state.pageCount) {
+          actions.onShowToast(`请输入有效页码：1–${state.pageCount}`);
+        } else {
+          preview.jumpToPdfPage(Number(input) - 1);
         }
+        visible = false;
+        actions.focusPanel('preview');
+        return;
       }
 
       // Ratio command

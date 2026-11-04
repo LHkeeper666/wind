@@ -146,6 +146,9 @@ export const keybindingGroups: KeybindingGroup[] = [
   {
     title: 'Commands',
     items: [
+      { key: 'toc', context: 'global', description: 'Toggle outline in Markdown/PDF preview' },
+      { key: 'toc open / close', context: 'global', description: 'Show or hide Markdown/PDF outline' },
+      { key: 'page N / N', context: 'global', description: 'Jump to page N in a loaded PDF preview (starts at 1)' },
       { key: 'ratio X:Y:Z', context: 'global', description: 'Set column ratios (dot form, 0 hides a column; aliases: default, dual, preview)' },
       { key: 'cd <path>', context: 'global', description: 'Change directory' },
       { key: 'e <path>', context: 'global', description: 'Open file/directory' },
