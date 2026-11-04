@@ -54,7 +54,7 @@ interface KeyboardDeps {
   getTabActiveId: () => number;
   getTabPhysicalIds: () => number[];
   getTabsMruOrder: () => number[];
-  restoreTabContent: (tab: TabState) => void;
+  restoreTabContent: (tab: TabState, context?: 'active' | 'candidate') => void;
   getTabById: (id: number) => TabState | undefined;
   commitTabSwitch: (tabId: number) => void;
   swapTab: (delta: number) => void;
@@ -131,7 +131,7 @@ function moveSwitcherIn(ids: number[], direction: 1 | -1) {
   const newIdx = (idx + direction + ids.length) % ids.length;
   switcherSelectionId = ids[newIdx];
   const tab = deps.getTabById(switcherSelectionId);
-  if (tab) deps.restoreTabContent(tab);
+  if (tab) deps.restoreTabContent(tab, 'candidate');
 }
 
 export function commitSwitcher() {
@@ -141,6 +141,9 @@ export function commitSwitcher() {
   const originId = switcherOriginTabId;
   if (selectionId !== originId && selectionId >= 0) {
     deps.commitTabSwitch(selectionId);
+  } else {
+    const origin = deps.getTabById(originId);
+    if (origin) deps.restoreTabContent(origin);
   }
   switcherActive = false;
   switcherSelectionId = -1;

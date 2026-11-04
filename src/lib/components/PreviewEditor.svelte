@@ -54,6 +54,8 @@
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
     activeColumn = '',
+    allowAutoFocus = true,
+    focusGeneration = 0,
     panelDragging = false,
     selectedEntryIsDir = null,
     restoreFocusTarget = undefined as 'outline' | 'content' | 'editor' | undefined,
@@ -72,6 +74,8 @@
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
     activeColumn?: string;
+    allowAutoFocus?: boolean;
+    focusGeneration?: number;
     panelDragging?: boolean;
     selectedEntryIsDir?: boolean | null;
     restoreFocusTarget?: 'outline' | 'content' | 'editor';
@@ -80,6 +84,9 @@
   // During t+n/t+p the selected tab is previewed before activeTabId commits.
   // Keep preview state keyed by that target tab instead of the origin tab.
   let renderTabId = $derived(previewSlotKey(previewTabId ?? currentTabId, slotId));
+  function canAutoFocus(tabId = renderTabId, generation = focusGeneration): boolean {
+    return allowAutoFocus && tabId === renderTabId && generation === focusGeneration && activeColumn === 'preview';
+  }
   type PdfSession = { tabId: number; path: string; dimensions: import('$lib/utils/pdf-shared').PdfPageDimensions[]; count: number; size: number; title: string | null; panel?: PdfPreviewPanel; lastUsed: number };
   let pdfSessions = $state<PdfSession[]>([]);
   let pdfReadyPath = $state<string | null>(null);
@@ -242,6 +249,7 @@
     tabId: number,
     path: string | null,
     targetMode: 'editor-normal' | 'editor-insert' | 'global-normal',
+    deliverFocus = true,
   ): boolean {
     if (!path || targetMode === 'global-normal') return false;
     // Suppress mode effect to prevent infinite loop when mode actually changes:
@@ -254,7 +262,7 @@
     }
     mode = targetMode;
     // suppressModeEffect is cleared by the mode effect (only set if mode actually changed)
-    focusActiveEditor();
+    if (deliverFocus && canAutoFocus()) focusActiveEditor();
     return true;
   }
 
@@ -494,7 +502,7 @@
 
   // Redirect focus when active column switches away from preview
   $effect(() => {
-    if (activeColumn && activeColumn !== 'preview' && mode !== 'global-normal') {
+    if (allowAutoFocus && activeColumn && activeColumn !== 'preview' && mode !== 'global-normal') {
       if (activeColumn === 'terminal') return; // terminal focus handled by PanelLayout.focusPanel
       const target = activeColumn === 'current'
         ? document.querySelector('.current-panel .directory-panel')
@@ -511,9 +519,11 @@
     const overlay = vimOverlay?.getOverlayElement();
     if (!overlay) return;
     function handleDocMouseUp() {
+      const tabId = renderTabId;
+      const generation = focusGeneration;
       requestAnimationFrame(() => {
         const ov = vimOverlay?.getOverlayElement();
-        if (ov && mode === 'editor-normal' && activeColumn === 'preview' && document.activeElement !== ov) {
+        if (ov && mode === 'editor-normal' && canAutoFocus(tabId, generation) && document.activeElement !== ov) {
           focusActiveEditor();
         }
       });
@@ -537,9 +547,11 @@
   // Auto-focus output panel when it becomes visible
   $effect(() => {
     if (vimOverlay?.getOutputVisible()) {
+      const tabId = renderTabId;
+      const generation = focusGeneration;
       requestAnimationFrame(() => {
         const el = document.querySelector('.panel-output') as HTMLElement | null;
-        if (el) el.focus();
+        if (el && canAutoFocus(tabId, generation)) el.focus();
       });
     }
   });
@@ -591,8 +603,9 @@
         pendingEditorSelection = null;
         pendingEditorScrollTop = -1;
         if (editorTargetLine >= 0 && editorView) { textEditorHost?.moveCursorToLine(editorTargetLine); editorTargetLine = -1; }
-        if (changed && activeColumn === 'preview') focusActiveEditor();
+        if (changed && canAutoFocus()) focusActiveEditor();
       } else if (!textEditorHost?.hasSession(textSnapshot.tabId) || textEditorHost?.getEditorSession(textSnapshot.tabId)?.filePath !== textSnapshot.path) {
+        const generation = focusGeneration;
         requestAnimationFrame(() => {
           if (mode !== 'editor-normal' && mode !== 'editor-insert') return;
           if (!isCurrentTextSnapshot(textSnapshot)) return;
@@ -601,14 +614,14 @@
             pendingEditorPos = -1;
             pendingEditorSelection = null;
             pendingEditorScrollTop = -1;
-            if (activeColumn === 'preview') focusActiveEditor();
+            if (canAutoFocus(textSnapshot.tabId, generation)) focusActiveEditor();
           }
         });
       } else if (editorView && editorTargetLine >= 0 && changed) {
         textEditorHost?.moveCursorToLine(editorTargetLine);
         editorTargetLine = -1;
       }
-      if (changed && activeColumn === 'preview' && editorView && textEditorHost?.getEditorFilePath() === filePath) focusActiveEditor();
+      if (changed && canAutoFocus() && editorView && textEditorHost?.getEditorFilePath() === filePath) focusActiveEditor();
     } else {
       editorInitInFlight = false; // safety reset
       suppressModeEffect = false; // safety reset
@@ -636,7 +649,7 @@
       if (changed && filePath && isTextFile(filePath) && !get(layout).archiveState) {
         void reconcileTextFileVersion(false);
       }
-      if (changed && panelElement && !tocState.getTocFocused() && activeColumn === 'preview') {
+      if (changed && panelElement && !tocState.getTocFocused() && canAutoFocus()) {
         panelElement.focus();
       }
     }
@@ -677,11 +690,12 @@
     if (!open) {
       const closingPath = filePath;
       const closingTabId = renderTabId;
+      const generation = focusGeneration;
       tocState.setTocFocused(false);
       pdfState.setTocFocused(false);
       previewPane?.focusContent();
       void tick().then(() => {
-        if (filePath === closingPath && renderTabId === closingTabId) focusPreviewContent();
+        if (filePath === closingPath && canAutoFocus(closingTabId, generation)) focusPreviewContent();
       });
     }
     return true;
@@ -709,7 +723,9 @@
 
   export function enterEditorMode() {
     mode = 'editor-normal';
-    void tick().then(() => focusActiveEditor());
+    const tabId = renderTabId;
+    const generation = focusGeneration;
+    void tick().then(() => { if (canAutoFocus(tabId, generation)) focusActiveEditor(); });
   }
 
   export function pressTab() {
@@ -759,9 +775,11 @@
       // focus (so its focus handler will not run again). Focus the container
       // now and retry the PDF content on the next frame.
       panelElement?.focus({ preventScroll: true });
+      const tabId = renderTabId;
+      const generation = focusGeneration;
       requestAnimationFrame(() => {
         if (mode === 'global-normal' && filePath && isPdfFile(filePath)
-            && get(layout).activeColumn === 'preview' && !pdfState.getPdfTocFocused()) {
+            && canAutoFocus(tabId, generation) && get(layout).activeColumn === 'preview' && !pdfState.getPdfTocFocused()) {
           pdfState.focusPanel();
         }
       });
@@ -801,9 +819,10 @@
     }
 
     const restoreOutlineAfterLoad = () => {
+      const generation = focusGeneration;
       void tick().then(() => {
         if (gen === loadGeneration && loadTabId === renderTabId && filePath === path
-            && restoreFocusTarget === 'outline' && activeColumn === 'preview') focusToc(true);
+            && restoreFocusTarget === 'outline' && canAutoFocus(loadTabId, generation)) focusToc(true);
       });
     };
     let cached = tabCache.get(loadTabId);

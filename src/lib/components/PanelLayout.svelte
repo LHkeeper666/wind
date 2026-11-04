@@ -500,17 +500,29 @@
 
   // Guards against a deferred focus callback from an older restore landing
   // after the user has already switched to another tab.
-  let tabRestoreGeneration = 0;
+  let tabRestoreGeneration = $state(0);
+  let focusRestorePending = false;
 
-  function restoreContextFocus(tabId: number, slotId: number, generation: number, target: NonNullable<TabState['focusTarget']>) {
-    if (!isCurrentRestore({ workspaceId: tabId, slotId, generation }, { workspaceId: getTabsState().activeTabId, slotId: getActiveTab().activeSlotId, generation: tabRestoreGeneration })) return;
-    if (target === 'content' || target === 'editor' || target === 'outline') tabs.hideSelectionPreview();
-    focusRestoredTarget(target);
+  function restoredFocusTarget(panel: 'parent' | 'current' | 'preview' | 'terminal', target: TabState['focusTarget']): NonNullable<TabState['focusTarget']> {
+    if (panel === 'preview') return target === 'editor' || target === 'outline' || target === 'content' ? target : 'content';
+    return panel;
   }
 
-  function restoreTabContent(tab: TabState) {
+  function restoreContextFocus(tabId: number, slotId: number, generation: number, panel: 'parent' | 'current' | 'preview' | 'terminal', target: NonNullable<TabState['focusTarget']>) {
+    if (!isCurrentRestore({ workspaceId: tabId, slotId, generation }, { workspaceId: getTabsState().activeTabId, slotId: getActiveTab().activeSlotId, generation: tabRestoreGeneration })) return;
+    if (get(layout).activeColumn !== panel) {
+      focusRestorePending = false;
+      return;
+    }
+    if (target === 'content' || target === 'editor' || target === 'outline') tabs.hideSelectionPreview();
+    focusRestoredTarget(target);
+    focusRestorePending = false;
+  }
+
+  function restoreTabContent(tab: TabState, context: 'active' | 'candidate' = 'active') {
     if (!tab) return;
     const restoreId = ++tabRestoreGeneration;
+    focusRestorePending = true;
     const t0 = performance.now();
     // Deactivate the outgoing tab's editor before restoring the target tab's
     // selectedFile. Must run synchronously before selectedFile assignment so
@@ -545,7 +557,7 @@
       : targetPanel;
     layout.setActiveColumn(actualPanel);
     if (actualPanel === 'preview') {
-      previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), tab.selectedFile, tab.editorMode);
+      previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), tab.selectedFile, tab.editorMode, false);
     }
     // Sync PanelLayout local state
     currentPath = tab.currentPath;
@@ -570,7 +582,10 @@
     // effects that changed it (e.g. tab rename callback → layout subscription),
     // and it moves focus out of any column that ended up zero-width.
     const restoredPanel = get(layout).activeColumn;
-    const targetFocus = tab.focusTarget ?? (restoredPanel === 'preview' ? 'content' : restoredPanel);
+    const targetFocus = restoredFocusTarget(restoredPanel, tab.focusTarget);
+    if (context === 'active' && getTabsState().activeTabId === tab.id && targetFocus !== tab.focusTarget) {
+      tabs.saveFocusTarget(targetFocus);
+    }
     if (restoredPanel === 'preview' && getTabsState().activeTabId === tab.id) tabs.hideSelectionPreview();
     layout.setActiveColumn(restoredPanel);
     const t3 = performance.now();
@@ -596,7 +611,7 @@
       } else {
         setTimeout(() => void synchronizeProjectTreeWatcher(), 0);
       }
-      restoreContextFocus(tab.id, tab.activeSlotId, restoreId, targetFocus);
+      if (context === 'active') restoreContextFocus(tab.id, tab.activeSlotId, restoreId, restoredPanel, targetFocus);
       const focusDone = performance.now();
       logInfo('tab-perf', `focusPanel=${(focusDone-tickDone).toFixed(1)}ms`);
       if (import.meta.env.DEV) tracePerformance('tab-focus-restore', 'tab-focus-restore-start');
@@ -679,7 +694,7 @@
       tabs.saveFocusTarget(tab.slots.find((slot: { id: number }) => slot.id === id)?.focusTarget ?? 'content');
       layout.setActiveColumn('preview');
       void tick().then(() => {
-        restoreContextFocus(tab.id, id, restoreId, getActiveTab().focusTarget ?? 'content');
+        restoreContextFocus(tab.id, id, restoreId, 'preview', restoredFocusTarget('preview', getActiveTab().focusTarget));
       });
     }
   }
@@ -946,6 +961,7 @@
   }
 
   function handleAppFocusIn(event: FocusEvent) {
+    if (focusRestorePending || getSwitcherActive()) return;
     const target = event.target as HTMLElement;
     if (!target) return;
     const column = target.closest('.parent-panel, .current-panel, .preview-panel');
@@ -987,10 +1003,12 @@
     const hadPanelFocus = isPanelFocused();
     const tab = getActiveTab();
     const restoreId = ++tabRestoreGeneration;
-    const target = tab.focusTarget ?? ($layout.activeColumn === 'preview' ? 'content' : $layout.activeColumn as 'parent' | 'current' | 'terminal');
+    const panel = $layout.activeColumn;
+    const target = restoredFocusTarget(panel, tab.focusTarget);
+    focusRestorePending = true;
     if (target === 'content' || target === 'editor' || target === 'outline') tabs.hideSelectionPreview();
     void tick().then(() => {
-      restoreContextFocus(tab.id, tab.activeSlotId, restoreId, target);
+      restoreContextFocus(tab.id, tab.activeSlotId, restoreId, panel, target);
     });
     if (!hadPanelFocus) {
       showToast(`Focus: ${$layout.activeColumn.toUpperCase()}`);
@@ -1235,6 +1253,8 @@
         slotId={displayedTab.activeSlotId}
         previewTabId={displayedTab.id}
         activeColumn={$layout.activeColumn}
+        allowAutoFocus={!getSwitcherActive() && displayedTab.id === $activeTab.id}
+        focusGeneration={tabRestoreGeneration}
         restoreFocusTarget={displayedTab.id === $activeTab.id && displayedTab.activeColumn === 'preview' ? (displayedTab.focusTarget === 'outline' ? 'outline' : displayedTab.focusTarget === 'editor' ? 'editor' : 'content') : undefined}
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
