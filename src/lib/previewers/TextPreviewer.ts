@@ -52,12 +52,15 @@ export class TextPreviewer implements Previewer {
 	private prevLines: string[] = [];
 	private requestId: number = 0;
 	private isHexDump: boolean = false;
+	private hexCleanup: (() => void) | null = null;
 
 	match(_filePath: string): boolean {
 		return true;
 	}
 
 	async render(content: string | ArrayBuffer, container: HTMLElement): Promise<void> {
+		this.hexCleanup?.();
+		this.hexCleanup = null;
 		this.container = container;
 		this.requestId++;
 		this.isHexDump = false;
@@ -200,130 +203,91 @@ export class TextPreviewer implements Previewer {
 	}
 
 	private renderHexDump(content: string | ArrayBuffer, container: HTMLElement): void {
+		this.hexCleanup?.();
+		this.hexCleanup = null;
 		this.isHexDump = true;
-		let bytes: Uint8Array;
-		if (typeof content === 'string') {
-			bytes = new TextEncoder().encode(content);
-		} else {
-			bytes = new Uint8Array(content);
-		}
-
-		const totalSize = bytes.length;
-		const dumpBytes = bytes.slice(0, MAX_HEX_DUMP_BYTES);
-		const lines: { addr: string; data: string }[] = [];
-
-		for (let offset = 0; offset < dumpBytes.length; offset += 16) {
-			const hexParts: string[] = [];
-			const asciiParts: string[] = [];
-
-			for (let i = 0; i < 16; i++) {
-				if (offset + i < dumpBytes.length) {
-					const byte = dumpBytes[offset + i];
-					hexParts.push(byte.toString(16).padStart(2, '0'));
-					asciiParts.push(byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.');
-				} else {
-					hexParts.push('  ');
-					asciiParts.push(' ');
-				}
-				if (i === 7) hexParts.push('');
-			}
-
-			const addr = offset.toString(16).padStart(8, '0');
-			const hex = hexParts.join(' ');
-			const ascii = asciiParts.join('');
-			lines.push({ addr, data: `${hex}  |${ascii}|` });
-		}
-
-		const truncated = totalSize > MAX_HEX_DUMP_BYTES;
+		const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : new Uint8Array(content);
+		const displayed = bytes.subarray(0, MAX_HEX_DUMP_BYTES);
+		const sourceSize = Number(container.dataset.originalFileSize);
+		const totalSize = Number.isFinite(sourceSize) && sourceSize > 0 ? sourceSize : bytes.length;
+		const truncated = totalSize > displayed.length;
 		const notice = truncated
-			? `<div class="hex-notice">二进制文件 · ${formatSize(totalSize)} · 仅显示前 ${formatSize(MAX_HEX_DUMP_BYTES)}</div>`
+			? `<div class="hex-notice">二进制文件 · ${formatSize(totalSize)} · 仅显示前 ${formatSize(displayed.length)}</div>`
 			: `<div class="hex-notice">二进制文件 · ${formatSize(totalSize)}</div>`;
-
-		this.prevLines = lines.map(l => `${l.addr}  ${l.data}`);
-
-		const linesHtml = lines.map((l, i) =>
-			`<div data-line="${i}"><code>${this.escapeHtml(l.addr)}  ${this.escapeHtml(l.data)}</code></div>`
-		).join('\n');
-
-		container.innerHTML = `<div class="preview-hex">${notice}<pre class="hex-pre">${linesHtml}</pre></div>`;
+		container.innerHTML = `<div class="preview-hex">${notice}<pre class="hex-pre" style="position:relative;margin:0;white-space:pre;overflow:visible"></pre></div>`;
+		const pre = container.querySelector<HTMLElement>('.hex-pre')!;
+		const count = Math.ceil(displayed.length / 16);
+		let rowHeight = 20;
+		let first = -1;
+		let last = -1;
+		let frame = 0;
+		let scrollParent: HTMLElement | null = null;
+		let observer: ResizeObserver | null = null;
+		let attachAttempts = 0;
+		const renderWindow = () => {
+			frame = 0;
+			if (!container.isConnected || !scrollParent) return;
+			const viewport = scrollParent.getBoundingClientRect();
+			const top = Math.max(0, viewport.top - pre.getBoundingClientRect().top);
+			const start = Math.max(0, Math.floor(top / rowHeight) - 8);
+			const end = Math.min(count, Math.ceil((top + viewport.height) / rowHeight) + 8);
+			if (start === first && end === last) return;
+			first = start;
+			last = end;
+			const fragment = document.createDocumentFragment();
+			for (let line = start; line < end; line++) {
+				const offset = line * 16;
+				const hex: string[] = [];
+				const ascii: string[] = [];
+				for (let i = 0; i < 16; i++) {
+					const byte = displayed[offset + i];
+					hex.push(byte === undefined ? '  ' : byte.toString(16).padStart(2, '0'));
+					ascii.push(byte === undefined ? ' ' : byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.');
+					if (i === 7) hex.push('');
+				}
+				const row = document.createElement('div');
+				row.dataset.line = String(line);
+				row.style.cssText = `position:absolute;top:${line * rowHeight}px;height:${rowHeight}px;white-space:pre`;
+				const code = document.createElement('code');
+				code.textContent = `${offset.toString(16).padStart(8, '0')}  ${hex.join(' ')}  |${ascii.join('')}|`;
+				row.appendChild(code);
+				fragment.appendChild(row);
+			}
+			pre.replaceChildren(fragment);
+		};
+		const schedule = () => { if (!frame) frame = requestAnimationFrame(renderWindow); };
+		// The router stages this container before attaching it to the scrollable pane.
+		const attach = () => {
+			if (!container.isConnected) {
+				if (++attachAttempts < 3) frame = requestAnimationFrame(attach);
+				return;
+			}
+			let node = container.parentElement;
+			while (node && getComputedStyle(node).overflowY !== 'auto' && getComputedStyle(node).overflowY !== 'scroll') node = node.parentElement;
+			scrollParent = node ?? container.parentElement;
+			if (!scrollParent) return;
+			const probe = document.createElement('div');
+			probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre';
+			probe.textContent = '00000000  00 00 00 00 00 00 00 00   00 00 00 00 00 00 00 00  |................|';
+			pre.appendChild(probe);
+			rowHeight = probe.getBoundingClientRect().height || rowHeight;
+			probe.remove();
+			pre.style.height = `${count * rowHeight}px`;
+			scrollParent.addEventListener('scroll', schedule, { passive: true });
+			observer = new ResizeObserver(schedule);
+			observer.observe(scrollParent);
+			renderWindow();
+		};
+		frame = requestAnimationFrame(attach);
+		this.hexCleanup = () => {
+			cancelAnimationFrame(frame);
+			scrollParent?.removeEventListener('scroll', schedule);
+			observer?.disconnect();
+		};
 	}
 
 	private async updateHexDump(content: string | ArrayBuffer, container: HTMLElement, reqId: number): Promise<void> {
-		let bytes: Uint8Array;
-		if (typeof content === 'string') {
-			bytes = new TextEncoder().encode(content);
-		} else {
-			bytes = new Uint8Array(content);
-		}
-
-		const dumpBytes = bytes.slice(0, MAX_HEX_DUMP_BYTES);
-		const newLines: string[] = [];
-		for (let offset = 0; offset < dumpBytes.length; offset += 16) {
-			const hexParts: string[] = [];
-			const asciiParts: string[] = [];
-			for (let i = 0; i < 16; i++) {
-				if (offset + i < dumpBytes.length) {
-					const byte = dumpBytes[offset + i];
-					hexParts.push(byte.toString(16).padStart(2, '0'));
-					asciiParts.push(byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.');
-				} else {
-					hexParts.push('  ');
-					asciiParts.push(' ');
-				}
-				if (i === 7) hexParts.push('');
-			}
-			const addr = offset.toString(16).padStart(8, '0');
-			const hex = hexParts.join(' ');
-			const ascii = asciiParts.join('');
-			newLines.push(`${addr}  ${hex}  |${ascii}|`);
-		}
-
-		const pre = container.querySelector('.hex-pre, pre');
-		if (!pre || this.prevLines.length === 0) {
-			// Fall back to full render
-			this.renderHexDump(content, container);
-			return;
-		}
-
-		const ops = diffLines(this.prevLines, newLines);
-		let domIdx = 0;
-		const children = () => Array.from(pre.querySelectorAll('[data-line]'));
-
-		for (const op of ops) {
-			if (reqId !== this.requestId) return;
-
-			if (op.type === 'equal') {
-				domIdx += op.count;
-			} else if (op.type === 'remove') {
-				const currentChildren = children();
-				for (let i = 0; i < op.count; i++) {
-					if (domIdx < currentChildren.length) {
-						currentChildren[domIdx].remove();
-					}
-				}
-			} else if (op.type === 'add' && op.lines) {
-				const currentChildren = children();
-				const anchor = domIdx > 0 ? currentChildren[domIdx - 1] : null;
-
-				for (let i = 0; i < op.lines.length; i++) {
-					const div = document.createElement('div');
-					div.innerHTML = `<code>${this.escapeHtml(op.lines[i])}</code>`;
-					if (anchor) {
-						anchor.after(div);
-					} else {
-						pre.prepend(div);
-					}
-				}
-				domIdx += op.lines.length;
-			}
-		}
-
-		const allDivs = pre.querySelectorAll('[data-line]');
-		allDivs.forEach((div, i) => {
-			div.setAttribute('data-line', String(i));
-		});
-
-		this.prevLines = newLines;
+		if (reqId === this.requestId) this.renderHexDump(content, container);
 	}
 
 	private tokensToLineHtml(tokens: { content: string; color?: string; fontStyle?: number }[]): string {
@@ -372,6 +336,8 @@ export class TextPreviewer implements Previewer {
 	}
 
 	dispose(): void {
+		this.hexCleanup?.();
+		this.hexCleanup = null;
 		if (this.container) {
 			this.container.innerHTML = '';
 			this.container = null;

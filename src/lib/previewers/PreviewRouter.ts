@@ -74,7 +74,7 @@ export class PreviewRouter {
     container.parentElement?.appendChild(staging);
     container.dataset.filePath = filePath;
     staging.dataset.filePath = filePath;
-    for (const key of ['thumbWidth', 'thumbHeight', 'thumbOriginalSize', 'thumbIsThumbnail']) {
+    for (const key of ['thumbWidth', 'thumbHeight', 'thumbOriginalSize', 'thumbIsThumbnail', 'originalFileSize']) {
       if (container.dataset[key] !== undefined) {
         staging.dataset[key] = container.dataset[key];
       }
@@ -92,6 +92,7 @@ export class PreviewRouter {
     if (container.dataset.filePath !== filePath || !isCurrent()) {
       if (this.lastFilePath === filePath) this.lastFilePath = '';
       logInfo('PreviewRouter', `SWAP_SKIP stale path: expected=${filePath} actual=${container.dataset.filePath || '(empty)'}`);
+      if (previewer !== oldPreviewer) previewer.dispose();
       staging.remove();
       return;
     }

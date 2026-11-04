@@ -25,6 +25,14 @@ The system SHALL maintain a single authoritative `BINARY_EXTENSIONS` set used by
 - **WHEN** a file has extension `.tar.gz` or `.7z`
 - **THEN** `isArchiveFile()` returns `true` in all components
 
+### Requirement: Torrent files are classified as binary
+The unified file type detector SHALL classify `.torrent` files as binary regardless of extension case, and `TextPreviewer` SHALL use that same classification.
+
+#### Scenario: Torrent extension
+- **WHEN** a file path ends in `.torrent` or `.TORRENT`
+- **THEN** `isTextFile()` returns `false`
+- **AND** `TextPreviewer` treats its content as binary
+
 ### Requirement: TypeScript migration for project-tree-focus
 `project-tree-focus.js` SHALL be migrated to `project-tree-focus.ts` with full type annotations.
 

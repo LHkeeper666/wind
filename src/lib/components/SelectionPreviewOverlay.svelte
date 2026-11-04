@@ -75,6 +75,7 @@
         const content = result.binaryContent ?? result.content;
         const renderHost = document.createElement('div');
         renderHost.dataset.filePath = selectedPath;
+        if ('originalFileSize' in result) renderHost.dataset.originalFileSize = String(result.originalFileSize);
         renderHost.style.minHeight = '100%';
         if ('thumbnailMeta' in result && result.thumbnailMeta) {
           renderHost.dataset.thumbWidth = String(result.thumbnailMeta.width);
@@ -82,7 +83,7 @@
           renderHost.dataset.thumbOriginalSize = String(result.thumbnailMeta.originalSize);
           renderHost.dataset.thumbIsThumbnail = String(result.thumbnailMeta.isThumbnail);
         }
-        await nextRouter.preview(selectedPath, content, renderHost);
+        await nextRouter.preview(selectedPath, content, renderHost, valid);
         if (!valid()) { nextRouter.dispose(); renderHost.remove(); return; }
         body.replaceChildren(renderHost);
       }
@@ -120,6 +121,7 @@
       return () => untrack(() => {
         generation++;
         if (body) body.dataset.filePath = '';
+        router.dispose();
         pdf.reset();
       });
     });

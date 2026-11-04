@@ -52,7 +52,7 @@ export const BINARY_EXTENSIONS = new Set([
   // Databases and compiled
   'db', 'sqlite', 'sqlite3', 'mdb', 'accdb', 'class', 'pyc', 'pyo',
   // Disk images and other binary
-  'iso', 'img', 'vhd', 'vhdx', 'qcow2', 'wasm', 'jar',
+  'iso', 'img', 'vhd', 'vhdx', 'qcow2', 'wasm', 'jar', 'torrent',
 ]);
 
 // Helper to extract extension from path
