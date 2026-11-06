@@ -1435,9 +1435,11 @@
     <VimOverlay
       bind:this={vimOverlay}
       mode={mode}
+      sessionGeneration={focusGeneration}
       editorView={editorView}
       clipboardBridge={clipboardBridge}
       filePath={filePath}
+      tabId={renderTabId}
       content={content}
       savedContent={savedContent}
       isModified={isModified}

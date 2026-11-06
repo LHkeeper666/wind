@@ -6,6 +6,7 @@
   import { SearchQuery, setSearchQuery, findNext, findPrevious, openSearchPanel, closeSearchPanel } from '@codemirror/search';
   import { getRegistersOutput } from '$lib/utils/vim-commands';
   import type { ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { createVimKeyQueue } from '$lib/utils/vim-paste-keys';
   import { triggerSMatchUpdate, clearSMatch, setOverlayCmdBufGetter } from '$lib/utils/vim-smatch';
 
   let {
@@ -13,6 +14,8 @@
     editorView = undefined as EditorView | undefined,
     clipboardBridge = null as ClipboardBridge | null,
     filePath = null as string | null,
+    tabId = 0,
+    sessionGeneration = 0,
     content = '',
     savedContent = '',
     isModified = false,
@@ -33,6 +36,8 @@
     editorView: EditorView | undefined;
     clipboardBridge: ClipboardBridge | null;
     filePath: string | null;
+    tabId: number;
+    sessionGeneration: number;
     content: string;
     savedContent: string;
     isModified: boolean;
@@ -58,6 +63,7 @@
   let outputVisible: boolean = $state(false);
   let outputText: string = $state('');
   let outputExitCode: number = $state(0);
+  const queueVimKey = createVimKeyQueue();
 
   // Connect overlayCmdBuf to vim-smatch module
   setOverlayCmdBufGetter(() => overlayCmdBuf);
@@ -345,12 +351,16 @@
     if (event.key === 'Escape' && editorView) closeSearchPanel(editorView);
     const vimKey = codeToVimKey(event);
     if (!vimKey || !editorView) return;
-    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) { clipboardBridge.injectClipboard(); }
-    const cm = getCM(editorView);
-    if (!cm) return;
-    (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
-    const vimState = cm.state?.vim;
-    if (vimState?.insertMode) { onModeChange('editor-insert'); }
+    const view = editorView;
+    const bridge = clipboardBridge;
+    const path = filePath;
+    const session = tabId;
+    const generation = sessionGeneration;
+    queueVimKey({
+      key: vimKey, view, bridge,
+      valid: () => editorView === view && clipboardBridge === bridge && filePath === path && tabId === session && sessionGeneration === generation && mode === 'editor-normal',
+      after: (cm) => { if (cm.state?.vim?.insertMode) onModeChange('editor-insert'); },
+    });
   }
 </script>
 

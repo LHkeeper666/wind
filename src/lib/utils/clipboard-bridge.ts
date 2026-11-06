@@ -2,20 +2,27 @@ import { Vim, getCM } from '@replit/codemirror-vim';
 import type { EditorView } from 'codemirror';
 
 export interface ClipboardBridge {
-  injectClipboard(): void;
-  getCache(): string;
+  readForPaste(): Promise<'text' | 'empty' | 'fallback'>;
   refresh(): void;
   dispose(): void;
 }
 
-let clipboardCache = '';
 let registerPatched = false;
+let localWrite: Promise<void> | null = null;
+let writeGeneration = 0;
 
-export function initClipboardBridge(editorView: EditorView, overlayElement?: HTMLElement): ClipboardBridge {
+export function isDefaultPut(cm: any, key: string): boolean {
+  if (key !== 'p' && key !== 'P') return false;
+  const vim = cm.state?.vim;
+  const input = vim?.inputState;
+  return !!input && !vim.insertMode && !vim.expectLiteralNext
+    && !input.registerName && !input.operator
+    && input.keyBuffer?.every((part: string) => /^\d*$/.test(part));
+}
+
+export function initClipboardBridge(editorView: EditorView, _overlayElement?: HTMLElement): ClipboardBridge {
   const cm = getCM(editorView);
-  if (!cm) return { injectClipboard() {}, getCache() { return ''; }, refresh() {}, dispose() {} };
-
-  const supportsClipboard = typeof navigator !== 'undefined' && !!navigator.clipboard;
+  if (!cm) return { async readForPaste() { return 'fallback'; }, refresh() {}, dispose() {} };
 
   // 1. Patch pushText: sync yank/delete to system clipboard
   const rc = Vim.getRegisterController();
@@ -23,41 +30,33 @@ export function initClipboardBridge(editorView: EditorView, overlayElement?: HTM
     const origPushText = rc.pushText.bind(rc);
     rc.pushText = (registerName: string | null | undefined, operator: string, text: string, linewise?: boolean, blockwise?: boolean) => {
       origPushText(registerName, operator, text, linewise, blockwise);
-      if (supportsClipboard && (!registerName || registerName === '"' || registerName === '+' || registerName === '*')) {
-        clipboardCache = text;
-        navigator.clipboard.writeText(text).catch(() => {});
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText && (!registerName || registerName === '"' || registerName === '+' || registerName === '*')) {
+        const generation = ++writeGeneration;
+        const pending = navigator.clipboard.writeText(text).catch(() => {});
+        localWrite = pending;
+        void pending.finally(() => { if (writeGeneration === generation) localWrite = null; });
       }
     };
     registerPatched = true;
   }
 
-  // 2. Focus pre-read: cache clipboard for synchronous put
-
-  async function refreshClipboardCache() {
-    if (!supportsClipboard) return;
+  async function readForPaste(): Promise<'text' | 'empty' | 'fallback'> {
+    // A local yank/delete has already updated the Vim register while its system write is pending.
+    if (localWrite || typeof navigator === 'undefined' || !navigator.clipboard?.readText) return 'fallback';
+    const generation = writeGeneration;
     try {
-      clipboardCache = await navigator.clipboard.readText();
+      const value = await navigator.clipboard.readText();
+      if (generation !== writeGeneration || localWrite) return 'fallback';
+      rc.unnamedRegister.setText(value);
+      return value ? 'text' : 'empty';
     } catch {
-      // Clipboard read may be denied in some contexts
+      return 'fallback';
     }
   }
 
-  if (overlayElement) {
-    overlayElement.addEventListener('focus', refreshClipboardCache);
-  }
-  editorView.contentDOM.addEventListener('focus', refreshClipboardCache);
-
   return {
-    injectClipboard() {
-      if (clipboardCache) {
-        rc.unnamedRegister.setText(clipboardCache);
-      }
-    },
-    getCache() { return clipboardCache; },
-    refresh: refreshClipboardCache,
-    dispose() {
-      if (overlayElement) overlayElement.removeEventListener('focus', refreshClipboardCache);
-      editorView.contentDOM.removeEventListener('focus', refreshClipboardCache);
-    },
+    readForPaste,
+    refresh() {},
+    dispose() {},
   };
 }

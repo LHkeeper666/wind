@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { EditorView } from 'codemirror';
   import { logError } from '$lib/utils/log';
@@ -21,6 +22,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler, setupAllVimCommands } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
+  import { createVimKeyQueue } from '$lib/utils/vim-paste-keys';
   import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { lineNumberCompartment, setupVimLineNumbers } from '$lib/utils/vim-line-numbers';
   import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
@@ -54,6 +56,9 @@
   let overlayCmdBuf: string = $state('');
   let isModified: boolean = $state(false);
   let clipboardBridge: ClipboardBridge | null = null;
+  const queueVimKey = createVimKeyQueue();
+  let alive = true;
+  onDestroy(() => { alive = false; });
   let themeCompartment = new Compartment();
   let themeObserver: MutationObserver | null = null;
   let savedContent: string = content;
@@ -306,20 +311,14 @@
     if (!vimKey) return;
     if (!editorView) return;
 
-    // Inject system clipboard before put
-    if ((vimKey === 'p' || vimKey === 'P') && clipboardBridge) {
-      clipboardBridge.injectClipboard();
-    }
-
-    const cm = getCM(editorView);
-    if (!cm) return;
-    (Vim as any).multiSelectHandleKey?.(cm, vimKey, 'user');
-
-    // Sync overlay visibility with vim mode
-    const vimState = cm.state?.vim;
-    if (vimState?.insertMode) {
-      overlayVisible = false;
-    }
+    const view = editorView;
+    const bridge = clipboardBridge;
+    const path = filePath;
+    queueVimKey({
+      key: vimKey, view, bridge,
+      valid: () => alive && editorView === view && clipboardBridge === bridge && filePath === path && overlayVisible,
+      after: (cm) => { if (cm.state?.vim?.insertMode) overlayVisible = false; },
+    });
   }
 
   // Initialize editor when container is ready
