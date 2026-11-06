@@ -18,7 +18,10 @@ bash.exe.stackdump
 docs/
 
 .agents/
+.claude/
 .claudeignore
 .codex/
+.vscode/
+.playwright-mcp/
 
 *.bat
