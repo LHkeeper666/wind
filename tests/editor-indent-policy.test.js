@@ -104,3 +104,57 @@ assertEqual(
   'name\t',
   'TSV files insert a literal field separator',
 );
+
+const separated = '7. first\n8. second\n\n# Later\n\n1. third\n2. fourth';
+assertEqual(
+  docAfterEnter(separated, { anchor: separated.length }, 'space-indent'),
+  '7. first\n8. second\n\n# Later\n\n1. third\n2. fourth\n3. ',
+  'Enter continues only the later list',
+);
+assertEqual(
+  docAfterTab(separated, { anchor: separated.indexOf('2. fourth') }, 'space-indent'),
+  '7. first\n8. second\n\n# Later\n\n1. third\n    1. fourth',
+  'Tab leaves the earlier section unchanged',
+);
+const nested = '7. first\n8. second\n\nBody text\n\n1. third\n    1. child\n    2. child two\n2. fourth';
+assertEqual(
+  docAfterShiftTab(nested, { anchor: nested.indexOf('2. child two') }, 'space-indent'),
+  '7. first\n8. second\n\nBody text\n\n1. third\n    1. child\n2. child two\n3. fourth',
+  'Shift+Tab renumbers only source and target containers',
+);
+const fenced = '1. first\n```\n9. code\n```\n\n1. second\n2. third';
+assertEqual(
+  docAfterTab(fenced, { anchor: fenced.indexOf('2. third') }, 'space-indent'),
+  '1. first\n```\n9. code\n```\n\n1. second\n    1. third',
+  'fenced number lines are not list items',
+);
+const blankList = '1. first\n\n2. second\n3. third';
+assertEqual(
+  docAfterTab(blankList, { anchor: blankList.indexOf('2. second') }, 'space-indent'),
+  '1. first\n\n    1. second\n2. third',
+  'a single blank line keeps the source list connected',
+);
+const mixed = '1. first\n- bullet\n2. second\n3. third';
+assertEqual(
+  docAfterTab(mixed, { anchor: mixed.indexOf('3. third') }, 'space-indent'),
+  '1. first\n- bullet\n1. second\n    1. third',
+  'a same-level list type switch separates ordered containers',
+);
+const nine = Array.from({ length: 10 }, (_, index) => `${index + 1}. item ${index + 1}`).join('\n');
+assertEqual(
+  docAfterTab(nine, { anchor: nine.indexOf('9. item 9') }, 'space-indent'),
+  Array.from({ length: 10 }, (_, index) => index === 8 ? '    1. item 9' : `${index === 9 ? 9 : index + 1}. item ${index + 1}`).join('\n'),
+  'numbering remains correct across the 9 to 10 marker width',
+);
+const multiSection = '7. first\n8. second\n\n# Heading\n\n4. third\n5. fourth';
+assertEqual(
+  docAfterTab(multiSection, { anchor: 0, head: multiSection.length }, 'space-indent'),
+  '    1. first\n    2. second\n\n# Heading\n\n    1. third\n    2. fourth',
+  'cross-section selection renumbers each independent container',
+);
+const emptyLater = '7. first\n8. second\n\n# Heading\n\n1. third\n2. ';
+assertEqual(
+  docAfterEnter(emptyLater, { anchor: emptyLater.length }, 'space-indent'),
+  '7. first\n8. second\n\n# Heading\n\n1. third\n',
+  'exiting an empty later item leaves the earlier section unchanged',
+);

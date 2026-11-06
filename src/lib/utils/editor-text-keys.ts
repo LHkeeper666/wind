@@ -48,6 +48,7 @@ interface MarkdownListItem {
   contentColumns: number;
   ordered: boolean;
   parentLineIndex: number | null;
+  sectionId: number;
   subtreeEndIndex: number;
 }
 
@@ -132,48 +133,52 @@ function listItemContentColumns(text: string, prefix: MarkdownListPrefix, tabSiz
   return countColumn(text.slice(0, prefix.prefixLength), tabSize);
 }
 
-function findMarkdownListSubtreeEnd(
-  lines: string[],
-  item: MarkdownListItem,
-  nextAtSameOrHigherLevel: MarkdownListItem | undefined,
-  tabSize: number,
-): number {
-  const naturalEnd = nextAtSameOrHigherLevel ? nextAtSameOrHigherLevel.lineIndex - 1 : lines.length - 1;
-  let afterBlankLine = false;
-
-  for (let lineIndex = item.lineIndex + 1; lineIndex <= naturalEnd; lineIndex++) {
-    const text = lines[lineIndex];
-    if (!text.trim()) {
-      afterBlankLine = true;
-      continue;
-    }
-
-    const prefix = parseMarkdownListPrefix(text);
-    if (prefix) {
-      afterBlankLine = false;
-      continue;
-    }
-
-    if (!afterBlankLine) continue;
-    if (leadingColumns(text, tabSize) >= item.contentColumns) continue;
-
-    return lineIndex - 1;
-  }
-
-  return naturalEnd;
-}
-
 function buildMarkdownListItems(lines: string[], tabSize: number): MarkdownListItem[] {
   const items: MarkdownListItem[] = [];
   const stack: MarkdownListItem[] = [];
+  let sectionId = 0;
+  let fence: { marker: string; length: number } | null = null;
+  let boundary = -1;
+
+  const closeSection = (lineIndex: number): void => {
+    for (const item of stack) item.subtreeEndIndex = Math.min(item.subtreeEndIndex, lineIndex - 1);
+    stack.length = 0;
+    boundary = lineIndex;
+  };
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const prefix = parseMarkdownListPrefix(lines[lineIndex]);
-    if (!prefix) continue;
+    const text = lines[lineIndex];
+    const fenceMatch = text.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (fence) {
+      if (fenceMatch && fenceMatch[1][0] === fence.marker && fenceMatch[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (fenceMatch) {
+      // An indented fence can belong to a list item; its contents are still never list markers.
+      if (!stack.length || leadingColumns(text, tabSize) < stack[stack.length - 1].contentColumns) closeSection(lineIndex);
+      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
+      continue;
+    }
+    const prefix = parseMarkdownListPrefix(text);
+    if (!prefix) {
+      if (text.trim() && stack.length && (
+        /^\s{0,3}(?:#{1,6}\s|(?:---+|___+|\*\*\*+)\s*$|>)/.test(text)
+        || leadingColumns(text, tabSize) < stack[stack.length - 1].contentColumns
+      )) closeSection(lineIndex);
+      continue;
+    }
 
     const indentColumns = countColumn(prefix.indent, tabSize);
+    let previousSibling: MarkdownListItem | undefined;
     while (stack.length > 0 && stack[stack.length - 1].indentColumns >= indentColumns) {
-      stack.pop();
+      const popped = stack.pop()!;
+      popped.subtreeEndIndex = lineIndex - 1;
+      if (popped.indentColumns === indentColumns) previousSibling = popped;
+    }
+    if (previousSibling && previousSibling.ordered !== prefix.ordered) sectionId++;
+    if (!stack.length) {
+      const previous = items[items.length - 1];
+      if (!previous || boundary > previous.lineIndex) sectionId++;
     }
 
     const item: MarkdownListItem = {
@@ -182,17 +187,14 @@ function buildMarkdownListItems(lines: string[], tabSize: number): MarkdownListI
       contentColumns: listItemContentColumns(lines[lineIndex], prefix, tabSize),
       ordered: prefix.ordered,
       parentLineIndex: stack.length > 0 ? stack[stack.length - 1].lineIndex : null,
+      sectionId,
       subtreeEndIndex: lines.length - 1,
     };
     items.push(item);
     stack.push(item);
   }
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const nextAtSameOrHigherLevel = items.slice(i + 1).find(next => next.indentColumns <= item.indentColumns);
-    item.subtreeEndIndex = findMarkdownListSubtreeEnd(lines, item, nextAtSameOrHigherLevel, tabSize);
-  }
+  closeSection(lines.length);
 
   return items;
 }
@@ -209,7 +211,7 @@ function selectedMarkdownListRoots(
   const roots: MarkdownListItem[] = [];
 
   for (const item of selected) {
-    const parentRoot = roots.find(root => root.lineIndex < item.lineIndex && root.subtreeEndIndex >= item.lineIndex);
+    const parentRoot = roots.find(root => root.sectionId === item.sectionId && root.lineIndex < item.lineIndex && root.subtreeEndIndex >= item.lineIndex);
     if (!parentRoot) roots.push(item);
   }
 
@@ -239,47 +241,36 @@ function applyMarkdownListTreeMovement(
   }
 }
 
-function hasOrderedContainerBarrier(
-  lines: string[],
-  fromLineIndex: number,
-  toLineIndex: number,
-  indentColumns: number,
-  tabSize: number,
-): boolean {
-  for (let lineIndex = fromLineIndex; lineIndex <= toLineIndex; lineIndex++) {
-    const text = lines[lineIndex];
-    if (!text.trim()) continue;
-
-    const prefix = parseMarkdownListPrefix(text);
-    if (prefix) {
-      if (countColumn(prefix.indent, tabSize) < indentColumns) return true;
-      continue;
-    }
-
-    if (leadingColumns(text, tabSize) < indentColumns) return true;
-  }
-
-  return false;
+function orderedContainerKey(item: MarkdownListItem): string {
+  return `${item.sectionId}:${item.parentLineIndex ?? 'root'}:${item.indentColumns}`;
 }
 
-function renumberOrderedListContainers(lines: string[], tabSize: number): void {
+// Shared entry point for insert-mode edits and future normal-mode indentation.
+export function renumberOrderedListContainers(lines: string[], tabSize: number, affected?: ReadonlySet<string>): void {
   const items = buildMarkdownListItems(lines, tabSize);
-  const lastItemByContainer = new Map<string, { item: MarkdownListItem; number: number }>();
+  const lastNumber = new Map<string, number>();
 
   for (const item of items) {
     if (!item.ordered) continue;
 
-    const containerKey = `${item.parentLineIndex ?? 'root'}:${item.indentColumns}`;
-    const previous = lastItemByContainer.get(containerKey);
-    const shouldReset = !previous
-      || hasOrderedContainerBarrier(lines, previous.item.lineIndex + 1, item.lineIndex - 1, item.indentColumns, tabSize);
-    const nextNumber = shouldReset ? 1 : previous.number + 1;
+    const containerKey = orderedContainerKey(item);
+    const nextNumber = (lastNumber.get(containerKey) ?? 0) + 1;
+    lastNumber.set(containerKey, nextNumber);
+    if (affected && !affected.has(containerKey)) continue;
     const prefix = parseMarkdownListPrefix(lines[item.lineIndex]);
     if (prefix && prefix.orderedNumber !== nextNumber) {
       lines[item.lineIndex] = `${prefix.indent}${nextNumber}.${prefix.suffix}${lines[item.lineIndex].slice(prefix.prefixLength)}`;
     }
-    lastItemByContainer.set(containerKey, { item, number: nextNumber });
   }
+}
+
+function affectedOrderedContainers(before: MarkdownListItem[], after: MarkdownListItem[], movedLines: ReadonlySet<number>): Set<string> {
+  const beforeKeys = new Set(before.filter(item => movedLines.has(item.lineIndex) && item.ordered).map(orderedContainerKey));
+  const affectedLines = new Set(movedLines);
+  for (const item of before) if (item.ordered && beforeKeys.has(orderedContainerKey(item))) affectedLines.add(item.lineIndex);
+  const afterKeys = new Set<string>();
+  for (const item of after) if (item.ordered && affectedLines.has(item.lineIndex)) afterKeys.add(orderedContainerKey(item));
+  return afterKeys;
 }
 
 function lineTextChanges(state: EditorView['state'], finalLines: string[]): TextChange[] {
@@ -331,8 +322,14 @@ function markdownListTreeChangesForLines(
 
   if (roots.length === 0) return { handled: false, changes: [] };
 
+  const movedLines = new Set<number>();
+  for (const root of roots) {
+    const end = from === to ? root.lineIndex : Math.min(root.subtreeEndIndex, range.to);
+    for (let lineIndex = root.lineIndex; lineIndex <= end; lineIndex++) movedLines.add(lineIndex);
+  }
   applyMarkdownListTreeMovement(lines, roots, direction, tabSize, from === to, range.to);
-  renumberOrderedListContainers(lines, tabSize);
+  const afterItems = buildMarkdownListItems(lines, tabSize);
+  renumberOrderedListContainers(lines, tabSize, affectedOrderedContainers(items, afterItems, movedLines));
 
   return { handled: true, changes: lineTextChanges(state, lines) };
 }
@@ -490,6 +487,24 @@ export function handleInsertModeEnter(view: EditorView, options: number | Editor
   if (!prefix) {
     return insertNewlineAndIndent(view);
   }
+  const { tabSize } = normalizeTextKeyOptions(options);
+  const beforeItems = buildMarkdownListItems(documentLines(state), tabSize);
+  const sourceItem = beforeItems.find(item => item.lineIndex === line.number - 1);
+  if (!sourceItem) return insertNewlineAndIndent(view);
+
+  const renumberLocal = (lineShift: number): void => {
+    const afterState = view.state;
+    const afterLines = documentLines(afterState);
+    const afterItems = buildMarkdownListItems(afterLines, tabSize);
+    const sourceKey = orderedContainerKey(sourceItem);
+    const affectedLines = new Set(beforeItems.filter(item => item.ordered && orderedContainerKey(item) === sourceKey)
+      .map(item => item.lineIndex + (item.lineIndex > sourceItem.lineIndex ? lineShift : 0)));
+    affectedLines.add(sourceItem.lineIndex + (lineShift > 0 ? 1 : 0));
+    const keys = new Set(afterItems.filter(item => item.ordered && affectedLines.has(item.lineIndex)).map(orderedContainerKey));
+    renumberOrderedListContainers(afterLines, tabSize, keys);
+    const changes = lineTextChanges(afterState, afterLines);
+    if (changes.length) view.dispatch({ changes });
+  };
 
   const contentAfter = line.text.slice(prefix.prefixLength).trim();
   if (!contentAfter) {
@@ -506,14 +521,7 @@ export function handleInsertModeEnter(view: EditorView, options: number | Editor
       });
     }
     // Renumber subsequent ordered list items after removing the empty list item
-    const { tabSize } = normalizeTextKeyOptions(options);
-    const afterState = view.state;
-    const afterLines = documentLines(afterState);
-    renumberOrderedListContainers(afterLines, tabSize);
-    const renumberChanges = lineTextChanges(afterState, afterLines);
-    if (renumberChanges.length > 0) {
-      view.dispatch({ changes: renumberChanges });
-    }
+    renumberLocal(0);
     return true;
   }
 
@@ -527,13 +535,6 @@ export function handleInsertModeEnter(view: EditorView, options: number | Editor
     selection: { anchor: main.head + 1 + continuation.length },
   });
   // Renumber subsequent ordered list items after inserting the continuation line
-  const { tabSize } = normalizeTextKeyOptions(options);
-  const afterState = view.state;
-  const afterLines = documentLines(afterState);
-  renumberOrderedListContainers(afterLines, tabSize);
-  const renumberChanges = lineTextChanges(afterState, afterLines);
-  if (renumberChanges.length > 0) {
-    view.dispatch({ changes: renumberChanges });
-  }
+  renumberLocal(1);
   return true;
 }
