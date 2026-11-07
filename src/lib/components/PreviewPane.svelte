@@ -121,6 +121,7 @@
     if (slot) {
       slot.remove();
       tabSlots.delete(tabId);
+      previewRouter?.cleanupUnused();
     }
   }
 
@@ -129,6 +130,7 @@
       slot.remove();
     }
     tabSlots.clear();
+    previewRouter?.cleanupUnused();
   }
 
   export function bumpContentGeneration() {
@@ -139,6 +141,7 @@
     const slot = tabSlots.get(renderTabId);
     if (slot) {
       slot.innerHTML = '';
+      previewRouter?.cleanupUnused();
       delete slot.dataset.rendered;
       delete slot.dataset.filePath;
       delete slot.dataset.fileMtime;
@@ -544,9 +547,9 @@
   });
 
   onDestroy(() => {
-    previewRouter?.dispose();
     scrollObserver?.disconnect();
     clearAllSlots();
+    previewRouter?.dispose();
   });
 </script>
 

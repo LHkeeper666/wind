@@ -68,13 +68,14 @@
         }
       } else {
         const result = archive ? await loadArchiveFile(ctx, valid)
-          : isImageFile(selectedPath) ? await loadImage(ctx, valid)
+          : isImageFile(selectedPath) && !/\.svg$/i.test(selectedPath) ? await loadImage(ctx, valid)
           : isVideoFile(selectedPath) ? await loadVideo(ctx, valid)
           : await loadTextOrBinary(ctx, valid);
         if (!valid() || 'aborted' in result) { nextRouter.dispose(); return; }
         const content = result.binaryContent ?? result.content;
         const renderHost = document.createElement('div');
         renderHost.dataset.filePath = selectedPath;
+        renderHost.style.visibility = 'hidden';
         if ('originalFileSize' in result) renderHost.dataset.originalFileSize = String(result.originalFileSize);
         renderHost.style.minHeight = '100%';
         if ('thumbnailMeta' in result && result.thumbnailMeta) {
@@ -83,9 +84,10 @@
           renderHost.dataset.thumbOriginalSize = String(result.thumbnailMeta.originalSize);
           renderHost.dataset.thumbIsThumbnail = String(result.thumbnailMeta.isThumbnail);
         }
-        await nextRouter.preview(selectedPath, content, renderHost, valid);
-        if (!valid()) { nextRouter.dispose(); renderHost.remove(); return; }
         body.replaceChildren(renderHost);
+        await nextRouter.preview(selectedPath, content, renderHost, valid);
+        if (!valid()) { renderHost.remove(); nextRouter.dispose(); return; }
+        renderHost.style.visibility = '';
       }
       if (valid()) {
         router = nextRouter;
@@ -93,6 +95,7 @@
         renderedPath = selectedPath;
       } else nextRouter.dispose();
     } catch (cause) {
+      body?.replaceChildren();
       nextRouter.dispose();
       if (valid()) error = String(cause);
     }

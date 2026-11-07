@@ -5,6 +5,7 @@ const SUPPORTED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'
 
 export class ImagePreviewer implements Previewer {
   private container: HTMLElement | null = null;
+  private urls = new Set<string>();
 
   match(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -15,12 +16,20 @@ export class ImagePreviewer implements Previewer {
     this.container = container;
 
     if (typeof content === 'string') {
-      // SVG content
-      container.innerHTML = `<div class="preview-image">${content}</div>`;
+      const url = URL.createObjectURL(new Blob([content], { type: 'image/svg+xml' }));
+      this.urls.add(url);
+      await this.renderImage(url, container);
     } else {
       // Binary image — preload via new Image() before writing to DOM
-      const blob = new Blob([content]);
+      const isSvg = /\.svg$/i.test(container.dataset.filePath || '');
+      const blob = new Blob([content], isSvg ? { type: 'image/svg+xml' } : undefined);
       const url = URL.createObjectURL(blob);
+      this.urls.add(url);
+      await this.renderImage(url, container);
+    }
+  }
+
+  private async renderImage(url: string, container: HTMLElement): Promise<void> {
       await new Promise<void>((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -45,10 +54,25 @@ export class ImagePreviewer implements Previewer {
         img.onerror = () => {
           container.innerHTML = '<p class="preview-unsupported">Failed to load image</p>';
           URL.revokeObjectURL(url);
+          this.urls.delete(url);
           resolve();
         };
         img.src = url;
       });
+  }
+
+  afterSwap(container: HTMLElement): void {
+    this.container = container;
+    this.cleanupUnused();
+  }
+
+  cleanupUnused(): void {
+    const active = new Set(Array.from(document.querySelectorAll('img'), img => img.src));
+    for (const url of this.urls) {
+      if (!active.has(url)) {
+        URL.revokeObjectURL(url);
+        this.urls.delete(url);
+      }
     }
   }
 
@@ -120,12 +144,14 @@ export class ImagePreviewer implements Previewer {
       }
       const blob = new Blob([bytes.buffer]);
       const url = URL.createObjectURL(blob);
+      this.urls.add(url);
 
       // Replace image
       const img = container.querySelector('img');
       if (img) {
         if (img.src.startsWith('blob:')) {
           URL.revokeObjectURL(img.src);
+          this.urls.delete(img.src);
         }
         img.src = url;
       }
@@ -152,16 +178,7 @@ export class ImagePreviewer implements Previewer {
   }
 
   dispose(): void {
-    if (this.container) {
-      const img = this.container.querySelector('img');
-      if (img) {
-        if (img.src.startsWith('blob:')) {
-          URL.revokeObjectURL(img.src);
-        }
-        img.src = '';
-      }
-      this.container.innerHTML = '';
-      this.container = null;
-    }
+    this.cleanupUnused();
+    this.container = null;
   }
 }

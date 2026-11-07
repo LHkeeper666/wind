@@ -272,8 +272,8 @@ export class MarkdownPreviewer implements Previewer {
 				}
 				resolvedPath = resolvedPath.replace(/\//g, '\\');
 				imageTasks.push(
-					this.loadLocalImage(img, resolvedPath).then(() => {
-						this.imageCache.set(resolvedPath, img.src);
+					this.loadLocalImage(img, resolvedPath).then(loaded => {
+						if (loaded) this.imageCache.set(resolvedPath, img.src);
 					})
 				);
 			}
@@ -444,8 +444,8 @@ export class MarkdownPreviewer implements Previewer {
 				} else {
 					const imgRef = img;
 					imageTasks.push(
-						this.loadLocalImage(imgRef, resolvedPath).then(() => {
-							this.imageCache.set(resolvedPath, imgRef.src);
+						this.loadLocalImage(imgRef, resolvedPath).then(loaded => {
+							if (loaded) this.imageCache.set(resolvedPath, imgRef.src);
 						})
 					);
 				}
@@ -591,7 +591,7 @@ export class MarkdownPreviewer implements Previewer {
 		}
 	}
 
-	private async loadLocalImage(img: HTMLImageElement, resolvedPath: string): Promise<void> {
+	private async loadLocalImage(img: HTMLImageElement, resolvedPath: string): Promise<boolean> {
 		try {
 			const base64 = await invoke<string>('read_binary_file', { path: resolvedPath });
 			const binary = atob(base64);
@@ -599,10 +599,45 @@ export class MarkdownPreviewer implements Previewer {
 			for (let i = 0; i < binary.length; i++) {
 				bytes[i] = binary.charCodeAt(i);
 			}
-			const blob = new Blob([bytes.buffer]);
-			img.src = URL.createObjectURL(blob);
+			const isSvg = /\.svg$/i.test(resolvedPath);
+			const blob = new Blob([bytes.buffer], isSvg ? { type: 'image/svg+xml' } : undefined);
+			const url = URL.createObjectURL(blob);
+			const loaded = await new Promise<boolean>(resolve => {
+				img.onload = () => resolve(true);
+				img.onerror = () => resolve(false);
+				img.src = url;
+			});
+			if (!loaded) {
+				URL.revokeObjectURL(url);
+				this.showImageError(img);
+			}
+			return loaded;
 		} catch (err) {
 			logWarn('MarkdownPreviewer', `Failed to load image: ${resolvedPath} ${err}`);
+			this.showImageError(img);
+			return false;
+		}
+	}
+
+	private showImageError(img: HTMLImageElement): void {
+		const label = document.createElement('span');
+		label.className = 'preview-unsupported';
+		label.textContent = `Failed to load image: ${img.getAttribute('alt') || img.getAttribute('src') || 'image'}`;
+		img.replaceWith(label);
+	}
+
+	afterSwap(container: HTMLElement): void {
+		this.container = container;
+		this.cleanupUnused();
+	}
+
+	cleanupUnused(): void {
+		const active = new Set(Array.from(document.querySelectorAll('img'), img => img.src));
+		for (const [path, url] of this.imageCache) {
+			if (!active.has(url)) {
+				if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+				this.imageCache.delete(path);
+			}
 		}
 	}
 
@@ -782,17 +817,15 @@ export class MarkdownPreviewer implements Previewer {
 	}
 
 	dispose(): void {
-		if (this.container) {
-			this.container.innerHTML = '';
-			this.container = null;
-		}
+		this.requestId++;
+		this.container = null;
 		if (this.highlighter) {
 			this.highlighter.dispose();
 			this.highlighter = null;
 		}
 		this.codeCache.clear();
 		this.katexCache.clear();
-		this.imageCache.clear();
+		this.cleanupUnused();
 		this.mermaidCache.clear();
 	}
 }

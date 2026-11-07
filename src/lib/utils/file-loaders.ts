@@ -289,10 +289,19 @@ export async function loadTextOrBinary(
       }
     }
 
+    let svgBinary: ArrayBuffer | null = null;
+    if (/\.svg$/i.test(ctx.path)) {
+      const base64 = usePartial
+        ? await invoke<string>('read_binary_file_partial', { path: ctx.path, maxBytes: MAX_PREVIEW_SIZE })
+        : await invoke<string>('read_binary_file', { path: ctx.path });
+      if (!checkGen()) return { aborted: true };
+      svgBinary = base64ToBuffer(base64);
+    }
+
     return {
       type: 'text-binary',
       content: newContent,
-      binaryContent: null,
+      binaryContent: svgBinary,
       readyTextContent: { tabId: ctx.loadTabId, path: ctx.path, generation: ctx.gen, content: newContent },
       originalFileSize,
       savedContent: newContent,

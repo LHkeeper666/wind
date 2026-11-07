@@ -64,6 +64,7 @@ export class PreviewRouter {
     if (previewer === oldPreviewer && normalizedPath === lastNormalized && previewer.update) {
       previewer.onHeadings = headings => { if (isCurrent()) this.onHeadings?.(headings); };
       await previewer.update(content, container);
+      if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
       return;
     }
 
@@ -92,8 +93,10 @@ export class PreviewRouter {
     if (container.dataset.filePath !== filePath || !isCurrent()) {
       if (this.lastFilePath === filePath) this.lastFilePath = '';
       logInfo('PreviewRouter', `SWAP_SKIP stale path: expected=${filePath} actual=${container.dataset.filePath || '(empty)'}`);
-      if (previewer !== oldPreviewer) previewer.dispose();
       staging.remove();
+      if (previewer !== oldPreviewer) previewer.dispose();
+      else if (previewer instanceof ImagePreviewer) previewer.afterSwap(container);
+      else if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
       return;
     }
 
@@ -114,12 +117,21 @@ export class PreviewRouter {
     }
 
     this.currentPreviewer = previewer;
+    if (previewer instanceof ImagePreviewer) previewer.afterSwap(container);
+    if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
   }
 
   dispose(): void {
     if (this.currentPreviewer) {
       this.currentPreviewer.dispose();
       this.currentPreviewer = null;
+    }
+    this.cleanupUnused();
+  }
+
+  cleanupUnused(): void {
+    for (const previewer of this.previewers) {
+      if (previewer instanceof ImagePreviewer || previewer instanceof MarkdownPreviewer) previewer.cleanupUnused();
     }
   }
 }

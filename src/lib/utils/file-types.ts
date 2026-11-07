@@ -96,7 +96,7 @@ export function isTextFile(path: string): boolean {
  */
 export function isDirectEditorFile(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase() || '';
-  if (['md', 'markdown', 'json', 'ipynb'].includes(ext)) return false;
+  if (['md', 'markdown', 'json', 'ipynb', 'svg'].includes(ext)) return false;
   if (!isTextFile(path)) return false;
   return true;
 }
