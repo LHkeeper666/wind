@@ -564,6 +564,7 @@
 
   function selectByIndex(index: number, options: SelectOptions = {}) {
     if (index >= 0 && index < displayFiles.length) {
+      const selectStarted = performance.now();
       selectedIndex = index;
       selectedPathInternal = displayFiles[index].path;
       const selectedPath = displayFiles[index].path;
@@ -572,6 +573,10 @@
         return;
       }
       onSelect(selectedPath, displayFiles[index].is_dir);
+      if (/\.pdf$/i.test(selectedPath)) {
+        logInfo('pdf-select', `selected file=${displayFiles[index].name} notify=${(performance.now() - selectStarted).toFixed(1)}ms`);
+        requestAnimationFrame(() => logInfo('pdf-select', `paint file=${displayFiles[index].name} delay=${(performance.now() - selectStarted).toFixed(1)}ms`));
+      }
     }
   }
 

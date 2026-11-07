@@ -6,6 +6,7 @@
   import { loadArchiveDirectory, loadArchiveFile, loadImage, loadTextOrBinary, loadVideo } from '$lib/utils/file-loaders';
   import type { LoadContext } from '$lib/utils/file-loaders';
   import { createPdfState } from '$lib/composables/pdf-state.svelte';
+  import { logInfo } from '$lib/utils/log';
   import PdfPreviewPanel from './PdfPreviewPanel.svelte';
   import PdfTocSidebar from './PdfTocSidebar.svelte';
   import TocSidebar from './TocSidebar.svelte';
@@ -20,6 +21,19 @@
 
   let body: HTMLDivElement;
   let generation = 0;
+  let lastTargetKey = '';
+  let pdfStartedAt = 0;
+  let previousPdfSelectionAt = 0;
+  let pdfWaitMs = 50;
+  let firstPdfPaintLogged = false;
+  let pdfDelay: ReturnType<typeof setTimeout> | undefined;
+  let cancelPdfDelay: (() => void) | undefined;
+  function clearPdfDelay() {
+    if (pdfDelay !== undefined) clearTimeout(pdfDelay);
+    pdfDelay = undefined;
+    cancelPdfDelay?.();
+    cancelPdfDelay = undefined;
+  }
   let renderedPath = $state('');
   let error = $state('');
   let pdfVisible = $state(false);
@@ -51,7 +65,19 @@
     };
     try {
       if (isPdfFile(selectedPath) && !archive) {
+        await new Promise<void>((resolve) => {
+          cancelPdfDelay = resolve;
+          pdfDelay = setTimeout(() => {
+            pdfDelay = undefined;
+            cancelPdfDelay = undefined;
+            resolve();
+          }, pdfWaitMs);
+        });
+        if (!valid()) { nextRouter.dispose(); return; }
+        logInfo('pdf-select', `dispatch gen=${gen} file=${selectedPath.split(/[/\\]/).pop()} targetWait=${pdfWaitMs}ms wait=${(performance.now() - pdfStartedAt).toFixed(1)}ms`);
+        const requestedAt = performance.now();
         const ready = await pdf.loadPdfInfo(selectedPath, gen);
+        logInfo('pdf-select', `info gen=${gen} file=${selectedPath.split(/[/\\]/).pop()} invoke=${(performance.now() - requestedAt).toFixed(1)}ms current=${valid()} ready=${ready}`);
         if (valid()) {
           if (ready) pdfVisible = true;
           else error = 'Failed to load PDF';
@@ -108,29 +134,39 @@
     const archive = archivePath;
     const recycle = recycleItem;
     return untrack(() => {
+      const targetKey = JSON.stringify([workspace, selectedPath, directory, archive, recycle?.id]);
+      if (targetKey === lastTargetKey) return;
+      lastTargetKey = targetKey;
       const gen = ++generation;
+      pdfStartedAt = performance.now();
+      if (isPdfFile(selectedPath) && !archive) {
+        pdfWaitMs = pdfStartedAt - previousPdfSelectionAt < 500 ? 420 : 50;
+        previousPdfSelectionAt = pdfStartedAt;
+      } else {
+        previousPdfSelectionAt = 0;
+      }
+      firstPdfPaintLogged = false;
+      clearPdfDelay();
+      router.dispose();
+      if (body) body.dataset.filePath = '';
       body?.replaceChildren();
       renderedPath = '';
       error = '';
       pdfVisible = false;
       headings = [];
       pdf.reset();
+      pdf.invalidatePendingLoads(gen);
       if (recycle?.id === selectedPath) {
         generation++;
+        clearPdfDelay();
         renderedPath = selectedPath;
       } else {
         void load(workspace, selectedPath, directory, archive, gen);
       }
-      return () => untrack(() => {
-        generation++;
-        if (body) body.dataset.filePath = '';
-        router.dispose();
-        pdf.reset();
-      });
     });
   });
 
-  onDestroy(() => { generation++; router.dispose(); directoryPreviewer.dispose(); pdf.reset(); });
+  onDestroy(() => { generation++; clearPdfDelay(); router.dispose(); directoryPreviewer.dispose(); pdf.reset(); pdf.invalidatePendingLoads(generation); });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -144,7 +180,7 @@
       {#if pdf.getPdfOutline().length > 0}
         <button class="outline-toggle" onclick={() => pdf.togglePdfToc()} aria-label="Toggle PDF outline">☰</button>
       {/if}
-      <PdfPreviewPanel bind:this={pdf.pdfPreviewPanel} pdfPath={path} pageDimensions={pdf.getPdfPageDimensions()} pageCount={pdf.getPdfPageCount()} fileSize={pdf.getPdfFileSize()} title={pdf.getPdfTitle()} onPageChange={(page) => pdf.setPage(page)} />
+      <PdfPreviewPanel bind:this={pdf.pdfPreviewPanel} pdfPath={path} pageDimensions={pdf.getPdfPageDimensions()} pageCount={pdf.getPdfPageCount()} fileSize={pdf.getPdfFileSize()} title={pdf.getPdfTitle()} onPageChange={(page) => pdf.setPage(page)} onFirstPaint={() => { if (!firstPdfPaintLogged) { firstPdfPaintLogged = true; logInfo('pdf-select', `first-paint gen=${generation} file=${path.split(/[/\\]/).pop()} total=${(performance.now() - pdfStartedAt).toFixed(1)}ms`); } }} />
       {#if pdf.getPdfOutline().length > 0 && pdf.getPdfTocOpen()}
         <PdfTocSidebar bind:this={pdf.pdfTocSidebar} outline={pdf.getPdfOutline()} currentPage={pdf.getPdfCurrentPage()} pageDimensions={pdf.getPdfPageDimensions()} expandedIds={new Set(pdf.getPdfTocExpanded())} onToggleExpanded={(id) => pdf.togglePdfTocExpanded(id)} onJump={(page, y) => pdf.jumpToPage(page, y)} onFocusChange={(focused) => pdf.setTocFocused(focused)} onExit={() => {}} />
       {/if}

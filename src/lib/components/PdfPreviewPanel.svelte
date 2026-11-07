@@ -15,7 +15,6 @@
     searchPdfText,
     navigateSearchMatch,
     cumulativePageOffsets,
-    pageAtScrollPosition,
     fetchPdfPageLinks,
     clearLinkCache,
     PdfRenderScheduler,
@@ -38,6 +37,7 @@
     fileSize = 0,
     title = null,
     onPageChange = (_page: number) => {},
+    onFirstPaint = () => {},
     onFullscreen = () => {},
     active = true,
     panelDragging = false,
@@ -48,6 +48,7 @@
     fileSize?: number;
     title?: string | null;
     onPageChange?: (page: number) => void;
+    onFirstPaint?: () => void;
     onFullscreen?: () => void;
     active?: boolean;
     panelDragging?: boolean;
@@ -93,6 +94,7 @@
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizing = false;
   let destroyed = false;
+  let firstPaintPending = true;
 
   function invalidateViewport() {
     renderGeneration++;
@@ -213,6 +215,29 @@
   // Page slot heights based on dimensions and scale
   let pageOffsets = $derived(cumulativePageOffsets(pageDimensions, scale));
   let totalHeight = $derived(pageOffsets.length > 0 ? pageOffsets[pageOffsets.length - 1] : 0);
+  let mountedStart = $state(0);
+  let mountedEnd = $state(-1);
+  let mountedPages = $derived(Array.from(
+    { length: Math.max(0, mountedEnd - mountedStart + 1) }, (_, index) => mountedStart + index,
+  ));
+
+  function syncMountedPages(): boolean {
+    if (!scrollEl || pageOffsets.length < 2) return false;
+    const buffer = scrollEl.clientHeight;
+    const start = Math.max(0, findPageAtOffset(scrollEl.scrollTop - buffer));
+    const end = Math.min(totalPages - 1, findPageAtOffset(scrollEl.scrollTop + scrollEl.clientHeight + buffer));
+    if (start === mountedStart && end === mountedEnd) return false;
+    for (const page of Array.from(renderedPages)) {
+      if (page < start || page > end) {
+        const slot = scrollEl.querySelector<HTMLElement>(`.page-slot[data-page="${page}"]`);
+        if (slot) destroyPage(page, slot);
+      }
+    }
+    mountedStart = start;
+    mountedEnd = end;
+    void tick().then(() => { if (!destroyed && active) updateTiledPageRendering(); });
+    return true;
+  }
 
   // Initialize scale to fit first page width
   function initScale() {
@@ -235,7 +260,7 @@
   // Update current page from scroll position
   function updateCurrentPage() {
     if (!scrollEl || pageDimensions.length === 0) return;
-    const newPage = pageAtScrollPosition(scrollEl.scrollTop, scrollEl.clientHeight, pageOffsets);
+    const newPage = findPageAtOffset(scrollEl.scrollTop + scrollEl.clientHeight / 2);
     if (newPage !== currentPage && newPage >= 0 && newPage < totalPages) {
       currentPage = newPage;
       onPageChange(newPage);
@@ -368,6 +393,7 @@
           }
         }
         layer.appendChild(base);
+        if (firstPaintPending) { firstPaintPending = false; onFirstPaint(); }
         renderedTileData.set(tileKey, data);
         onInserted?.();
       };
@@ -397,6 +423,7 @@
       context.drawImage(image, 0, 0);
       drawTileHighlights(context, data);
       layer.appendChild(canvas);
+      if (firstPaintPending) { firstPaintPending = false; onFirstPaint(); }
       renderedTileData.set(tileKey, data);
       onInserted?.();
     };
@@ -527,10 +554,7 @@
 
   function getPageScrollTop(pageNum: number, pdfY = 0, center = false): number {
     if (!scrollEl || pageNum < 0 || pageNum >= pageDimensions.length) return 0;
-    const slot = scrollEl.querySelector(`.page-slot[data-page="${pageNum}"]`) as HTMLElement | null;
-    const pageTop = slot
-      ? slot.offsetTop
-      : pageOffsets[pageNum] || 0;
+    const pageTop = pageOffsets[pageNum] || 0;
     const pageHeight = pageDimensions[pageNum]?.height || 0;
     const hasExplicitY = Number.isFinite(pdfY) && pdfY > 0 && pdfY < pageHeight;
     const yOffset = hasExplicitY ? (pageHeight - pdfY) * scale : 0;
@@ -739,6 +763,7 @@
 
   // Render/destroy pages based on viewport + buffer, and preload beyond buffer
   function updatePageRendering() {
+    if (syncMountedPages()) return;
     updateTiledPageRendering();
   }
 
@@ -1043,6 +1068,7 @@
       renderingTiles.clear();
       renderedTileData.clear();
       pathRevision = `${path}:${Date.now()}`;
+      firstPaintPending = true;
       tileViewSignature = '';
       zoomSettled = false;
       if (zoomRenderTimer !== undefined) clearTimeout(zoomRenderTimer);
@@ -1057,6 +1083,8 @@
         if (slot) destroyPage(pageNum, slot);
       }
       renderedPages.clear();
+      mountedStart = 0;
+      mountedEnd = -1;
       loadedLinks.clear();
       renderGeneration++;
       renderScheduler.clear();
@@ -1173,6 +1201,13 @@
     } else {
       renderGeneration++;
       renderScheduler.invalidate(renderGeneration);
+      renderScheduler.clear();
+      for (const page of Array.from(renderedPages)) {
+        const slot = scrollEl?.querySelector<HTMLElement>(`.page-slot[data-page="${page}"]`);
+        if (slot) destroyPage(page, slot);
+      }
+      mountedEnd = -1;
+      renderedPages.clear();
     }
   });
 
@@ -1234,12 +1269,12 @@
       onpointerdown={(e) => { if ((e.target as HTMLElement).closest('.pdf-text-layer')) selectingText = true; }}
       onpointerup={() => { selectingText = false; updatePageRendering(); }}
       onclick={() => { if (window.getSelection()?.isCollapsed) containerEl?.focus(); }}>
-      <div class="pdf-page-track" style="width: {pageTrackWidth}px;">
-        {#each { length: totalPages } as _, i}
+      <div class="pdf-page-track" style="width: {pageTrackWidth}px; height: {totalHeight}px;">
+        {#each mountedPages as i (i)}
           <div
             class="page-slot"
             data-page={i}
-            style="height: {(pageDimensions[i]?.height || 0) * scale}px;"
+            style="top: {pageOffsets[i]}px; height: {(pageDimensions[i]?.height || 0) * scale}px;"
           ></div>
         {/each}
       </div>
@@ -1309,6 +1344,7 @@
 
   .pdf-page-track {
     min-height: 100%;
+    position: relative;
   }
 
   :global(.page-slot) {
@@ -1316,7 +1352,9 @@
     align-items: flex-start;
     justify-content: center;
     overflow: visible;
-    position: relative;
+    position: absolute;
+    left: 0;
+    right: 0;
     border-bottom: 1px solid var(--border);
     background-color: var(--bg-secondary);
   }

@@ -50,7 +50,12 @@ fn with_cached_doc<T>(
     app_handle: &tauri::AppHandle,
     f: impl FnOnce(&PdfDocument) -> Result<T, String>,
 ) -> Result<T, String> {
+    let lock_started = std::time::Instant::now();
     let mut guard = PDF_CACHE.lock().map_err(|e| format!("Lock: {}", e))?;
+    let lock_wait = lock_started.elapsed();
+    if lock_wait.as_millis() >= 20 {
+        info!("[pdf-perf-rs] lock-wait file={} wait={:.1}ms", std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy(), lock_wait.as_secs_f64() * 1000.0);
+    }
 
     // Initialize cache on first use
     if guard.is_none() {
@@ -220,7 +225,7 @@ pub struct PdfPageTextLayout {
     characters: Vec<PdfTextCharacter>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_pdf_page_text(
     path: String,
     page: u32,
@@ -302,8 +307,9 @@ fn load_pdfium(app_handle: &tauri::AppHandle) -> Result<Pdfium, String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_pdf_info(path: String, app_handle: tauri::AppHandle) -> Result<PdfInfo, String> {
+    let started = std::time::Instant::now();
     let file_path = std::path::Path::new(&path);
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", path));
@@ -311,18 +317,17 @@ pub fn get_pdf_info(path: String, app_handle: tauri::AppHandle) -> Result<PdfInf
 
     let file_size = fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
 
-    with_cached_doc(&path, &app_handle, |document| {
+    let result = with_cached_doc(&path, &app_handle, |document| {
         let page_count = document.pages().len() as u32;
 
-        let mut page_dimensions = Vec::with_capacity(page_count as usize);
-        for i in 0..page_count {
-            if let Ok(page) = document.pages().get(i as u16) {
-                page_dimensions.push(PdfPageDimensions {
-                    width: page.width().value,
-                    height: page.height().value,
-                });
-            }
-        }
+        let page_dimensions = document.pages().page_sizes()
+            .map_err(|e| format!("Failed to read PDF page sizes: {:?}", e))?
+            .into_iter()
+            .map(|size| PdfPageDimensions {
+                width: size.width().value,
+                height: size.height().value,
+            })
+            .collect();
 
         let metadata = document.metadata();
         let title = metadata
@@ -339,10 +344,12 @@ pub fn get_pdf_info(path: String, app_handle: tauri::AppHandle) -> Result<PdfInf
             file_size,
             page_dimensions,
         })
-    })
+    });
+    info!("[pdf-perf-rs] info file={} total={:.1}ms pages={} ok={}", file_path.file_name().unwrap_or_default().to_string_lossy(), started.elapsed().as_secs_f64() * 1000.0, result.as_ref().map(|info| info.page_count).unwrap_or(0), result.is_ok());
+    result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn render_pdf_page(
     path: String,
     page: u32,
@@ -405,7 +412,7 @@ pub fn render_pdf_page(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn render_pdf_tile(
     request: PdfTileRequest,
     app_handle: tauri::AppHandle,
@@ -508,7 +515,7 @@ fn encode_jpeg(rgba_data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Str
         .map_err(|e| format!("JPEG encode: {}", e))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_pdf_text(
     path: String,
     query: String,
@@ -630,7 +637,7 @@ fn extract_dest_coords(bookmark: &PdfBookmark, _document: &PdfDocument) -> (u32,
     (0, 0.0, 0.0)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_pdf_outline(
     path: String,
     app_handle: tauri::AppHandle,
@@ -674,7 +681,7 @@ pub struct PdfLinkAnnotation {
     pub url: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_pdf_page_links(
     path: String,
     page: u32,
@@ -796,7 +803,7 @@ fn extract_dest_xy(dest: &PdfDestination) -> (f32, f32) {
 }
 
 /// Clear the PDF document cache (e.g., when switching files to free memory).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_pdf_cache() -> Result<(), String> {
     if let Ok(mut guard) = PDF_CACHE.lock() {
         if let Some(cache) = guard.as_mut() {
@@ -806,7 +813,7 @@ pub fn clear_pdf_cache() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn invalidate_pdf_document(path: String) -> Result<(), String> {
     let mut guard = PDF_CACHE.lock().map_err(|e| format!("Lock: {}", e))?;
     if let Some(cache) = guard.as_mut() {

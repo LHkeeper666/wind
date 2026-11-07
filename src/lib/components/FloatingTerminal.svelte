@@ -68,7 +68,7 @@
     }
 
     if (!visible) {
-      logInfo('tab-perf', `terminalEffect hidden tabSwitch=${prevTabId !== activeTabId} time=${(performance.now()-t0).toFixed(1)}ms`);
+      if (prevTabId !== activeTabId) logInfo('tab-perf', `terminalEffect hidden tabSwitch=true time=${(performance.now()-t0).toFixed(1)}ms`);
       return;
     }
 
