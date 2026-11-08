@@ -1620,7 +1620,8 @@
   :global(.pdf-info-bar) { display: flex; align-items: center; justify-content: space-between; }
 
   /* Markdown Preview — Terminal style */
-  :global(.preview-markdown) { font-family: var(--font-mono); font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+  :global(.preview-markdown) { --md-bold-color: color-mix(in srgb, var(--text-primary) 60%, var(--warning)); font-family: var(--font-mono); font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+  :global([data-theme="light"] .preview-markdown) { --md-bold-color: color-mix(in srgb, var(--text-primary) 60%, var(--accent)); }
 
   :global(.preview-markdown h1), :global(.preview-markdown h2), :global(.preview-markdown h3),
   :global(.preview-markdown h4), :global(.preview-markdown h5), :global(.preview-markdown h6) {
@@ -1630,14 +1631,15 @@
   :global(.preview-markdown h1) { font-size: 1.8em; padding-bottom: 0.3em; border-bottom: 2px solid var(--border); }
   :global(.preview-markdown h2) { font-size: 1.5em; padding-bottom: 0.25em; border-bottom: 1px solid var(--border); }
   :global(.preview-markdown h3) { font-size: 1.25em; }
-  :global(.preview-markdown h4) { font-size: 1.1em; color: var(--text-secondary); }
+  :global(.preview-markdown h3::after) { content: ''; display: block; width: 2em; height: 2px; margin-top: 0.3em; background: currentColor; }
+  :global(.preview-markdown h4) { font-size: 1.15em; color: var(--accent); }
   :global(.preview-markdown h5) { font-size: 1em; color: var(--text-secondary); }
   :global(.preview-markdown h6) { font-size: 0.9em; color: var(--text-muted); }
   :global(.preview-markdown h1:first-child), :global(.preview-markdown h2:first-child),
   :global(.preview-markdown h3:first-child) { margin-top: 0; }
 
   :global(.preview-markdown p) { margin-top: 0; margin-bottom: 1em; }
-  :global(.preview-markdown strong) { font-weight: 700; color: var(--text-primary); }
+  :global(.preview-markdown strong), :global(.preview-markdown b) { font-weight: 700; color: var(--md-bold-color); }
   :global(.preview-markdown em) { font-style: italic; color: var(--text-primary); }
   :global(.preview-markdown del) { text-decoration: line-through; color: var(--text-muted); }
   :global(.preview-markdown a) { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); transition: border-bottom-style 0.15s; }
@@ -1665,6 +1667,7 @@
   :global(.preview-markdown tbody td) { padding: 0.5em 0.8em; border: 1px solid var(--border); }
   :global(.preview-markdown tbody tr:nth-child(even)) { background: var(--bg-secondary); }
   :global(.preview-markdown tbody tr:hover) { background: var(--bg-hover); }
+  :global([data-theme="light"] .preview-markdown tbody tr:hover strong), :global([data-theme="light"] .preview-markdown tbody tr:hover b) { color: var(--text-primary); }
   :global(.preview-markdown img) { max-width: 100%; border-radius: 4px; margin: 0.5em 0; }
   :global(.preview-markdown dl) { margin: 1em 0; }
   :global(.preview-markdown dt) { font-weight: 700; margin-top: 0.5em; }
