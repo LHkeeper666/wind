@@ -34,6 +34,7 @@
     loadImage, loadVideo, loadTextOrBinary,
   } from '$lib/utils/file-loaders';
   import TextEditorHost from './TextEditorHost.svelte';
+  import { detectLineEnding, normalizeLineEndings, restoreLineEndings, type LineEnding } from '$lib/utils/text-line-endings';
   import VimOverlay from './VimOverlay.svelte';
   import PreviewPane from './PreviewPane.svelte';
   import type { FileEntry } from '$lib/types/file-explorer';
@@ -179,6 +180,7 @@
 
   let content: string = $state('');
   let savedContent: string = $state('');
+  let lineEnding: LineEnding = $state('lf');
   let binaryContent: ArrayBuffer | null = $state(null);
   let thumbnailMeta: { width: number; height: number; originalSize: number; isThumbnail: boolean } | null = $state(null);
   let videoMeta: VideoMeta | null = $state(null);
@@ -320,6 +322,7 @@
     const path = current ? filePath : cached?.filePath;
     const draft = current ? content : cached?.content;
     const original = current ? savedContent : cached?.savedContent;
+    const draftLineEnding = current ? lineEnding : (cached?.lineEnding ?? detectLineEnding(original ?? ''));
     if (!path || draft === undefined || original === undefined) return false;
     if (choice === 'save') {
       try {
@@ -327,11 +330,11 @@
           await invoke('archive_write_file', {
             archivePath: archiveEditPath,
             internalPath: archiveEditInternalPath,
-            content: Array.from(new TextEncoder().encode(draft)),
+            content: Array.from(new TextEncoder().encode(restoreLineEndings(draft, draftLineEnding))),
           });
         } else {
           const state = current ? (textLoad?.tabId === tabId && textLoad.path === path ? textLoad.state : 'transition') : (cached?.textLoadState ?? 'transition');
-          const meta = await saveTextDraft(path, draft, state, current ? originalFileSize : (cached?.originalFileSize ?? 0),
+          const meta = await saveTextDraft(path, restoreLineEndings(draft, draftLineEnding), state, current ? originalFileSize : (cached?.originalFileSize ?? 0),
             current ? fileMtimeNs : (cached?.fileMtimeNs ?? ''), current ? draftEdited : !!cached?.draftEdited, 'slot-switch');
           if (current) { fileWatcher.setFileMtime(meta.modified); originalFileSize = meta.size; fileMtimeNs = meta.modifiedNs; draftEdited = false; }
           if (cached) { cached.fileMtime = meta.modified; cached.originalFileSize = meta.size; cached.fileMtimeNs = meta.modifiedNs; cached.draftEdited = false; }
@@ -348,13 +351,14 @@
       }
     }
     if (current) {
-      content = choice === 'save' ? draft : original;
+      content = normalizeLineEndings(choice === 'save' ? draft : original);
       savedContent = content;
       isModified = false;
       draftEdited = false;
     } else if (cached) {
-      cached.content = choice === 'save' ? draft : original;
+      cached.content = normalizeLineEndings(choice === 'save' ? draft : original);
       cached.savedContent = cached.content;
+      cached.lineEnding = draftLineEnding;
       cached.isModified = false;
       cached.draftEdited = false;
     }
@@ -376,7 +380,7 @@
       logDebug('file-load', `CACHE_SAVE ${cacheDetails}`);
     }
     tabCache.set(tabId, {
-      filePath, content, savedContent, binaryContent,
+      filePath, content, savedContent, lineEnding, binaryContent,
       mode,
       editorCursorPos: editorView?.state.selection.main.head ?? 0,
       editorSelectionAnchor: editorView?.state.selection.main.anchor ?? 0,
@@ -844,8 +848,9 @@
       // Bring cached slot to front FIRST to hide old tab's content immediately.
       // Slot retains its rendered content and scroll position from the previous visit.
       previewPane?.prepareForLoad();
-      content = cached.content;
-      savedContent = cached.savedContent;
+      lineEnding = cached.lineEnding ?? detectLineEnding(cached.savedContent);
+      content = normalizeLineEndings(cached.content);
+      savedContent = normalizeLineEndings(cached.savedContent);
       binaryContent = cached.binaryContent;
       originalFileSize = cached.originalFileSize ?? 0;
       fileMtimeNs = cached.fileMtimeNs ?? '';
@@ -855,9 +860,9 @@
         tabId: loadTabId,
         path,
         generation: gen,
-        content: cached.content,
+        content,
       };
-      isModified = cached.isModified;
+      isModified = content !== savedContent;
       pdfState.fromCacheSnapshot(cached);
       pdfReadyPath = isPdfFile(path) ? path : null;
       if (isPdfFile(path) && pdfState.getPdfPageDimensions().length === 0) {
@@ -927,6 +932,8 @@
     previewPane?.prepareForLoad();
     // Reset content so the render $effect does not render stale data from a previous file.
     content = '';
+    savedContent = '';
+    lineEnding = 'lf';
     binaryContent = null;
     readyTextContent = null;
     previewPane?.bumpContentGeneration();
@@ -980,10 +987,11 @@
 
         const result = await loadArchiveFile(ctx, checkGen);
         if ('aborted' in result) return;
-        content = result.content;
-        savedContent = result.content;
+        lineEnding = detectLineEnding(result.content);
+        content = normalizeLineEndings(result.content);
+        savedContent = content;
         binaryContent = result.binaryContent;
-        readyTextContent = result.readyTextContent;
+        readyTextContent = result.readyTextContent ? { ...result.readyTextContent, content } : null;
         if (isTextFile(path) && !result.placeholder) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error' };
         if (result.isBinary) {
           destroyEditorSession(loadTabId);
@@ -1088,11 +1096,12 @@
         if (isTextFile(path)) logInfo('file-load', `READ_DONE ${loadDetails}`);
         else logDebug('file-load', `READ_DONE ${loadDetails}`);
       }
-      content = result.content; binaryContent = result.binaryContent;
-      readyTextContent = result.readyTextContent;
+      lineEnding = detectLineEnding(result.savedContent);
+      content = normalizeLineEndings(result.content); binaryContent = result.binaryContent;
+      readyTextContent = result.readyTextContent ? { ...result.readyTextContent, content } : null;
       originalFileSize = result.originalFileSize;
       fileMtimeNs = result.fileMtimeNs;
-      savedContent = result.savedContent;
+      savedContent = normalizeLineEndings(result.savedContent);
       fileWatcher.setFileMtime(result.fileMtime);
       if (isTextFile(path)) textLoad = { tabId: loadTabId, path, state: result.readyTextContent ? 'ready' : 'error', error: result.error ?? '读取文件失败' };
     }
@@ -1181,12 +1190,13 @@
     const saveSlotId = slotId;
     const saveTabId = renderTabId;
     const saveContent = content;
+    const writtenContent = restoreLineEndings(saveContent, lineEnding);
     savesInFlight++;
     try {
       if (archiveEditPath && archiveEditInternalPath) {
         // Save to archive (ZIP only)
         const encoder = new TextEncoder();
-        const bytes = Array.from(encoder.encode(content));
+        const bytes = Array.from(encoder.encode(writtenContent));
         await invoke('archive_write_file', {
           archivePath: archiveEditPath,
           internalPath: archiveEditInternalPath,
@@ -1199,7 +1209,7 @@
           throw new Error('编辑目标已切换，请返回原文件重试');
         }
         const state = textLoad?.tabId === saveTabId && textLoad.path === savePath ? textLoad.state : 'transition';
-        const meta = await saveTextDraft(savePath, saveContent, state, originalFileSize, fileMtimeNs, draftEdited, entry);
+        const meta = await saveTextDraft(savePath, writtenContent, state, originalFileSize, fileMtimeNs, draftEdited, entry);
         if (filePath !== savePath || renderTabId !== saveTabId) throw new Error('保存完成，但当前显示目标已切换');
         fileWatcher.setFileMtime(meta.modified);
         originalFileSize = meta.size;
@@ -1208,6 +1218,7 @@
         if (cached && cached.filePath === filePath) {
           cached.content = content;
           cached.savedContent = saveContent;
+          cached.lineEnding = lineEnding;
           cached.isModified = content !== saveContent;
           cached.fileMtime = meta.modified;
           cached.originalFileSize = meta.size;
@@ -1233,7 +1244,7 @@
   }
 
   function getFileName(): string { if (!filePath) return ''; return filePath.split('\\').pop() || filePath.split('/').pop() || ''; }
-  export function setContent(newContent: string) { content = newContent; savedContent = newContent; isModified = false; }
+  export function setContent(newContent: string) { content = normalizeLineEndings(newContent); savedContent = content; isModified = false; }
   export async function saveFullscreenContent(path: string, newContent: string): Promise<boolean> {
     if (!filePath || filePath !== path || !isDisplaying(renderTabId, path)) {
       logInfo('text-save', `id=${crypto.randomUUID()} entry=fullscreen path=${path} bytes=${new TextEncoder().encode(newContent).length} result=rejected reason=identity_changed`);
@@ -1242,9 +1253,9 @@
     }
     try {
       const state = textLoad?.tabId === renderTabId && textLoad.path === path ? textLoad.state : 'transition';
-      const meta = await saveTextDraft(path, newContent, state, originalFileSize, fileMtimeNs, true, 'fullscreen');
+      const meta = await saveTextDraft(path, restoreLineEndings(normalizeLineEndings(newContent), lineEnding), state, originalFileSize, fileMtimeNs, true, 'fullscreen');
       if (filePath !== path) return false;
-      content = newContent; savedContent = newContent; isModified = false; draftEdited = false;
+      content = normalizeLineEndings(newContent); savedContent = content; isModified = false; draftEdited = false;
       originalFileSize = meta.size; fileMtimeNs = meta.modifiedNs; fileWatcher.setFileMtime(meta.modified);
       onToast('文件已保存');
       return true;

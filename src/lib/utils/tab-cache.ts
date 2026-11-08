@@ -1,5 +1,6 @@
 import type { TocHeading } from '$lib/previewers';
 import type { PdfPageDimensions, PdfOutlineItem } from '$lib/utils/pdf-shared';
+import type { LineEnding } from '$lib/utils/text-line-endings';
 
 export interface TextContentSnapshot {
   tabId: number;
@@ -12,6 +13,7 @@ export interface TabEditorCache {
   filePath: string;
   content: string;
   savedContent: string;
+  lineEnding?: LineEnding;
   binaryContent: ArrayBuffer | null;
   mode: 'global-normal' | 'editor-normal' | 'editor-insert';
   editorCursorPos: number;
