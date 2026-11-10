@@ -669,6 +669,9 @@
 
   function savePreviewSlot() {
     const tab = getActiveTab();
+    if ($layout.activeColumn === 'preview' && previewEditor?.isTocFocused()) {
+      tabs.saveFocusTarget('outline');
+    }
     const snapshot = previewEditor?.getEditorStateSnapshot();
     previewEditor?.cacheTabState(previewSlotKey(tab.id, tab.activeSlotId));
     if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: snapshot.isModified, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
@@ -1234,9 +1237,9 @@
       <div class="preview-slot-bar">
         <div class="preview-slot-list">
           {#each displayedTab.slots as slot (slot.id)}
-            <button class="preview-slot-tab" class:active={slot.id === displayedTab.activeSlotId} title={slot.filePath ?? 'Empty preview'} onclick={() => switchPreviewSlot(slot.id)}>
+            <button class="preview-slot-tab" class:active={slot.id === displayedTab.activeSlotId} title={slot.filePath ?? 'Empty preview'} onclick={(event) => { event.stopPropagation(); switchPreviewSlot(slot.id); }}>
               <span class="preview-slot-name">{slot.filePath?.split(/[/\\]/).pop() ?? 'Empty preview'}</span>
-              {#if slot.isModified || (slot.id === displayedTab.activeSlotId && previewEditor?.getIsModified())}<span class="preview-slot-modified">●</span>{/if}
+              {#if slot.isModified || (slot.id === displayedTab.activeSlotId && previewEditor?.getIsModifiedFor(previewSlotKey(displayedTab.id, slot.id), slot.filePath))}<span class="preview-slot-modified">●</span>{/if}
             </button>
           {/each}
         </div>

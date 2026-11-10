@@ -116,6 +116,8 @@
     onToast,
   });
 
+  function restoringOutlineFocus(): boolean { return restoreFocusTarget === 'outline'; }
+
   $effect(() => {
     const path = filePath;
     const tabId = renderTabId;
@@ -136,9 +138,11 @@
       ? pdfSessions.find(item => item.tabId === renderTabId && item.path === filePath)
       : undefined;
     pdfState.pdfPreviewPanel = session?.panel;
-    if (session?.panel && get(layout).activeColumn === 'preview' && document.activeElement === panelElement) {
+    if (session?.panel && !restoringOutlineFocus()
+        && get(layout).activeColumn === 'preview' && document.activeElement === panelElement) {
       requestAnimationFrame(() => {
         if (document.activeElement === panelElement && !pdfState.getPdfTocFocused()
+            && !restoringOutlineFocus()
             && renderTabId === session.tabId && filePath === session.path) session.panel?.focusPanel();
       });
     }
@@ -263,6 +267,7 @@
       return false;
     }
     mode = targetMode;
+    textEditorHost?.ensureVimMode(tabId, targetMode);
     // suppressModeEffect is cleared by the mode effect (only set if mode actually changed)
     if (deliverFocus && canAutoFocus()) focusActiveEditor();
     return true;
@@ -482,10 +487,11 @@
     tocOpen: boolean;
     tocExpandedLines: number[];
   } {
+    const current = !!filePath && isDisplaying(renderTabId, filePath);
     return {
-      mode,
-      previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, pdfCurrentPage: pdfState.getPdfCurrentPage(),
+      mode: current ? mode : 'global-normal',
+      previewScrollTop: current ? (previewPane?.getScrollTop() ?? 0) : 0,
+      isModified: current && isModified, pdfCurrentPage: current ? pdfState.getPdfCurrentPage() : 0,
       tocOpen: tocState.getTocOpen(), tocExpandedLines: collectExpandedLines(tocState.getTocHeadings()),
     };
   }
@@ -563,7 +569,7 @@
   // Load file when filePath changes
   let _prevLoadKey: string | null = null;
   $effect(() => {
-    const loadKey = filePath ? `${renderTabId}:${filePath}` : null;
+    const loadKey = `${renderTabId}:${filePath ?? ''}`;
     if (loadKey === _prevLoadKey) return;
     _prevLoadKey = loadKey;
     displayedIdentity = { tabId: renderTabId, path: filePath };
@@ -573,6 +579,19 @@
       isDirectory = false;
       previewPane?.prepareForLoad();
       loadFile(filePath);
+    } else {
+      // An empty slot has no loadFile call to clear the previous slot's draft state.
+      ++loadGeneration;
+      fileWatcher.stopWatching();
+      textLoad = null;
+      readyTextContent = null;
+      content = '';
+      savedContent = '';
+      binaryContent = null;
+      isModified = false;
+      draftEdited = false;
+      mode = 'global-normal';
+      hideEditorSessions();
     }
   });
 
@@ -603,6 +622,7 @@
         return;
       }
       if (untrack(() => activateEditorSession(renderTabId, textSnapshot.path))) {
+        textEditorHost?.ensureVimMode(renderTabId, m);
         pendingEditorPos = -1;
         pendingEditorSelection = null;
         pendingEditorScrollTop = -1;
@@ -615,6 +635,7 @@
           if (!isCurrentTextSnapshot(textSnapshot)) return;
           if (!textEditorHost?.hasSession(textSnapshot.tabId) || textEditorHost?.getEditorSession(textSnapshot.tabId)?.filePath !== textSnapshot.path) {
             untrack(() => initEditor(textSnapshot));
+            textEditorHost?.ensureVimMode(textSnapshot.tabId, mode);
             pendingEditorPos = -1;
             pendingEditorSelection = null;
             pendingEditorScrollTop = -1;
@@ -653,14 +674,18 @@
       if (changed && filePath && isTextFile(filePath) && !get(layout).archiveState) {
         void reconcileTextFileVersion(false);
       }
-      if (changed && panelElement && !tocState.getTocFocused() && canAutoFocus()) {
+      if (changed && panelElement && restoreFocusTarget !== 'outline'
+          && !tocState.getTocFocused() && canAutoFocus()) {
         panelElement.focus();
       }
     }
   });
 
   export function getMode(): string { return mode; }
-  export function getIsModified(): boolean { return isModified; }
+  export function getIsModified(): boolean { return !!filePath && isDisplaying(renderTabId, filePath) && isModified; }
+  export function getIsModifiedFor(tabId: number, path: string | null): boolean {
+    return !!path && tabId === renderTabId && path === filePath && getIsModified();
+  }
   export function getModeLabel(): string {
     if (mode === 'editor-insert') return 'INSERT';
     if (mode === 'editor-normal') return 'NORMAL';
@@ -716,6 +741,7 @@
   function handlePanelFocus() {
     if (vimOverlay?.getOutputVisible()) return;
     if (mode === 'global-normal' && filePath && isPdfFile(filePath)) {
+      if (restoreFocusTarget === 'outline') return;
       pdfState.focusPanel();
       return;
     }

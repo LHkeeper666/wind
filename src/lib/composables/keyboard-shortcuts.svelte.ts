@@ -3,6 +3,7 @@ import { layout } from '$lib/stores/layout';
 import { nextVisibleColumn, type ColumnName } from '$lib/utils/ratio';
 import { tick } from 'svelte';
 import type { TabState } from '$lib/stores/tabs';
+import { isInsertTabShortcut, isInsertSlotShortcut } from '$lib/utils/editor-workspace-shortcuts';
 
 // --- Prefix state ---
 let waitingForWindowKey: boolean = $state(false);
@@ -168,10 +169,8 @@ function canOpenCommandPalette(): boolean {
 function canUseTabShortcuts(): boolean {
   const l = get(layout);
   const deps = _deps!;
-  const previewMode = getPreviewMode();
   return !deps.getCommandPaletteVisible() && !deps.getShowFileSearch()
-    && l.fullscreenViewer === 'none'
-    && !(l.activeColumn === 'preview' && previewMode === 'editor-insert');
+    && l.fullscreenViewer === 'none';
 }
 
 function canUseGlobalFileOperations(): boolean {
@@ -242,6 +241,10 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     && l0.fullscreenViewer !== 'editor'
     && target instanceof Element
     && target.closest('.preview-panel .cm-editor') !== null;
+  const isPreviewInsertInput = l0.activeColumn === 'preview' && getPreviewMode() === 'editor-insert'
+    && target instanceof Element && target.closest('.preview-panel .cm-editor') !== null;
+  const isInsertWorkspaceShortcut = isPreviewInsertInput
+    && (isInsertTabShortcut(event) || isInsertSlotShortcut(event));
   const isPdfPreview = l0.activeColumn === 'preview'
     && (deps.getPreviewEditor()?.getFile?.() || '').toLowerCase().endsWith('.pdf');
   if (isPdfPreview && event.ctrlKey
@@ -251,6 +254,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   if ((target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable)
     && !isTerminalAltTabChord
     && !isPreviewCodeMirrorTab
+    && !isInsertWorkspaceShortcut
     && !waitingForWindowKey
     && !waitingForGKey) {
     if (event.key !== 'Escape' && !event.ctrlKey) return;
@@ -512,7 +516,8 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
   }
 
   const isAltTabShortcut = event.altKey && !event.ctrlKey && !event.metaKey
-    && !event.shiftKey && canUseTabShortcuts() && isSupportedAltTabCode(event.code);
+    && !event.shiftKey && canUseTabShortcuts() && isSupportedAltTabCode(event.code)
+    && (get(layout).activeColumn !== 'preview' || getPreviewMode() !== 'editor-insert' || isInsertWorkspaceShortcut);
   if (isAltTabShortcut) {
     if (event.repeat) {
       event.preventDefault();

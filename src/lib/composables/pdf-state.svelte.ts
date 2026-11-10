@@ -132,13 +132,15 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
 
   function focusPanel(): boolean {
     focusRequest++;
+    pdfTocFocused = false;
     return pdfPreviewPanel?.focusPanel() ?? false;
   }
 
   function focusToc(silent = false) {
     const request = ++focusRequest;
     const path = deps.getFilePath();
-    pdfTocFocused = true;
+    // A cached focus target is an intent; report TOC only after it owns DOM focus.
+    pdfTocFocused = false;
     if (!silent) deps.onToast('Focus: TOC');
     // The sidebar may not be mounted yet on the tick right after a tab restore.
     // Retry for a few frames, then fall back to the preview so focus does not
@@ -146,7 +148,10 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     let attempts = 0;
     const tryFocus = () => {
       if (request !== focusRequest || deps.getFilePath() !== path || deps.isPreviewActive?.() === false) return;
-      if (pdfTocSidebar?.focus()) return;
+      if (pdfTocSidebar?.focus()) {
+        pdfTocFocused = true;
+        return;
+      }
       if (++attempts >= 120) {
         pdfTocFocused = false;
         pdfPreviewPanel?.focusPanel();
@@ -251,7 +256,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
     pdfPageDimensions = data.pdfPageDimensions ?? [];
     pdfOutline = data.pdfOutline ?? [];
     pdfTocOpen = data.pdfTocOpen ?? false;
-    pdfTocFocused = data.pdfTocFocused ?? false;
+    pdfTocFocused = false;
     pdfTocExpanded = data.pdfTocExpanded ?? [];
     pdfTocSelectedIndex = data.pdfTocSelectedIndex ?? -1;
     pdfTocScrollTop = data.pdfTocScrollTop ?? 0;
@@ -266,7 +271,7 @@ export function createPdfState(deps: PdfStateDeps): PdfStateAPI {
   function restoreReadingPosition(data: PdfCacheData) {
     pdfCurrentPage = Math.min(Math.max(0, data.pdfCurrentPage), Math.max(0, pdfPageCount - 1));
     pdfTocOpen = data.pdfTocOpen;
-    pdfTocFocused = data.pdfTocFocused;
+    pdfTocFocused = false;
     pdfTocExpanded = [...data.pdfTocExpanded];
     pdfTocSelectedIndex = data.pdfTocSelectedIndex;
     pdfTocScrollTop = data.pdfTocScrollTop ?? 0;

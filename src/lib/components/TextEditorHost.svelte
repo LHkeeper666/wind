@@ -16,7 +16,7 @@
   import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
   import { lintKeymap } from '@codemirror/lint';
-  import { vim } from '@replit/codemirror-vim';
+  import { vim, Vim, getCM } from '@replit/codemirror-vim';
   import { getLanguage } from '$lib/utils/language';
   import { pythonCompletionSource } from '$lib/completions/python-completion';
   import { pythonLanguage } from '@codemirror/lang-python';
@@ -177,6 +177,10 @@
       && filePath === session.filePath;
   }
 
+  function isCurrentEditorIdentity(sessionId: number, path: string, view: EditorView): boolean {
+    return tabId === sessionId && filePath === path && editorView === view;
+  }
+
   function getSessionForView(view: EditorView): EditorSession | undefined {
     for (const session of editorSessions.values()) {
       if (session.view === view) return session;
@@ -299,6 +303,16 @@
     return activateEditorSession(tabId, path);
   }
 
+  export function ensureVimMode(tabId: number, targetMode: 'editor-normal' | 'editor-insert'): void {
+    const session = editorSessions.get(tabId);
+    if (!session || session.view !== editorView) return;
+    const cm = getCM(session.view);
+    const vimState = cm?.state?.vim;
+    if (!cm || !vimState) return;
+    if (targetMode === 'editor-insert' && !vimState.insertMode) Vim.handleKey(cm, 'i', 'user');
+    else if (targetMode === 'editor-normal' && vimState.insertMode) Vim.handleKey(cm, '<Esc>', 'user');
+  }
+
   export function destroySession(tabId: number): void {
     destroyEditorSession(tabId);
   }
@@ -357,7 +371,8 @@
         '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
       }),
       EditorView.updateListener.of((update) => {
-        const isActive = tabId === tabId && editorSessions.get(tabId)?.view === update.view;
+        const isActive = isCurrentEditorIdentity(tabId, targetPath, update.view)
+          && editorSessions.get(tabId)?.view === update.view;
         if (update.docChanged && isActive) {
           onContentChange(update.state.doc.toString());
           onModifiedChange(update.state.doc.toString() !== savedContent);
