@@ -93,6 +93,11 @@ export const gruvboxTheme = EditorView.theme({
   },
 });
 
+export const editorFontTheme = EditorView.theme({
+  '&': { fontFamily: 'var(--font-mono)' },
+  '.cm-content': { fontFamily: 'var(--font-mono)' },
+});
+
 // Override CodeMirror's hideNativeSelection (Prec.highest) which sets focused ::selection to Highlight.
 // We suppress native selection entirely — CodeMirror's drawSelection plugin handles all visuals.
 export const suppressNativeSelection = Prec.highest(EditorView.theme({

@@ -2,7 +2,8 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { PreviewRouter, type TocHeading } from '$lib/previewers';
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
-  import { isPdfFile, isImageFile, isVideoFile } from '$lib/utils/file-types';
+  import { isPdfFile, isImageFile, isVideoFile, isDirectEditorFile } from '$lib/utils/file-types';
+  import { createReadOnlyTextPreview } from '$lib/utils/read-only-text-preview';
   import { loadArchiveDirectory, loadArchiveFile, loadImage, loadTextOrBinary, loadVideo } from '$lib/utils/file-loaders';
   import type { LoadContext } from '$lib/utils/file-loaders';
   import { createPdfState } from '$lib/composables/pdf-state.svelte';
@@ -26,6 +27,13 @@
   let previousPdfSelectionAt = 0;
   let pdfWaitMs = 50;
   let firstPdfPaintLogged = false;
+  let codeView = $state(false);
+  let disposeCodeView: (() => void) | null = null;
+  function clearCodeView() {
+    disposeCodeView?.();
+    disposeCodeView = null;
+    codeView = false;
+  }
   let pdfDelay: ReturnType<typeof setTimeout> | undefined;
   let cancelPdfDelay: (() => void) | undefined;
   function clearPdfDelay() {
@@ -47,6 +55,7 @@
   async function load(workspace: number, selectedPath: string, directory: boolean | null, archive: string | null, gen: number) {
     // Keep the overlay opaque while the next file loads, but do not show the
     // previous selection or expose the opened slot underneath it.
+    clearCodeView();
     body?.replaceChildren();
     error = '';
     pdfVisible = false;
@@ -111,7 +120,13 @@
           renderHost.dataset.thumbIsThumbnail = String(result.thumbnailMeta.isThumbnail);
         }
         body.replaceChildren(renderHost);
-        await nextRouter.preview(selectedPath, content, renderHost, valid);
+        if (isDirectEditorFile(selectedPath) && 'readyTextContent' in result && result.readyTextContent && !result.binaryContent) {
+          renderHost.className = 'selection-code-host';
+          codeView = true;
+          disposeCodeView = createReadOnlyTextPreview(renderHost, selectedPath, result.readyTextContent.content);
+        } else {
+          await nextRouter.preview(selectedPath, content, renderHost, valid);
+        }
         if (!valid()) { renderHost.remove(); nextRouter.dispose(); return; }
         renderHost.style.visibility = '';
       }
@@ -121,6 +136,7 @@
         renderedPath = selectedPath;
       } else nextRouter.dispose();
     } catch (cause) {
+      clearCodeView();
       body?.replaceChildren();
       nextRouter.dispose();
       if (valid()) error = String(cause);
@@ -147,6 +163,7 @@
       }
       firstPdfPaintLogged = false;
       clearPdfDelay();
+      clearCodeView();
       router.dispose();
       if (body) body.dataset.filePath = '';
       body?.replaceChildren();
@@ -166,7 +183,7 @@
     });
   });
 
-  onDestroy(() => { generation++; clearPdfDelay(); router.dispose(); directoryPreviewer.dispose(); pdf.reset(); pdf.invalidatePendingLoads(generation); });
+  onDestroy(() => { generation++; clearPdfDelay(); clearCodeView(); router.dispose(); directoryPreviewer.dispose(); pdf.reset(); pdf.invalidatePendingLoads(generation); });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -190,7 +207,7 @@
     <button class="outline-toggle" onclick={() => tocOpen = !tocOpen} aria-label="Toggle outline">☰</button>
   {/if}
   <div class="reading-content" class:hidden={pdfVisible || recycleItem?.id === path || renderedPath !== path}>
-    <div class="selection-body" bind:this={body}></div>
+    <div class="selection-body" class:code-view={codeView} bind:this={body}></div>
     {#if headings.length > 0 && tocOpen}
       <TocSidebar {headings} onJump={(line) => {
         const target = Array.from(body.querySelectorAll<HTMLElement>('[data-line]'))
@@ -204,6 +221,9 @@
 <style>
   .selection-preview { position: absolute; inset: 0; z-index: 5; background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; }
   .selection-body { overflow: auto; flex: 1; min-height: 0; padding: 12px; }
+  .selection-body.code-view { overflow: hidden; padding: 0; }
+  .selection-body :global(.selection-code-host) { height: 100%; }
+  .selection-body :global(.cm-editor) { height: 100%; font-family: var(--font-mono); }
   .reading-content { display: flex; flex: 1; min-height: 0; }
   .reading-content.hidden { display: none; }
   .pdf-content { display: flex; flex: 1; min-height: 0; }

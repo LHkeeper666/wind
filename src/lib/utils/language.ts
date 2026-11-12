@@ -36,6 +36,7 @@ const langMap: Record<string, () => Extension> = {
   'yaml': () => yaml(),
   'yml': () => yaml(),
   'xml': () => xml(),
+  'arxml': () => xml(),
   'svg': () => xml(),
   'sql': () => sql(),
   'java': () => java(),

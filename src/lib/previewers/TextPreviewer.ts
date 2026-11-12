@@ -321,7 +321,7 @@ export class TextPreviewer implements Previewer {
 			'cpp': 'cpp', 'h': 'c', 'hpp': 'cpp', 'cs': 'csharp',
 			'php': 'php', 'scala': 'scala', 'r': 'r', 'lua': 'lua',
 			'sh': 'bash', 'bash': 'bash', 'zsh': 'zsh', 'ps1': 'powershell',
-			'sql': 'sql', 'html': 'html', 'xml': 'xml', 'css': 'css',
+			'sql': 'sql', 'html': 'html', 'xml': 'xml', 'arxml': 'xml', 'css': 'css',
 			'scss': 'scss', 'less': 'less', 'json': 'json', 'yaml': 'yaml',
 			'yml': 'yaml', 'toml': 'toml', 'md': 'markdown', 'vue': 'vue',
 			'svelte': 'svelte', 'dockerfile': 'dockerfile',

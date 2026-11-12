@@ -22,7 +22,7 @@
   import { pythonLanguage } from '@codemirror/lang-python';
   import { createVimCommandHandler, setupAllVimCommands } from '$lib/utils/vim-commands';
   import { initClipboardBridge, type ClipboardBridge } from '$lib/utils/clipboard-bridge';
-  import { gruvboxDark, gruvboxLight, gruvboxTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
+  import { gruvboxDark, gruvboxLight, gruvboxTheme, editorFontTheme, getSyntaxTheme, suppressNativeSelection } from '$lib/utils/editor-theme';
   import { setupVimLineNumbers, teardownVimLineNumbers } from '$lib/utils/vim-line-numbers';
   import { getEditorIndentPolicy, getEditorIndentUnit } from '$lib/utils/editor-indent-policy';
   import {
@@ -366,10 +366,7 @@
       sessionThemeCompartment.of(getSyntaxTheme()),
       suppressNativeSelection,
       gruvboxTheme,
-      EditorView.theme({
-        '&': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
-        '.cm-content': { fontFamily: "'Consolas', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace" },
-      }),
+      editorFontTheme,
       EditorView.updateListener.of((update) => {
         const isActive = isCurrentEditorIdentity(tabId, targetPath, update.view)
           && editorSessions.get(tabId)?.view === update.view;
