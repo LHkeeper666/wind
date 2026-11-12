@@ -23,6 +23,7 @@
     pendingTocExpanded = null as Set<number> | null,
     pendingRestoreScrollTop = -1,
     renderTabId = 0,
+    renderReady = false,
     codeFileDirectEdit = false,
     directEdit = false,
     isDirectory = false,
@@ -50,6 +51,7 @@
     pendingTocExpanded: Set<number> | null;
     pendingRestoreScrollTop: number;
     renderTabId: number;
+    renderReady: boolean;
     codeFileDirectEdit: boolean;
     directEdit: boolean;
     isDirectory: boolean;
@@ -194,6 +196,7 @@
   let _prevRenderKey: string = '';
   let _prevFilePathForContent: string | null = null;
   $effect(() => {
+    if (!renderReady) return;
     const contentFingerprint = content ? `${content.length}:${content.slice(0, 80)}` : '';
     const key = `${renderTrigger}:${mode}:${filePath}:${renderTabId}:${codeFileDirectEdit}:${directEdit}:${isDirectory}:${contentFingerprint}:${!!binaryContent}`;
     if (key === _prevRenderKey) return;
@@ -246,7 +249,7 @@
   });
 
   export async function renderPreview() {
-    if (!previewArea || !filePath) return;
+    if (!renderReady || !previewArea || !filePath) return;
     requestTabRender(renderTabId);
 
     if (renderInFlight) {
@@ -293,9 +296,7 @@
         && slotMtime === String(snapMtime)) {
       logInfo('PreviewPane', `renderPreviewOnce SKIP (cached) path=${path.split(/[/\\]/).pop()}`);
       slot.dataset.renderVersion = String(tabVersion);
-      const savedScroll = pendingRestoreScrollTop;
-      pendingRestoreScrollTop = -1;
-      if (savedScroll >= 0) { requestAnimationFrame(() => { if (isCurrentTabRender(tabId, path, tabVersion)) slot.scrollTop = savedScroll; }); }
+      restoreScrollAfterRender(slot, tabId, path, tabVersion);
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
       return;
     }
@@ -334,15 +335,24 @@
     slot.dataset.fileMtime = String(snapMtime);
     logInfo('PreviewPane', `renderPreviewOnce DONE path=${path.split(/[/\\]/).pop()} slotChildren=${slot.childElementCount} scrollH=${slot.scrollHeight}`);
 
-    const savedScroll2 = pendingRestoreScrollTop;
-    pendingRestoreScrollTop = -1;
-    if (savedScroll2 >= 0) { requestAnimationFrame(() => { if (isCurrentTabRender(tabId, path, tabVersion)) slot.scrollTop = savedScroll2; }); }
+    restoreScrollAfterRender(slot, tabId, path, tabVersion);
     if (pendingTocExpanded && tocHeadings.length > 0) {
       restoreExpandedLines(tocHeadings, pendingTocExpanded);
       pendingTocExpanded = null; tocHeadings = [...tocHeadings];
     }
     if (isMarkdown) { setupScrollObserver(); }
     onRenderComplete();
+  }
+
+  function restoreScrollAfterRender(slot: HTMLDivElement, tabId: number, path: string, version: number) {
+    const savedScroll = pendingRestoreScrollTop;
+    if (savedScroll < 0) return;
+    requestAnimationFrame(() => {
+      if (!isCurrentTabRender(tabId, path, version) || renderTabId !== tabId || filePath !== path
+          || pendingRestoreScrollTop !== savedScroll) return;
+      slot.scrollTop = savedScroll;
+      pendingRestoreScrollTop = -1;
+    });
   }
 
   export function renderSimpleCodePreview() {

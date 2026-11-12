@@ -204,6 +204,10 @@
   let archiveEditPath: string | null = $state(null);
   let archiveEditInternalPath: string | null = $state(null);
   let loadGeneration: number = 0;
+  let loadedPreviewIdentity = $state<{ tabId: number; path: string; generation: number }>({ tabId: -1, path: '', generation: -1 });
+  let previewRenderReady = $derived(loadedPreviewIdentity.tabId === renderTabId
+    && loadedPreviewIdentity.path === filePath
+    && loadedPreviewIdentity.generation === loadGeneration);
   let displayedIdentity: { tabId: number; path: string | null } | null = null;
   let readyTextContent = $state<TextContentSnapshot | null>(null);
   let codeFileDirectEdit = $derived(
@@ -825,6 +829,7 @@
   async function loadFile(path: string, reading?: TabEditorCache) {
     const gen = ++loadGeneration;
     const loadTabId = renderTabId;
+    loadedPreviewIdentity = { tabId: -1, path: '', generation: -1 };
     textLoad = { tabId: loadTabId, path, state: 'loading' };
     pdfState.invalidatePendingLoads(gen);
     pdfReadyPath = null;
@@ -919,17 +924,11 @@
       if (!cached.content && !cached.binaryContent && cached.mode === 'global-normal') {
         renderTrigger++;
       }
-      // Restore preview scroll position (slot content is already cached).
+      loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
+      // PreviewPane restores non-PDF scroll after the final valid render.
       if (isPdfFile(path)) {
         // PDF: use double-rAF via applyPendingScroll to wait for PdfPreviewPanel initScale
         pdfState.applyPendingScroll();
-      } else if (cached.previewScrollTop >= 0) {
-        const savedScroll = cached.previewScrollTop;
-        requestAnimationFrame(() => {
-          if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
-          const slot = previewPane?.getActiveSlot();
-          slot?.scrollTo(0, savedScroll);
-        });
       }
       fileWatcher.startWatching(path);
       invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path })
@@ -1032,6 +1031,7 @@
           mode = 'global-normal';
           renderTrigger++;
         }
+        loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
         fileWatcher.stopWatching();
         return;
       } catch (e) {
@@ -1040,6 +1040,7 @@
         if (isTextFile(path)) textLoad = { tabId: loadTabId, path, state: 'error', error: String(e) };
         destroyEditorSession(loadTabId);
         mode = 'global-normal'; renderTrigger++;
+        loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
         fileWatcher.stopWatching();
         return;
       }
@@ -1052,6 +1053,7 @@
         content = ''; binaryContent = null;
         destroyEditorSession(loadTabId);
         mode = 'global-normal'; isDirectory = true; renderTrigger++;
+        loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
         fileWatcher.stopWatching();
         return;
       }
@@ -1063,6 +1065,7 @@
       if ('aborted' in result) return;
       content = result.content; binaryContent = result.binaryContent; thumbnailMeta = result.thumbnailMeta;
       mode = 'global-normal'; renderTrigger++;
+      loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
       return;
     }
 
@@ -1095,6 +1098,7 @@
       content = ''; binaryContent = null;
       destroyEditorSession(loadTabId);
       mode = 'global-normal'; renderTrigger++;
+      loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
       previewPane?.renderArchivePreview(path);
       return;
     }
@@ -1105,6 +1109,7 @@
       if ('aborted' in result) return;
       videoMeta = result.videoMeta; binaryContent = result.binaryContent; content = result.content;
       mode = 'global-normal'; renderTrigger++;
+      loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
       return;
     }
 
@@ -1141,6 +1146,7 @@
       destroyEditorSession(loadTabId);
       mode = 'global-normal'; renderTrigger++;
     }
+    loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
     fileWatcher.startWatching(path);
     restoreOutlineAfterLoad();
   }
@@ -1417,6 +1423,7 @@
       pendingTocExpanded={pendingTocExpanded}
       pendingRestoreScrollTop={pendingRestoreScrollTop}
       renderTabId={renderTabId}
+      renderReady={previewRenderReady}
       codeFileDirectEdit={codeFileDirectEdit}
       directEdit={directEdit}
       isDirectory={isDirectory}
