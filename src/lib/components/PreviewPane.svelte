@@ -79,6 +79,7 @@
   let renderInFlight: boolean = false;
   let renderQueued: boolean = false;
   let scrollObserver: IntersectionObserver | undefined;
+  let themeObserver: MutationObserver | undefined;
 
   // Track isDirectory staleness: when filePath changes, isDirectory may be stale
   // from a previous tab. Only render directory preview if isDirectory was set for THIS path.
@@ -553,10 +554,14 @@
   }
 
   onMount(() => {
-    // Initialize preview area
+    themeObserver = new MutationObserver(() => {
+      if (previewArea && previewRouter) void previewRouter.refreshMermaidTheme(previewArea);
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   });
 
   onDestroy(() => {
+    themeObserver?.disconnect();
     scrollObserver?.disconnect();
     clearAllSlots();
     previewRouter?.dispose();

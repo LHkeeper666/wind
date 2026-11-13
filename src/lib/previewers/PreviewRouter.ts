@@ -134,4 +134,9 @@ export class PreviewRouter {
       if (previewer instanceof ImagePreviewer || previewer instanceof MarkdownPreviewer) previewer.cleanupUnused();
     }
   }
+
+  async refreshMermaidTheme(root: Element): Promise<void> {
+    const previewer = this.previewers.find(p => p instanceof MarkdownPreviewer) as MarkdownPreviewer;
+    await previewer.refreshMermaidTheme(root);
+  }
 }

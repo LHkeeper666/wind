@@ -25,14 +25,24 @@ export class MarkdownPreviewer implements Previewer {
 	private md: any;
 	private highlighter: Highlighter | null = null;
 	private mermaidModule: any = null;
+	private static mermaidQueue: Promise<void> = Promise.resolve();
+	private mermaidSources = new WeakMap<HTMLElement, string>();
 	onHeadings?: (headings: TocHeading[]) => void;
 
 	// Caches for incremental update: skip re-processing unchanged content
 	private codeCache = new Map<string, string>();       // hash(lang+code) → highlighted HTML
 	private katexCache = new Map<string, string>();      // latex → rendered HTML
 	private imageCache = new Map<string, string>();       // resolved path → blob URL
-	private mermaidCache = new Map<string, string>();     // code → svg
+	private mermaidCache = new Map<string, string>();     // theme + code → svg
 	private requestId: number = 0;
+
+	private mermaidTheme(): 'dark' | 'default' {
+		return document.documentElement.dataset.theme === 'light' ? 'default' : 'dark';
+	}
+
+	private mermaidKey(code: string, theme = this.mermaidTheme()): string {
+		return hashStr(`mermaid:${theme}:${code}`);
+	}
 
 	private async getHighlighter(): Promise<Highlighter> {
 		if (!this.highlighter) {
@@ -241,13 +251,7 @@ export class MarkdownPreviewer implements Previewer {
 				const cacheKey = hashStr(lang + ':::' + code);
 
 				if (lang === 'mermaid') {
-					mermaidTasks.push(
-						this.renderMermaidBlock(pre, code).then(() => {
-							const containers = container.querySelectorAll('.mermaid-container');
-							const last = containers[containers.length - 1];
-							if (last) this.mermaidCache.set(cacheKey, last.innerHTML);
-						})
-					);
+					mermaidTasks.push(this.renderMermaidBlock(pre, code));
 					continue;
 				}
 
@@ -380,23 +384,15 @@ export class MarkdownPreviewer implements Previewer {
 				const cacheKey = hashStr(lang + ':::' + code);
 
 				if (lang === 'mermaid') {
-					const cachedSvg = this.mermaidCache.get(cacheKey);
+					const cachedSvg = this.mermaidCache.get(this.mermaidKey(code));
 					if (cachedSvg !== undefined) {
 						const wrapper = document.createElement('div');
 						wrapper.className = 'mermaid-container';
 						wrapper.innerHTML = cachedSvg;
+						this.mermaidSources.set(wrapper, code);
 						pre.replaceWith(wrapper);
 					} else {
-						mermaidTasks.push(
-							this.renderMermaidBlock(pre, code).then(() => {
-								// Cache after render — walk back to find the container
-								const mermaidContainers = container.querySelectorAll('.mermaid-container');
-								const lastContainer = mermaidContainers[mermaidContainers.length - 1];
-								if (lastContainer) {
-									this.mermaidCache.set(cacheKey, lastContainer.innerHTML);
-								}
-							})
-						);
+						mermaidTasks.push(this.renderMermaidBlock(pre, code));
 					}
 					continue;
 				}
@@ -568,27 +564,54 @@ export class MarkdownPreviewer implements Previewer {
 
 	private async renderMermaidBlock(pre: Element, code: string): Promise<void> {
 		try {
-			if (!this.mermaidModule) {
-				this.mermaidModule = await import('mermaid');
+			let theme = this.mermaidTheme();
+			let svg = await this.renderMermaidSvg(code, theme);
+			while (theme !== this.mermaidTheme()) {
+				theme = this.mermaidTheme();
+				svg = await this.renderMermaidSvg(code, theme);
 			}
-			const mermaid = this.mermaidModule.default;
-			const isDark = document.documentElement.classList.contains('dark');
-			mermaid.initialize({
-				startOnLoad: false,
-				theme: isDark ? 'dark' : 'default',
-				suppressErrorRendering: true,
-			});
-			const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
-			const { svg } = await mermaid.render(id, code);
+			if (theme !== this.mermaidTheme() || !pre.isConnected) return;
 			const wrapper = document.createElement('div');
 			wrapper.className = 'mermaid-container';
 			wrapper.innerHTML = svg;
+			this.mermaidSources.set(wrapper, code);
+			this.mermaidCache.set(this.mermaidKey(code, theme), svg);
 			pre.replaceWith(wrapper);
 		} catch {
 			// Clean up any residual mermaid error SVGs from the DOM
 			document.querySelectorAll(`[id^="dmermaid-"]`).forEach(el => el.remove());
 			pre.classList.add('mermaid-error');
 		}
+	}
+
+	private async renderMermaidSvg(code: string, theme: 'dark' | 'default'): Promise<string> {
+		if (!this.mermaidModule) this.mermaidModule = await import('mermaid');
+		const mermaid = this.mermaidModule.default;
+		const render = MarkdownPreviewer.mermaidQueue.then(async () => {
+			mermaid.initialize({ startOnLoad: false, theme, suppressErrorRendering: true });
+			const id = 'mermaid-' + Math.random().toString(36).slice(2, 8);
+			const result = await mermaid.render(id, code);
+			return result.svg as string;
+		});
+		MarkdownPreviewer.mermaidQueue = render.then(() => {}, () => {});
+		return render;
+	}
+
+	async refreshMermaidTheme(root: Element): Promise<void> {
+		const theme = this.mermaidTheme();
+		const wrappers = root.querySelectorAll<HTMLElement>('.mermaid-container');
+		await Promise.all(Array.from(wrappers, async wrapper => {
+			const code = this.mermaidSources.get(wrapper);
+			if (code === undefined) return;
+			try {
+				const svg = this.mermaidCache.get(this.mermaidKey(code, theme)) ?? await this.renderMermaidSvg(code, theme);
+				if (!wrapper.isConnected || theme !== this.mermaidTheme()) return;
+				this.mermaidCache.set(this.mermaidKey(code, theme), svg);
+				wrapper.innerHTML = svg;
+			} catch {
+				// Retain the previous diagram if the new theme cannot be rendered.
+			}
+		}));
 	}
 
 	private async loadLocalImage(img: HTMLImageElement, resolvedPath: string): Promise<boolean> {
