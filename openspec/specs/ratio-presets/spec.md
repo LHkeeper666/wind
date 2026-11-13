@@ -124,3 +124,27 @@ The system SHALL exclude columns whose ratio is zero from keyboard focus navigat
 - **WHEN** a tab is restored with `activeColumn` pointing at a zero-ratio column
 - **THEN** focus moves to the nearest visible column
 
+### Requirement: 文件打开保留用户布局
+
+系统 SHALL 在通过 `l` 或 `L` 打开文件、激活已有预览位或完成未保存修改确认后，保留当前工作区的列比例及布局循环使用的三列比例快照。文件打开 SHALL NOT 自动展开或显示预览列。
+
+#### Scenario: 三列布局保持不变
+
+- **WHEN** 用户设置自定义三列比例并按 `l` 或 `L` 打开文件
+- **THEN** 当前列比例与布局循环的三列比例快照均保持不变
+
+#### Scenario: 两列布局保持不变
+
+- **WHEN** 用户设置自定义两列比例并按 `l` 或 `L` 打开文件
+- **THEN** 当前列比例与布局循环的三列比例快照均保持不变
+
+#### Scenario: 隐藏预览列的布局保持不变
+
+- **WHEN** 用户设置预览列比例为零并按 `l` 或 `L` 打开文件
+- **THEN** 预览列继续隐藏，其他列比例及布局循环快照保持不变
+
+#### Scenario: 已打开文件与确认后的打开
+
+- **WHEN** 用户通过 `l` 或 `L` 激活已有预览位，或确认替换有未保存修改的文件
+- **THEN** 当前列比例及布局循环快照保持不变
+

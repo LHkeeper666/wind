@@ -649,8 +649,8 @@
 
   function handleActivate(filePath: string) {
     const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === filePath.toLowerCase());
-    if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id); focusPanel('preview'); return; }
-    if (existing) { tabs.hideSelectionPreview(); focusPanel('preview'); return; }
+    if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); focusActivatedFile(); return; }
+    if (existing) { tabs.hideSelectionPreview(); focusActivatedFile(); return; }
     // Check for unsaved changes before switching files
     if (previewEditor?.getIsModified()) {
       pendingSlotAction = { kind: 'replace', slotId: getActiveTab().activeSlotId, path: filePath };
@@ -661,10 +661,15 @@
     selectedFile = filePath;
     selectedFileIsDir = false;
     tabs.openInActiveSlot(filePath);
-    if (!$layout.previewExpanded) {
-      layout.expandPreview();
-    }
-    focusPanel('preview');
+    focusActivatedFile();
+  }
+
+  function isPreviewVisible(): boolean {
+    return get(layout).columnRatios[2] > 0;
+  }
+
+  function focusActivatedFile() {
+    focusPanel(isPreviewVisible() ? 'preview' : 'current');
   }
 
   function savePreviewSlot() {
@@ -686,14 +691,15 @@
     if (prepareFocus) previewEditor?.prepareTabFocus(previewSlotKey(tab.id, tab.activeSlotId), selectedFile, slot?.editorMode ?? 'global-normal');
   }
 
-  function switchPreviewSlot(id: number, fromKeyboard = false) {
+  function switchPreviewSlot(id: number, fromKeyboard = false, keepDirectoryFocus = false) {
     const keepCurrentFocus = fromKeyboard && $layout.activeColumn === 'current';
+    const keepFocus = keepCurrentFocus || keepDirectoryFocus;
     if (id !== getActiveTab().activeSlotId) savePreviewSlot();
     tabs.switchSlot(id, keepCurrentFocus);
-    restorePreviewSlot(!keepCurrentFocus);
+    restorePreviewSlot(!keepFocus);
     const restoreId = ++tabRestoreGeneration;
     const tab = getActiveTab();
-    if (!keepCurrentFocus) {
+    if (!keepFocus) {
       tabs.saveFocusTarget(tab.slots.find((slot: { id: number }) => slot.id === id)?.focusTarget ?? 'content');
       layout.setActiveColumn('preview');
       void tick().then(() => {
@@ -705,15 +711,14 @@
   function createPreviewSlot(path: string | null = null) {
     savePreviewSlot();
     tabs.createSlot(path);
-    restorePreviewSlot();
-    if (path && !$layout.previewExpanded) layout.expandPreview();
+    restorePreviewSlot(!path || isPreviewVisible());
   }
 
   function handleActivateNew(path: string) {
     const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === path.toLowerCase());
-    if (existing) { switchPreviewSlot(existing.id); focusPanel('preview'); return; }
+    if (existing) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); focusActivatedFile(); return; }
     createPreviewSlot(path);
-    focusPanel('preview');
+    focusActivatedFile();
   }
 
   function closePreviewSlot(id: number) {
