@@ -8,6 +8,8 @@ import { isInsertTabShortcut, isInsertSlotShortcut } from '$lib/utils/editor-wor
 // --- Prefix state ---
 let waitingForWindowKey: boolean = $state(false);
 let windowKeyTimeout: ReturnType<typeof setTimeout> | null = null;
+let windowChordHeld = false;
+let windowChordCycled = false;
 let waitingForGKey: boolean = $state(false);
 let gKeyTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -89,8 +91,21 @@ export function teardown() {
   if (_boundKeydown) { window.removeEventListener('keydown', _boundKeydown, true); _boundKeydown = null; }
   if (_boundKeyup) { window.removeEventListener('keyup', _boundKeyup, true); _boundKeyup = null; }
   if (_boundWheel) { window.removeEventListener('wheel', _boundWheel, { capture: true } as any); _boundWheel = null; }
-  if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
+  clearWindowPrefix();
   if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
+}
+
+function clearWindowPrefix() {
+  waitingForWindowKey = false;
+  windowChordHeld = false;
+  windowChordCycled = false;
+  layout.clearKeyPrefix();
+  if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
+}
+
+function startWindowPrefixTimeout() {
+  if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
+  windowKeyTimeout = setTimeout(clearWindowPrefix, 1000);
 }
 
 // --- Helpers ---
@@ -447,19 +462,40 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     if (l2.activeColumn === 'terminal') {
       event.stopPropagation();
     }
-    waitingForWindowKey = true;
-    layout.setKeyPrefix('^W');
-    if (windowKeyTimeout) clearTimeout(windowKeyTimeout);
-    windowKeyTimeout = setTimeout(() => { waitingForWindowKey = false; layout.clearKeyPrefix(); }, 1000);
+    if (!event.repeat) {
+      waitingForWindowKey = true;
+      windowChordHeld = true;
+      windowChordCycled = false;
+      layout.setKeyPrefix('^W');
+      if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
+    }
     return;
   }
 
   if (waitingForWindowKey) {
-    waitingForWindowKey = false;
-    layout.clearKeyPrefix();
-    if (windowKeyTimeout) { clearTimeout(windowKeyTimeout); windowKeyTimeout = null; }
-
     const code = event.code;
+    if (code === 'KeyM') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) {
+        cyclePreviewLayout();
+        if (windowChordHeld && event.ctrlKey) {
+          windowChordCycled = true;
+        } else {
+          clearWindowPrefix();
+        }
+      }
+      return;
+    }
+    const isNavigationKey = code === 'KeyH' || code === 'KeyJ' || code === 'KeyK' || code === 'KeyL';
+    if (isNavigationKey && windowChordHeld && event.ctrlKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      windowChordCycled = true;
+    } else {
+      clearWindowPrefix();
+    }
     if (deps.getPreviewEditor()?.isTocFocused?.() && code === 'KeyH') {
       event.preventDefault();
       event.stopPropagation();
@@ -492,11 +528,6 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
       if (l.activeColumn === 'terminal') {
         deps.focusPanel(l.preTerminalColumn === 'terminal' ? 'current' : l.preTerminalColumn);
       }
-      return;
-    } else if (code === 'KeyM') {
-      event.preventDefault();
-      event.stopPropagation();
-      cyclePreviewLayout();
       return;
     }
   }
@@ -599,6 +630,11 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
 // --- Keyup handler ---
 
 function handleGlobalKeyup(event: KeyboardEvent) {
+  if (windowChordHeld && (event.code === 'KeyW' || event.code === 'ControlLeft' || event.code === 'ControlRight')) {
+    windowChordHeld = false;
+    if (windowChordCycled) clearWindowPrefix();
+    else if (waitingForWindowKey) startWindowPrefixTimeout();
+  }
   if (event.code === 'AltLeft' || event.code === 'AltRight') {
     altHeld = event.getModifierState('Alt');
     if (!altHeld && switcherActive) commitSwitcher();
@@ -619,6 +655,7 @@ function handleGlobalWheel(event: WheelEvent) {
 // --- Exports for PanelLayout ---
 
 export function notifyWindowFocusLost() {
+  clearWindowPrefix();
   if (switcherActive) commitSwitcher();
   altHeld = false;
 }
