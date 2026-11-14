@@ -196,7 +196,7 @@ function handleSwitchPanel(direction: 'left' | 'right') {
   if (current !== 'parent' && current !== 'current' && current !== 'preview') return;
 
   if (direction === 'right' && current === 'preview') {
-    if (l.previewExpanded && deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
+    if (deps.getPreviewEditor()?.isTocVisible() && !deps.getPreviewEditor()?.isTocFocused()) {
       deps.getPreviewEditor().focusToc();
     }
     return;

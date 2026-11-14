@@ -782,7 +782,7 @@
     if (current !== 'parent' && current !== 'current' && current !== 'preview') return;
 
     if (direction === 'right' && current === 'preview') {
-      if ($layout.previewExpanded && previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
+      if (previewEditor?.isTocVisible() && !previewEditor?.isTocFocused()) {
         previewEditor.focusToc();
       }
       return;
