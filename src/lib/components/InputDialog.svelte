@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   let {
     visible = false,
     value = '',
@@ -16,12 +17,17 @@
   } = $props();
 
   let inputEl: HTMLInputElement | undefined = $state(undefined);
+  let modalEl: HTMLDivElement | undefined = $state(undefined);
 
   $effect(() => {
     if (visible && inputEl) {
       inputEl.focus();
       inputEl.select();
     }
+  });
+
+  $effect(() => {
+    if (visible && modalEl && inputEl) return registerModal(modalEl, inputEl);
   });
 
   function handleKeydown(event: KeyboardEvent) {
@@ -51,7 +57,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="input-overlay" onkeydown={handleOverlayKeydown}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="input-modal" onkeydown={handleKeydown}>
+    <div class="input-modal" bind:this={modalEl} role="dialog" aria-modal="true" aria-label={prompt || placeholder || 'Input'} onkeydown={handleKeydown}>
       {#if prompt}
         <div class="input-prompt">{prompt}</div>
       {/if}

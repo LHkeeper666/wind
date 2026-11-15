@@ -4,6 +4,7 @@ import { nextVisibleColumn, type ColumnName } from '$lib/utils/ratio';
 import { tick } from 'svelte';
 import type { TabState } from '$lib/stores/tabs';
 import { isInsertTabShortcut, isInsertSlotShortcut } from '$lib/utils/editor-workspace-shortcuts';
+import { focusActiveModal, hasActiveModal, isInActiveModal } from '$lib/utils/modal-focus';
 
 // --- Prefix state ---
 let waitingForWindowKey: boolean = $state(false);
@@ -226,6 +227,19 @@ function handleSwitchPanel(direction: 'left' | 'right') {
 
 async function handleGlobalKeydown(event: KeyboardEvent) {
   if (!_deps) return;
+  if (hasActiveModal()) {
+    clearWindowPrefix();
+    altHeld = false;
+    waitingForGKey = false;
+    if (gKeyTimeout) { clearTimeout(gKeyTimeout); gKeyTimeout = null; }
+    layout.clearKeyPrefix();
+    if (!isInActiveModal(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      focusActiveModal();
+    }
+    return;
+  }
   const deps = _deps;
 
   if ((event.code === 'AltLeft' || event.code === 'AltRight') && !event.repeat) {
@@ -630,6 +644,7 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
 // --- Keyup handler ---
 
 function handleGlobalKeyup(event: KeyboardEvent) {
+  if (hasActiveModal()) return;
   if (windowChordHeld && (event.code === 'KeyW' || event.code === 'ControlLeft' || event.code === 'ControlRight')) {
     windowChordHeld = false;
     if (windowChordCycled) clearWindowPrefix();

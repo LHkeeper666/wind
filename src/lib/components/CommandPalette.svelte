@@ -5,6 +5,7 @@
   import { tabs } from '$lib/stores/tabs';
   import { clipboard } from '$lib/stores/clipboard';
   import { logError } from '$lib/utils/log';
+  import { registerModal } from '$lib/utils/modal-focus';
   import { parseRatioCommand, RATIO_PRESETS } from '$lib/utils/ratio';
 
   interface Command { name: string; action: () => void }
@@ -50,6 +51,11 @@
 
   let commandQuery: string = $state('');
   let commandInput: HTMLInputElement | undefined = $state(undefined);
+  let paletteEl: HTMLDivElement | undefined = $state(undefined);
+
+  $effect(() => {
+    if (visible && paletteEl && commandInput) return registerModal(paletteEl, commandInput, 'custom');
+  });
 
   // Tab completion state
   let completions: { name: string; is_dir: boolean }[] = [];
@@ -575,7 +581,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="command-palette-overlay" onclick={() => { visible = false; resetCompletion(); actions.focusPanel(activeColumn as any); }} onkeydown={(e) => { if (e.key === 'Escape') { visible = false; resetCompletion(); actions.focusPanel(activeColumn as any); } }}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="command-palette" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+    <div class="command-palette" bind:this={paletteEl} tabindex="-1" role="dialog" aria-modal="true" aria-label="Command palette" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
       <input
         type="text"
         class="command-input"

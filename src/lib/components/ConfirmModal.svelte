@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   interface ConfirmButton {
     key: string;
     label: string;
@@ -37,7 +38,7 @@
 
   $effect(() => {
     if (visible && modalElement) {
-      modalElement.focus();
+      return registerModal(modalElement);
     }
   });
 
@@ -62,7 +63,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="confirm-overlay" onkeydown={handleKeydown}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="confirm-modal" bind:this={modalElement} tabindex="-1" onkeydown={handleKeydown}>
+    <div class="confirm-modal" bind:this={modalElement} tabindex="-1" role="dialog" aria-modal="true" aria-label={title} onkeydown={handleKeydown}>
       <div class="confirm-title">{title}</div>
       <div class="confirm-message">{fileName}</div>
       <div class="confirm-actions">

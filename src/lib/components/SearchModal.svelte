@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy, tick } from 'svelte';
   import { logError } from '$lib/utils/log';
+  import { registerModal } from '$lib/utils/modal-focus';
 
   interface SearchResult {
     name: string;
@@ -43,6 +44,10 @@
   let focusMode: 'input' | 'list' = $state('input');
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let searchGeneration: number = 0;  // 用于取消过期的搜索
+
+  $effect(() => {
+    if (visible && modalContent && searchInput) return registerModal(modalContent, searchInput, 'custom');
+  });
 
   const MAX_RESULTS = 30;  // 减少结果数量，提升性能
 
@@ -315,7 +320,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="modal-overlay" onkeydown={handleKeydown} onclick={onClose}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="modal-content" bind:this={modalContent} tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <div class="modal-content" bind:this={modalContent} tabindex="-1" role="dialog" aria-modal="true" aria-label="File search" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <input
           type="text"

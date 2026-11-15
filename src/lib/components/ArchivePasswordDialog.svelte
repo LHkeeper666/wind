@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   import {
     archivePasswordDialog,
     cancelArchivePasswordPrompt,
@@ -7,8 +8,13 @@
   } from '$lib/stores/archivePassword';
 
   let inputEl: HTMLInputElement | undefined = $state(undefined);
+  let modalEl: HTMLDivElement | undefined = $state(undefined);
   let inputValue: string = $state('');
   let wasVisible: boolean = $state(false);
+
+  $effect(() => {
+    if ($archivePasswordDialog.visible && modalEl && inputEl) return registerModal(modalEl, inputEl);
+  });
 
   $effect(() => {
     if ($archivePasswordDialog.visible && !wasVisible) {
@@ -49,7 +55,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="archive-password-overlay">
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="archive-password-modal" role="dialog" aria-modal="true" tabindex="-1" onkeydown={handleKeydown}>
+    <div class="archive-password-modal" bind:this={modalEl} role="dialog" aria-modal="true" aria-label="Archive password" tabindex="-1" onkeydown={handleKeydown}>
       <div class="archive-password-prompt">{$archivePasswordDialog.prompt}</div>
       <input
         bind:this={inputEl}

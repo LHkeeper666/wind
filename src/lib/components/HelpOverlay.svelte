@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   import { keybindingGroups } from '$lib/keybindings';
 
   let { visible = $bindable(false) }: { visible?: boolean } = $props();
@@ -6,7 +7,7 @@
 
   $effect(() => {
     if (visible && overlayEl) {
-      overlayEl.focus();
+      return registerModal(overlayEl);
     }
   });
 
@@ -19,7 +20,7 @@
 
 {#if visible}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="help-overlay" bind:this={overlayEl} tabindex="-1" onkeydown={handleKeydown} onclick={() => { visible = false; }}>
+  <div class="help-overlay" bind:this={overlayEl} tabindex="-1" role="dialog" aria-modal="true" aria-label="Keyboard help" onkeydown={handleKeydown} onclick={() => { visible = false; }}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="help-content" onclick={(e) => e.stopPropagation()}>
       <div class="help-header">

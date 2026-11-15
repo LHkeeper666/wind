@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hasActiveModal } from '$lib/utils/modal-focus';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -509,6 +510,7 @@
   }
 
   function restoreContextFocus(tabId: number, slotId: number, generation: number, panel: 'parent' | 'current' | 'preview' | 'terminal', target: NonNullable<TabState['focusTarget']>) {
+    if (hasActiveModal()) { focusRestorePending = false; return; }
     if (!isCurrentRestore({ workspaceId: tabId, slotId, generation }, { workspaceId: getTabsState().activeTabId, slotId: getActiveTab().activeSlotId, generation: tabRestoreGeneration })) return;
     if (get(layout).activeColumn !== panel) {
       focusRestorePending = false;
@@ -909,6 +911,7 @@
   }
 
   function focusPanel(panel: 'parent' | 'current' | 'preview' | 'terminal') {
+    if (hasActiveModal()) return;
     const tabId = getTabsState().activeTabId;
     const slotId = getActiveTab().activeSlotId;
     const restoreId = tabRestoreGeneration;
@@ -927,6 +930,7 @@
   }
 
   function focusPanelNow(panel: 'parent' | 'current' | 'preview' | 'terminal', opts?: { silent?: boolean }) {
+    if (hasActiveModal()) return;
     if (panel === 'terminal' && floatingTerminal) {
       const _ft0 = performance.now();
       floatingTerminal.focus();
@@ -969,6 +973,7 @@
   }
 
   function handleAppFocusIn(event: FocusEvent) {
+    if (hasActiveModal()) return;
     if (focusRestorePending || getSwitcherActive()) return;
     const target = event.target as HTMLElement;
     if (!target) return;
@@ -1005,6 +1010,7 @@
       return;
     }
     if (!windowReady) return;
+    if (hasActiveModal()) return;
     const active = document.activeElement as HTMLElement | null;
     if (active && !active.closest('.parent-panel, .current-panel, .preview-panel, .terminal-containers')
       && active.closest('[role="dialog"], .modal, .command-palette, input, textarea, [contenteditable="true"]')) return;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { formatSize } from '$lib/utils/file-types';
@@ -75,7 +76,7 @@
 
   $effect(() => {
     if (visible && overlayEl) {
-      overlayEl.focus();
+      return registerModal(overlayEl);
     }
   });
 
@@ -87,7 +88,7 @@
 
 {#if visible && info}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="file-info-overlay" bind:this={overlayEl} tabindex="-1" onkeydown={handleKeydown} onclick={onClose}>
+  <div class="file-info-overlay" bind:this={overlayEl} tabindex="-1" role="dialog" aria-modal="true" aria-label="File information" onkeydown={handleKeydown} onclick={onClose}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="file-info-panel" onclick={(e) => e.stopPropagation()}>
       <div class="info-header">{info.name}{info.is_dir ? '/' : ''}</div>

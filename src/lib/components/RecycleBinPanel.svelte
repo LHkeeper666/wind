@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { registerModal } from '$lib/utils/modal-focus';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, tick } from 'svelte';
   import ConfirmModal from './ConfirmModal.svelte';
@@ -46,7 +47,7 @@
 
   $effect(() => {
     if (showInfo && infoOverlay) {
-      infoOverlay.focus();
+      return registerModal(infoOverlay);
     }
   });
 
@@ -354,6 +355,7 @@
     onclick={() => { showInfo = false; panelElement?.focus(); }}
     onkeydown={(e) => { if (e.key === 'Escape' || e.key === 'i') { showInfo = false; panelElement?.focus(); } }}
     role="dialog"
+    aria-modal="true"
     aria-label="File Info"
     tabindex="-1"
   >
