@@ -7,6 +7,7 @@ import { JsonPreviewer } from './JsonPreviewer';
 import { ArchivePreviewer } from './ArchivePreviewer';
 import { VideoPreviewer } from './VideoPreviewer';
 import { IpynbPreviewer } from './IpynbPreviewer';
+import { RstPreviewer } from './RstPreviewer';
 
 export class PreviewRouter {
   private previewers: Previewer[] = [];
@@ -20,6 +21,7 @@ export class PreviewRouter {
       new IpynbPreviewer(),
       new JsonPreviewer(),
       new MarkdownPreviewer(),
+      new RstPreviewer(),
       new VideoPreviewer(),
       new ImagePreviewer(),
       new TextPreviewer(), // Fallback
@@ -65,6 +67,7 @@ export class PreviewRouter {
       previewer.onHeadings = headings => { if (isCurrent()) this.onHeadings?.(headings); };
       await previewer.update(content, container);
       if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
+      if (previewer instanceof RstPreviewer) previewer.afterSwap();
       return;
     }
 
@@ -97,6 +100,7 @@ export class PreviewRouter {
       if (previewer !== oldPreviewer) previewer.dispose();
       else if (previewer instanceof ImagePreviewer) previewer.afterSwap(container);
       else if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
+      else if (previewer instanceof RstPreviewer) previewer.afterSwap();
       return;
     }
 
@@ -119,6 +123,7 @@ export class PreviewRouter {
     this.currentPreviewer = previewer;
     if (previewer instanceof ImagePreviewer) previewer.afterSwap(container);
     if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
+    if (previewer instanceof RstPreviewer) previewer.afterSwap();
   }
 
   dispose(): void {
@@ -131,7 +136,7 @@ export class PreviewRouter {
 
   cleanupUnused(): void {
     for (const previewer of this.previewers) {
-      if (previewer instanceof ImagePreviewer || previewer instanceof MarkdownPreviewer) previewer.cleanupUnused();
+      if (previewer instanceof ImagePreviewer || previewer instanceof MarkdownPreviewer || previewer instanceof RstPreviewer) previewer.cleanupUnused();
     }
   }
 

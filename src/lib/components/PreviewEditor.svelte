@@ -710,9 +710,9 @@
     if (isMarkdown) return {
       available: tocState.getTocHeadings().length > 0,
       visible: tocState.getTocOpen(),
-      reason: '当前 Markdown 暂无标题大纲'
+      reason: '当前文档暂无标题大纲'
     };
-    return { available: false, visible: false, reason: '目录命令仅适用于 Markdown 和 PDF 预览' };
+    return { available: false, visible: false, reason: '目录命令仅适用于 Markdown、RST 和 PDF 预览' };
   }
 
   export function setOutlineVisible(open: boolean): boolean {
@@ -908,7 +908,7 @@
       pendingTocExpanded = new Set(cached.tocExpandedLines);
       pendingRestoreScrollTop = cached.previewScrollTop;
       const ext = path.split('.').pop()?.toLowerCase() || '';
-      isMarkdown = ext === 'md' || ext === 'markdown';
+      isMarkdown = ext === 'md' || ext === 'markdown' || ext === 'rst';
       if (!isMarkdown) { tocState.reset(); }
       else if (cached.tocHeadings && cached.tocHeadings.length > 0) {
         if (pendingTocExpanded && pendingTocExpanded.size > 0) {
@@ -987,7 +987,7 @@
     previewPane?.clearActiveSlot();
 
     const ext = path.split('.').pop()?.toLowerCase() || '';
-    isMarkdown = ext === 'md' || ext === 'markdown';
+    isMarkdown = ext === 'md' || ext === 'markdown' || ext === 'rst';
     if (!isMarkdown) { tocState.reset(); }
 
     // Archive file: read from archive
@@ -1705,6 +1705,11 @@
   :global(.preview-markdown dl) { margin: 1em 0; }
   :global(.preview-markdown dt) { font-weight: 700; margin-top: 0.5em; }
   :global(.preview-markdown dd) { margin-left: 2em; color: var(--text-secondary); }
+  :global(.preview-rst .rst-admonition) { margin: 1em 0; padding: 0.75em 1em; border-left: 3px solid var(--accent); background: var(--bg-secondary); }
+  :global(.preview-rst .rst-warning) { border-left-color: var(--warning); }
+  :global(.preview-rst .rst-admonition strong) { display: block; text-transform: capitalize; margin-bottom: 0.4em; }
+  :global(.preview-rst .rst-admonition p) { margin: 0; white-space: pre-wrap; }
+  :global(.preview-rst .rst-unsupported) { color: var(--text-secondary); border-left: 3px solid var(--border); padding: 0.7em; }
   :global(.preview-markdown .math-placeholder) { font-family: var(--font-mono); font-style: italic; color: var(--text-muted); background: var(--bg-tertiary); padding: 0.1em 0.3em; border-radius: 3px; border: 1px dashed var(--border); }
   :global(.preview-markdown .katex-display) { margin: 1em 0; overflow-x: visible; text-align: center; }
   :global(.preview-markdown eq), :global(.preview-markdown eqn) { display: inline; }
