@@ -1,179 +1,94 @@
+[English](README.md) · [简体中文](README_zh.md)
+
 # Wind
 
-Windows 平台下 Vim 风格的文件工作站，基于 Tauri 2.0（Rust 后端 + Svelte 5 前端）。
+Wind 是面向 Windows 的 Vim 风格文件工作站，基于 Tauri 2、Rust 和 Svelte 5。在一个以键盘操作为主的窗口中浏览文件、预览内容、编辑文本并使用终端。
 
-受 [Yazi](https://github.com/sachinsenal0x64/yazi) 启发，Wind 将三栏文件浏览器、嵌入式终端、代码编辑器和多格式预览融合为纯键盘驱动的工作流。
+**当前版本：**0.1.0 · **计划首发版本：**v0.1.0
 
-## 功能特性
+[前往 GitHub Releases 下载](https://github.com/LHkeeper666/wind/releases) · [从源码构建](#从源码构建)
 
-- **三栏布局** — 父目录 | 当前目录 | 预览/编辑器，支持 `:ratio X:Y:Z`（或 `X.Y.Z`，`0` 表示隐藏该列；别名 `default`、`dual`、`preview`）调节比例
-- **Vim 快捷键** — `j/k` 导航、`gg/G`、`h/l` 面板切换
-- **文件预览** — 文本（Shiki 语法高亮）、Markdown（KaTeX + Mermaid）、图片（turbojpeg）、PDF、视频（ffmpeg 缩略图 + HTTP 流播放）、JSON、压缩包（zip）、目录
-- **全屏查看** — 图片查看器（缩放/平移/旋转）、PDF 查看器（文本搜索）、视频播放器
-- **浮动终端** — 基于 ConPTY，支持 PowerShell、CMD、Git Bash，带 Shell 集成（OSC 133/OSC 7）
-- **多标签** — 使用 Alt 快捷键管理标签页
-- **代码编辑器** — CodeMirror 6 + Vim 模式，15+ 语言语法高亮，全屏编辑
-- **命令面板** — `:` 唤起，`:cd <路径>`、`:e <路径>`、`:ratio X:Y:Z`，Tab 补全路径
-- **文件搜索** — `Ctrl+P` 模糊搜索当前目录
-- **内容缩放** — `Ctrl+=`/`Ctrl+-`/`Ctrl+0` 和 `Ctrl+滚轮` 缩放面板内容
-- **主题系统** — 明暗主题切换，Gruvbox 风格设计
-- **回收站管理** — 通过 `gr` 查看、还原、永久删除和清空 Windows 回收站
-- **中文输入法** — 完整支持 IME 模式下的键盘导航
+> v0.1.0 发布后，下载文件将在 Releases 页面提供。下载前请查看发布资源和说明。
 
-## 环境要求
+## 产品截图
 
-- [Node.js](https://nodejs.org/) 18+
-- [Rust](https://www.rust-lang.org/) stable
-- [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（Windows）
+![Wind 三栏文件浏览与预览](assets/screenshots/01-file-browser.png)
 
-## 快速开始
+![Wind 全屏编辑器](assets/screenshots/02-editor.png)
 
-```bash
-# 安装依赖
+![Wind 浮动终端](assets/screenshots/03-terminal.png)
+
+
+## 核心功能
+
+- **文件导航：**父目录、当前目录、预览/编辑器三栏布局，可调整列宽比例，并可切换项目树视图。
+- **键盘操作：**Vim 风格目录导航、文件操作、搜索、标签页和预览槽；按 `F1` 查看应用内完整快捷键表。
+- **多格式预览：**文本、Markdown、JSON、图片、PDF、视频、压缩包和目录；图片与 PDF 支持全屏查看。
+- **编辑与终端：**CodeMirror 6 编辑器及 Vim 模式；基于 ConPTY 的浮动终端支持 PowerShell、CMD 和 Git Bash。
+- **文件管理：**复制、移动、重命名、移入回收站与还原、浏览和解压压缩包、本地及 FTP 传输。
+
+视频缩略图需要可用的 FFmpeg 可执行文件。视频播放使用本地 HTTP 流及内嵌 WebView 支持的编解码器；安装 FFmpeg 不代表所有视频格式都能播放。
+
+## 快速上手
+
+### 下载后使用
+
+打开 [GitHub Releases](https://github.com/LHkeeper666/wind/releases)，在 v0.1.0 发布后选择合适的 Windows 发布资源，并按照该版本的发布说明使用。运行发布版本不需要安装 Node.js 或 Rust。具体文件名和安装步骤须待发布时确认。
+
+打开 Wind 后，使用 `j`/`k` 移动，按 `Enter` 进入目录或预览文件，按 `F1` 查看完整快捷键；按 `:` 打开命令面板。
+
+### 从源码构建
+
+在 Windows 上准备带 npm 的 Node.js、稳定版 Rust 工具链，以及 Tauri 构建所需的 Windows C++ 构建工具。仓库没有规定最低工具链版本。在仓库根目录运行：
+
+```powershell
 npm install
-
-# 启动开发
+./scripts/fetch-pdfium.ps1
 npm run tauri dev
+```
 
-# 生产构建
+生成发布构建：
+
+```powershell
 npm run tauri build
 ```
 
-## 快捷键
+PDFium 脚本下载固定版本的 151.0.7891.0 Windows x64 归档、校验 SHA-256，并安装 DLL 和配套许可文件；Tauri 会将两者一起打包。FFmpeg 是用于视频缩略图的独立可执行文件，可放入 `PATH`，或通过 `WIND_FFMPEG_PATH` 指定。
 
-### 全局
-| 按键 | 功能 |
-|---|---|
-| `Ctrl+\`` | 切换浮动终端 |
-| `:` | 打开命令面板 |
-| `Ctrl+P` | 文件搜索 |
+## 常用快捷键
 
-### 目录面板
-| 按键 | 功能 |
-|---|---|
-| `j` / `k` | 向下 / 向上导航 |
-| `gg` / `G` | 跳到顶部 / 底部 |
-| `Enter` | 打开文件或进入目录 |
-| `R` | 刷新目录列表 |
-| `h` | 切换到左侧面板（父目录） |
-| `l` | 切换到右侧面板（预览） |
-| `Ctrl+W h/j/k/l` | 面板导航 |
-| `Ctrl+W m` | 循环切换三栏 → 两栏 → 单栏布局 |
+| 场景 | 按键 | 操作 |
+| --- | --- | --- |
+| 全局 | `F1` | 查看所有快捷键和命令 |
+| 全局 | `:` / `Ctrl+P` | 命令面板 / 文件搜索 |
+| 全局 | Ctrl+Backtick | 切换浮动终端 |
+| 全局 | `Ctrl+W h/l` | 聚焦左/右面板 |
+| 全局 | `Ctrl+W m` | 循环切换三栏、两栏和单栏布局 |
+| 目录 | `j/k`、`gg/G` | 移动及跳到顶部/底部 |
+| 目录 | `Enter` / `l` | 进入目录或预览文件 |
+| 目录 | `h` | 返回父目录 |
+| 目录 | `Space`、`y`、`x`、`p` | 选择、复制、剪切、粘贴 |
+| 全局 / 终端 | `Alt+N`、`Alt+U` | 新建 / 关闭标签页 |
+| 全局 | `g r` | 切换回收站视图 |
 
-### 浮动终端
-| 按键 | 功能 |
-|---|---|
-| `Ctrl+\`` | 切换终端 |
-| 支持的 `Alt` 标签操作 | 终端获得焦点时拦截，全屏终端同样适用 |
-| 其他按键 | 发送给 shell |
+命令面板支持 `:cd <path>` 切换目录、`:e <path>` 打开文件或目录、`:ratio X:Y:Z` 调整列宽；`:cd` 和 `:e` 支持 `Tab` 路径补全。
 
-### 预览 / 编辑器面板
-| 按键 | 功能 |
-|---|---|
-| `Enter` | 进入编辑模式 |
-| `e` | 打开全屏编辑器 |
-| `Escape` | 退出编辑模式 |
-| `Ctrl+S` | 保存文件 |
+## 开发构建与依赖
 
-### 全屏编辑器
-| 按键 | 功能 |
-|---|---|
-| `Escape` ×2 | 关闭编辑器 |
-| `Ctrl+S` | 保存并关闭 |
-| `Ctrl+Q` | 不保存关闭 |
+| 部分 | 主要依赖 |
+| --- | --- |
+| 桌面端 | Tauri 2、Rust、Windows ConPTY |
+| 前端 | SvelteKit、Svelte 5、TypeScript |
+| 编辑器与终端 | CodeMirror 6、Vim 扩展、xterm.js |
+| 预览 | PDFium、Shiki、markdown-it、KaTeX、Mermaid、turbojpeg |
+| 可选视频工具 | 用于生成缩略图的 FFmpeg 可执行文件 |
 
-### 多标签
-| 按键 | 功能 |
-|---|---|
-| `Alt+N` | 新建标签 |
-| `Alt+U` | 关闭标签 |
-| `Alt+R` | 显示标签重命名提示 |
-| `Alt+M` | 按最近使用顺序切换标签 |
-| `Alt+H` / `Alt+L` | 按显示顺序切换上一个 / 下一个标签 |
-| `Alt+,` / `Alt+.` | 向后 / 向前交换标签位置 |
-| `Alt+D` | 切换左侧面板独立模式 |
-| `Alt+1`–`9` | 按数字切换到对应标签 |
-
-### 内容缩放
-| 按键 | 功能 |
-|---|---|
-| `Ctrl+=` | 放大 |
-| `Ctrl+-` | 缩小 |
-| `Ctrl+0` | 重置缩放 |
-| `Ctrl+滚轮` | 放大/缩小 |
-
-### 回收站
-| 按键 | 功能 |
-|---|---|
-| `gr` | 切换回收站视图 |
-| `j` / `k` | 向下 / 向上导航 |
-| `gg` / `G` | 跳到顶部 / 底部 |
-| `Enter` | 预览文件 |
-| `Space` | 多选切换 |
-| `r` | 还原选中项 |
-| `d` | 永久删除选中项 |
-| `gd` | 清空回收站 |
-| `R` | 刷新列表 |
-| `i` | 文件信息 |
-| `h` | 退出回收站视图 |
-
-## 命令面板
-
-| 命令 | 说明 |
-|---|---|
-| `:cd <路径>` | 切换目录（`.` 当前目录、`..` 上一级、无参数为家目录） |
-| `:e <路径>` | 打开文件或目录 |
-| `:ratio X:Y:Z` | 设置三栏宽度比例（`X.Y.Z` 等价；`0` 表示隐藏该列） |
-| `:ratio default` | 恢复 `1:1:3` 三栏布局 |
-| `:ratio preview` | 仅显示预览列（`0:0:1`） |
-| `Tab` | 自动补全路径（`cd`：仅目录，`e`：文件 + 目录） |
-
-## Shell 集成
-
-终端支持 OSC 133（命令追踪）和 OSC 7（目录同步）。要启用可视化提示（退出码、当前目录），需安装 Prompt 框架：
-
-**PowerShell**（Oh My Posh）：
 ```powershell
-winget install JanDeDobbeleer.OhMyPosh
-# 添加到 $PROFILE：
-oh-my-posh init pwsh --config "$env:POSH_THEMES_PATH\paradox.omp.json" | Invoke-Expression
+npm run check
+npm test
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-**Bash / Git Bash**（Starship）：
-```bash
-curl -sS https://starship.rs/install.sh | sh
-# 添加到 ~/.bashrc：
-eval "$(starship init bash)"
-```
+## 许可证
 
-## 技术栈
-
-| 层级 | 技术 |
-|---|---|
-| 桌面框架 | Tauri 2.0 |
-| 前端 | SvelteKit + Svelte 5 (runes) + TypeScript |
-| 终端 | ConPTY + xterm.js |
-| 代码编辑器 | CodeMirror 6 + @replit/codemirror-vim |
-| PDF | PDFium + pdfium-render（切片预览与整页渲染） |
-| 图片处理 | turbojpeg + fast_image_resize |
-| Markdown | markdown-it + KaTeX + Mermaid |
-| 语法高亮 | Shiki |
-
-## 项目结构
-
-```
-src/                         # Svelte 前端
-  lib/components/            # UI 组件
-  lib/previewers/            # 文件预览系统（文本、图片、PDF、视频等）
-  lib/stores/                # 状态管理
-  routes/                    # SvelteKit 路由
-src-tauri/                   # Rust 后端
-  src/lib.rs                 # Tauri 命令（文件操作、终端、预览）
-  src/terminal/mod.rs        # ConPTY 终端实现
-  src/transfer.rs            # 本地/FTP 传输调度器
-  src/pdf/mod.rs             # PDFium 渲染、文本搜索和页面元数据
-```
-
-## License
-
-MIT
+Wind 自有代码采用 [MIT 许可证](LICENSE)，版权所有 (c) 2026 LHkeeper666。随安装包分发的 PDFium 及其依赖保留各自的许可证，见 [`src-tauri/third-party/pdfium/`](src-tauri/third-party/pdfium/)。

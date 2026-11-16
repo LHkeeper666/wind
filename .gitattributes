@@ -1,0 +1,2 @@
+src-tauri/third-party/pdfium/LICENSE -text whitespace=cr-at-eol,-blank-at-eof
+src-tauri/third-party/pdfium/licenses/** -text whitespace=cr-at-eol,-blank-at-eof
