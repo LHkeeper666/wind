@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Wind folder icon">
+  <path fill="#83a598" d="M80 84h136c16 0 27 6 38 19l25 31h153c27 0 48 21 48 48v232c0 27-21 48-48 48H80c-27 0-48-21-48-48V132c0-27 21-48 48-48Z"/>
+  <path fill="none" stroke="#282828" stroke-linecap="round" stroke-width="38" d="M62 281h143c34 0 43-8 62-36 18-27 41-37 78-37h54"/>
+  <path fill="#fabd2f" d="M390 179c0-11 12-17 21-11l54 37c9 6 9 20 0 26l-54 37c-9 6-21 0-21-11Z"/>
+  <path fill="none" stroke="#282828" stroke-linecap="round" stroke-width="23" d="M101 348h139M137 397h69"/>
+</svg>
