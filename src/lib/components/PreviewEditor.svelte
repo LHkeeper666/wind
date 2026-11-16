@@ -53,6 +53,7 @@
     onToast = (message: string) => {},
     onModifiedChange = (_tabId: number, _slotId: number, _path: string, _modified: boolean) => {},
     onToggleLayout = () => {},
+    onOpenLinkedFile = (_path: string, _newSlot: boolean) => {},
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
@@ -73,6 +74,7 @@
     onToast?: (message: string) => void;
     onModifiedChange?: (tabId: number, slotId: number, path: string, modified: boolean) => void;
     onToggleLayout?: () => void;
+    onOpenLinkedFile?: (path: string, newSlot: boolean) => void;
     batchRenameTempPath?: string | null;
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
@@ -1480,6 +1482,8 @@
       {restoreFocusTarget}
       onTocJump={(_line) => {}}
       onTocFocusChange={tocState.handleTocFocusChange}
+      {onOpenLinkedFile}
+      {onToast}
       onRenderComplete={() => {
         // Apply pending scroll ratio after async render completes.
         // pendingRestoreScrollRatio is set by the mode effect when exiting editor mode.

@@ -7,6 +7,9 @@
   import { restoreExpandedLines } from '$lib/utils/tab-cache';
   import { isDirectEditorFile, isImageFile } from '$lib/utils/file-types';
   import { logInfo } from '$lib/utils/log';
+  import { invoke } from '@tauri-apps/api/core';
+  import { openUrl } from '@tauri-apps/plugin-opener';
+  import { classifyPreviewLink, headingAnchorIds } from '$lib/utils/document-preview-links';
 
   let {
     filePath = null,
@@ -36,6 +39,8 @@
     onRenderComplete = () => {},
     onTocHeadingsChange = (_headings: TocHeading[]) => {},
     onTocActiveLineChange = (_line: number) => {},
+    onOpenLinkedFile = (_path: string, _newSlot: boolean) => {},
+    onToast = (_message: string) => {},
   }: {
     filePath: string | null;
     content: string;
@@ -64,6 +69,8 @@
     onRenderComplete?: () => void;
     onTocHeadingsChange?: (headings: TocHeading[]) => void;
     onTocActiveLineChange?: (line: number) => void;
+    onOpenLinkedFile?: (path: string, newSlot: boolean) => void;
+    onToast?: (message: string) => void;
   } = $props();
 
   let previewArea: HTMLElement | undefined = $state(undefined);
@@ -580,6 +587,48 @@
     onTocFocusChange(focused);
   }
 
+  async function handlePreviewLinkClick(event: MouseEvent) {
+    const activeSlot = getActiveSlot();
+    const target = event.target;
+    if (!activeSlot || !(target instanceof Element) || !isMarkdown || mode !== 'global-normal') return;
+    const anchor = target.closest<HTMLAnchorElement>('a[href]');
+    if (!anchor || !activeSlot.contains(anchor) || activeSlot.dataset.filePath !== filePath || !filePath) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0) return;
+
+    const sourcePath = filePath;
+    const sourceTabId = renderTabId;
+    const link = classifyPreviewLink(anchor.getAttribute('href') ?? '', sourcePath);
+    if (link.kind === 'unsupported') { onToast('不支持此链接'); return; }
+    if (link.kind === 'anchor') {
+      if (!link.id) { activeSlot.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+      let destination = Array.from(activeSlot.querySelectorAll<HTMLElement>('[id]'))
+        .find(element => element.id === link.id);
+      if (!destination) {
+        const headings = Array.from(activeSlot.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
+        const ids = headingAnchorIds(headings.map(heading => heading.textContent ?? ''));
+        destination = headings.find((heading, index) => ids[index] === link.id);
+      }
+      if (!destination) { onToast('未找到文档锚点'); return; }
+      activeSlot.scrollTo({ top: activeSlot.scrollTop + destination.getBoundingClientRect().top - activeSlot.getBoundingClientRect().top, behavior: 'smooth' });
+      return;
+    }
+    if (link.kind === 'url') {
+      try { await openUrl(link.url); }
+      catch (error) { onToast(`无法在浏览器中打开链接：${error}`); }
+      return;
+    }
+    try {
+      const info = await invoke<{ is_dir: boolean }>('get_file_info', { path: link.path });
+      if (sourcePath !== filePath || sourceTabId !== renderTabId || activeSlot !== getActiveSlot()) return;
+      if (info.is_dir) { onToast('链接目标不是文件'); return; }
+      onOpenLinkedFile(link.path, event.ctrlKey);
+    } catch {
+      if (sourcePath === filePath && sourceTabId === renderTabId) onToast('链接文件不存在或无法读取');
+    }
+  }
+
   onMount(() => {
     themeObserver = new MutationObserver(() => {
       if (previewArea && previewRouter) void previewRouter.refreshMermaidTheme(previewArea);
@@ -596,7 +645,7 @@
 </script>
 
 <div class="preview-with-toc" bind:this={previewWithToc}>
-  <div class="preview-area" bind:this={previewArea} aria-hidden="true"></div>
+  <div class="preview-area" bind:this={previewArea} aria-hidden="true" onclick={handlePreviewLinkClick} onauxclick={handlePreviewLinkClick}></div>
   {#if isMarkdown && tocHeadings.length > 0 && tocOpen}
     <TocSidebar
       bind:this={tocSidebar}

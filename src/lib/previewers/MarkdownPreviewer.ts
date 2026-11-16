@@ -10,6 +10,7 @@ import { createHighlighter, type Highlighter } from 'shiki';
 import { invoke } from '@tauri-apps/api/core';
 import 'katex/dist/katex.min.css';
 import * as yaml from 'js-yaml';
+import { linkifiedHref } from '../utils/document-preview-links';
 
 /** Hash a string for content comparison — djb2, short & fast. */
 function hashStr(s: string): string {
@@ -60,6 +61,16 @@ export class MarkdownPreviewer implements Previewer {
 			linkify: true,
 			typographer: false,
 		});
+		// linkify-it uses http:// for bare domains. Prefer HTTPS for generated links;
+		// explicit Markdown links keep their authored scheme.
+		const renderLinkOpen = this.md.renderer.rules.link_open ||
+			((tokens: any, idx: number, options: any, _env: any, self: any) => self.renderToken(tokens, idx, options));
+		this.md.renderer.rules.link_open = (tokens: any, idx: number, options: any, env: any, self: any) => {
+			const token = tokens[idx];
+			const href = token.attrGet('href');
+			if (href) token.attrSet('href', linkifiedHref(href, token.markup === 'linkify'));
+			return renderLinkOpen(tokens, idx, options, env, self);
+		};
 
 		// LaTeX math support via texmath with async KaTeX rendering.
 		const placeholderRender = (latex: string, options: { displayMode: boolean }) =>

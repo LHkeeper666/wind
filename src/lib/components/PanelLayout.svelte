@@ -1273,6 +1273,7 @@
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
+        onOpenLinkedFile={(path, newSlot) => newSlot ? handleActivateNew(path) : handleActivate(path)}
         onModifiedChange={(tabId, slotId, path, modified) => tabs.setSlotModified(tabId, slotId, path, modified)}
         onToggleLayout={togglePreviewLayout}
         batchRenameTempPath={batchRenameTempPath}
