@@ -207,7 +207,7 @@
     <button class="outline-toggle" onclick={() => tocOpen = !tocOpen} aria-label="Toggle outline">☰</button>
   {/if}
   <div class="reading-content" class:hidden={pdfVisible || recycleItem?.id === path || renderedPath !== path}>
-    <div class="selection-body" class:code-view={codeView} bind:this={body}></div>
+    <div class="selection-body" class:code-view={codeView} class:image-view={isImageFile(path)} bind:this={body}></div>
     {#if headings.length > 0 && tocOpen}
       <TocSidebar {headings} onJump={(line) => {
         const target = Array.from(body.querySelectorAll<HTMLElement>('[data-line]'))
@@ -221,6 +221,8 @@
 <style>
   .selection-preview { position: absolute; inset: 0; z-index: 5; background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; }
   .selection-body { overflow: auto; flex: 1; min-height: 0; padding: 12px; }
+  .selection-body.image-view { display: flex; flex-direction: column; overflow: hidden; }
+  .selection-body.image-view :global(.image-preview-slot) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .selection-body.code-view { overflow: hidden; padding: 0; }
   .selection-body :global(.selection-code-host) { height: 100%; }
   .selection-body :global(.cm-editor) { height: 100%; font-family: var(--font-mono); }

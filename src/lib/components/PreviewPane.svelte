@@ -5,7 +5,7 @@
   import { DirectoryPreviewer } from '$lib/previewers/DirectoryPreviewer';
   import TocSidebar from './TocSidebar.svelte';
   import { restoreExpandedLines } from '$lib/utils/tab-cache';
-  import { isDirectEditorFile } from '$lib/utils/file-types';
+  import { isDirectEditorFile, isImageFile } from '$lib/utils/file-types';
   import { logInfo } from '$lib/utils/log';
 
   let {
@@ -93,6 +93,7 @@
 
   // Per-tab persistent preview slots
   const tabSlots = new Map<number, HTMLDivElement>();
+  const renderedImageBytes = new WeakMap<HTMLDivElement, ArrayBuffer>();
 
   export function getActiveSlot(): HTMLDivElement | undefined {
     return tabSlots.get(renderTabId);
@@ -122,6 +123,8 @@
   export function clearSlot(tabId: number) {
     const slot = tabSlots.get(tabId);
     if (slot) {
+      previewRouter?.imagePreviewer().release(slot);
+      renderedImageBytes.delete(slot);
       slot.remove();
       tabSlots.delete(tabId);
       previewRouter?.cleanupUnused();
@@ -130,6 +133,8 @@
 
   export function clearAllSlots() {
     for (const slot of tabSlots.values()) {
+      previewRouter?.imagePreviewer().release(slot);
+      renderedImageBytes.delete(slot);
       slot.remove();
     }
     tabSlots.clear();
@@ -143,6 +148,8 @@
   export function clearActiveSlot() {
     const slot = tabSlots.get(renderTabId);
     if (slot) {
+      previewRouter?.imagePreviewer().release(slot);
+      renderedImageBytes.delete(slot);
       slot.innerHTML = '';
       previewRouter?.cleanupUnused();
       delete slot.dataset.rendered;
@@ -294,7 +301,8 @@
 
     // Skip if this tab's slot already holds a fresh render of the same file.
     if (slotRendered && slotPath === path
-        && slotMtime === String(snapMtime)) {
+        && (slotMtime === String(snapMtime)
+          || (isImageFile(path) && !!snapBinary && renderedImageBytes.get(slot) === snapBinary))) {
       logInfo('PreviewPane', `renderPreviewOnce SKIP (cached) path=${path.split(/[/\\]/).pop()}`);
       slot.dataset.renderVersion = String(tabVersion);
       restoreScrollAfterRender(slot, tabId, path, tabVersion);
@@ -302,7 +310,13 @@
       return;
     }
 
-    slot.innerHTML = '';
+    // Keep the old image visible while a replacement of the same file decodes.
+    // PreviewRouter swaps the prepared DOM in one step.
+    if (!isImageFile(path) || slotPath !== path) {
+      previewRouter?.imagePreviewer().release(slot);
+      renderedImageBytes.delete(slot);
+      slot.innerHTML = '';
+    }
     slot.dataset.filePath = path;
     slot.dataset.renderVersion = String(tabVersion);
 
@@ -334,6 +348,8 @@
 
     slot.dataset.rendered = 'true';
     slot.dataset.fileMtime = String(snapMtime);
+    if (isImageFile(path) && snapBinary) renderedImageBytes.set(slot, snapBinary);
+    else renderedImageBytes.delete(slot);
     logInfo('PreviewPane', `renderPreviewOnce DONE path=${path.split(/[/\\]/).pop()} slotChildren=${slot.childElementCount} scrollH=${slot.scrollHeight}`);
 
     restoreScrollAfterRender(slot, tabId, path, tabVersion);
@@ -360,6 +376,7 @@
     const slot = getOrCreateSlot(renderTabId);
     showTabSlot(renderTabId);
     if (slot.dataset.rendered === 'true' && slot.dataset.filePath === filePath) return;
+    previewRouter?.imagePreviewer().release(slot);
     slot.innerHTML = '';
     slot.dataset.filePath = filePath || '';
     slot.dataset.rendered = 'true';
@@ -392,6 +409,16 @@
   export function scrollPreview(deltaY: number, deltaX: number = 0) {
     const slot = getActiveSlot();
     if (slot) slot.scrollBy({ top: deltaY, left: deltaX, behavior: 'auto' });
+  }
+
+  export function handleImageKeydown(event: KeyboardEvent): boolean {
+    const slot = getActiveSlot();
+    return !!slot && !!previewRouter?.imagePreviewer().handleKeydown(slot, event);
+  }
+
+  export function handleImageWheel(event: WheelEvent): boolean {
+    const slot = getActiveSlot();
+    return !!slot && slot.contains(event.target as Node) && !!previewRouter?.imagePreviewer().handleWheel(slot, event);
   }
 
   export function getVisibleLine(): number {

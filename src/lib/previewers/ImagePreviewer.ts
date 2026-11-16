@@ -1,11 +1,15 @@
 import type { Previewer } from './types';
 import { logError } from '../utils/log';
+import { ImageViewport, type ImageViewportSnapshot } from './ImageViewport';
 
 const SUPPORTED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
 
 export class ImagePreviewer implements Previewer {
   private container: HTMLElement | null = null;
   private urls = new Set<string>();
+  private pendingUrls = new Set<string>();
+  private viewports = new Map<HTMLElement, ImageViewport>();
+  private savedViewports = new WeakMap<HTMLElement, { path: string; state: ImageViewportSnapshot }>();
 
   match(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -30,15 +34,14 @@ export class ImagePreviewer implements Previewer {
   }
 
   private async renderImage(url: string, container: HTMLElement): Promise<void> {
+      this.pendingUrls.add(url);
       await new Promise<void>((resolve) => {
         const img = new Image();
         img.onload = () => {
+          this.pendingUrls.delete(url);
           container.innerHTML = '';
           const wrapper = document.createElement('div');
           wrapper.className = 'preview-image';
-          img.style.width = '100%';
-          img.style.height = '100%';
-          img.style.objectFit = 'contain';
           wrapper.appendChild(img);
           container.appendChild(wrapper);
 
@@ -52,6 +55,7 @@ export class ImagePreviewer implements Previewer {
           resolve();
         };
         img.onerror = () => {
+          this.pendingUrls.delete(url);
           container.innerHTML = '<p class="preview-unsupported">Failed to load image</p>';
           URL.revokeObjectURL(url);
           this.urls.delete(url);
@@ -63,13 +67,57 @@ export class ImagePreviewer implements Previewer {
 
   afterSwap(container: HTMLElement): void {
     this.container = container;
-    this.cleanupUnused();
+    container.classList.add('image-preview-slot');
+    const wrapper = container.querySelector<HTMLElement>('.preview-image');
+    const img = wrapper?.querySelector('img');
+    const previous = this.viewports.get(container);
+    if (wrapper && img && previous?.owns(wrapper, img)) {
+      queueMicrotask(() => this.cleanupUnused());
+      return;
+    }
+    if (previous) {
+      const state = previous.snapshot();
+      if (state) this.savedViewports.set(container, { path: container.dataset.filePath || '', state });
+      previous.dispose();
+    }
+    this.viewports.delete(container);
+    if (wrapper && img) {
+      const viewport = new ImageViewport(wrapper, img, container, () => this.cleanupUnused());
+      this.viewports.set(container, viewport);
+      const saved = this.savedViewports.get(container);
+      if (saved && saved.path === container.dataset.filePath) viewport.restore(saved.state);
+      this.savedViewports.delete(container);
+      const button = container.querySelector<HTMLButtonElement>('.image-view-original');
+      if (button) button.onclick = () => void viewport.loadOriginal();
+    }
+    queueMicrotask(() => this.cleanupUnused());
+  }
+
+  handleKeydown(container: HTMLElement, event: KeyboardEvent): boolean {
+    return this.viewports.get(container)?.handleKeydown(event) ?? false;
+  }
+
+  handleWheel(container: HTMLElement, event: WheelEvent): boolean {
+    const viewport = this.viewports.get(container);
+    if (!viewport || !event.ctrlKey) return false;
+    viewport.wheel(event);
+    return true;
+  }
+
+  release(container: HTMLElement): void {
+    const viewport = this.viewports.get(container);
+    const state = viewport?.snapshot();
+    if (state) this.savedViewports.set(container, { path: container.dataset.filePath || '', state });
+    viewport?.dispose();
+    this.viewports.delete(container);
+    container.classList.remove('image-preview-slot');
+    queueMicrotask(() => this.cleanupUnused());
   }
 
   cleanupUnused(): void {
     const active = new Set(Array.from(document.querySelectorAll('img'), img => img.src));
     for (const url of this.urls) {
-      if (!active.has(url)) {
+      if (!active.has(url) && !this.pendingUrls.has(url)) {
         URL.revokeObjectURL(url);
         this.urls.delete(url);
       }
@@ -113,71 +161,15 @@ export class ImagePreviewer implements Previewer {
       const btn = document.createElement('button');
       btn.textContent = '查看原图';
       btn.className = 'image-view-original';
-      btn.onclick = () => this.loadOriginal(container);
       bar.appendChild(btn);
     }
 
     return bar;
   }
 
-  private async loadOriginal(container: HTMLElement): Promise<void> {
-    const filePath = container.dataset.filePath;
-    if (!filePath) return;
-
-    // Show loading state
-    const bar = container.querySelector('.image-info-bar');
-    if (bar) {
-      const btn = bar.querySelector('.image-view-original') as HTMLButtonElement | null;
-      if (btn) {
-        btn.textContent = '加载中...';
-        btn.disabled = true;
-      }
-    }
-
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const base64 = await invoke<string>('read_binary_file', { path: filePath });
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      const blob = new Blob([bytes.buffer]);
-      const url = URL.createObjectURL(blob);
-      this.urls.add(url);
-
-      // Replace image
-      const img = container.querySelector('img');
-      if (img) {
-        if (img.src.startsWith('blob:')) {
-          URL.revokeObjectURL(img.src);
-          this.urls.delete(img.src);
-        }
-        img.src = url;
-      }
-
-      // Update info bar — read original dimensions from dataset
-      const origW = container.dataset.thumbWidth || '';
-      const origH = container.dataset.thumbHeight || '';
-      if (bar) {
-        bar.innerHTML = '';
-        const info = document.createElement('span');
-        info.textContent = origW && origH ? `${origW}×${origH}` : '原图已加载';
-        bar.appendChild(info);
-      }
-    } catch (error) {
-      logError('ImagePreviewer', `Failed to load original image: ${error}`);
-      if (bar) {
-        const btn = bar.querySelector('.image-view-original') as HTMLButtonElement | null;
-        if (btn) {
-          btn.textContent = '加载失败';
-          btn.disabled = false;
-        }
-      }
-    }
-  }
-
   dispose(): void {
+    for (const viewport of this.viewports.values()) viewport.dispose();
+    this.viewports.clear();
     this.cleanupUnused();
     this.container = null;
   }

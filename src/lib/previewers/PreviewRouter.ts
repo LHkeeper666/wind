@@ -97,7 +97,7 @@ export class PreviewRouter {
       if (this.lastFilePath === filePath) this.lastFilePath = '';
       logInfo('PreviewRouter', `SWAP_SKIP stale path: expected=${filePath} actual=${container.dataset.filePath || '(empty)'}`);
       staging.remove();
-      if (previewer !== oldPreviewer) previewer.dispose();
+      if (previewer !== oldPreviewer && !(previewer instanceof ImagePreviewer)) previewer.dispose();
       else if (previewer instanceof ImagePreviewer) previewer.afterSwap(container);
       else if (previewer instanceof MarkdownPreviewer) previewer.afterSwap(container);
       else if (previewer instanceof RstPreviewer) previewer.afterSwap();
@@ -116,7 +116,7 @@ export class PreviewRouter {
     // Only dispose the old previewer if it's a DIFFERENT instance.
     // When oldPreviewer === previewer (same type), disposing would revoke
     // blob URLs that the new render just created (e.g. video thumbnails).
-    if (oldPreviewer && oldPreviewer !== previewer) {
+    if (oldPreviewer && oldPreviewer !== previewer && !(oldPreviewer instanceof ImagePreviewer)) {
       oldPreviewer.dispose();
     }
 
@@ -138,6 +138,10 @@ export class PreviewRouter {
     for (const previewer of this.previewers) {
       if (previewer instanceof ImagePreviewer || previewer instanceof MarkdownPreviewer || previewer instanceof RstPreviewer) previewer.cleanupUnused();
     }
+  }
+
+  imagePreviewer(): ImagePreviewer {
+    return this.previewers.find(p => p instanceof ImagePreviewer) as ImagePreviewer;
   }
 
   async refreshMermaidTheme(root: Element): Promise<void> {

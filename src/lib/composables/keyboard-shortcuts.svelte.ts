@@ -276,6 +276,9 @@ async function handleGlobalKeydown(event: KeyboardEvent) {
     && (isInsertTabShortcut(event) || isInsertSlotShortcut(event));
   const isPdfPreview = l0.activeColumn === 'preview'
     && (deps.getPreviewEditor()?.getFile?.() || '').toLowerCase().endsWith('.pdf');
+  if (event.ctrlKey && (event.code === 'Equal' || event.code === 'Minus'
+      || event.code === 'NumpadAdd' || event.code === 'NumpadSubtract')
+      && deps.getPreviewEditor()?.ownsImageZoom?.()) return;
   if (isPdfPreview && event.ctrlKey
     && (event.key === '=' || event.key === '+' || event.key === '-')) {
     return;
@@ -663,6 +666,7 @@ function handleGlobalWheel(event: WheelEvent) {
   if (!event.ctrlKey) return;
   const target = event.target as HTMLElement | null;
   if (target instanceof Element && target.closest('.pdf-preview-panel')) return;
+  if (_deps.getPreviewEditor()?.ownsImageZoom?.(event.target)) return;
   event.preventDefault();
   _deps.applyZoom(_deps.getZoomLevel() + (event.deltaY < 0 ? 0.1 : -0.1));
 }

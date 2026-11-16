@@ -23,6 +23,8 @@
     isSamePreviewIdentity,
     isValidTextCache,
     shouldReloadCachedFile,
+    establishImageCacheVersion,
+    restoredPreviewIsModified,
     textEditAction,
     textSaveRejection,
     collectExpandedLines,
@@ -396,7 +398,7 @@
       editorSelectionHead: editorView?.state.selection.main.head ?? 0,
       editorScrollTop: editorView?.scrollDOM.scrollTop ?? 0,
       previewScrollTop: previewPane?.getScrollTop() ?? 0,
-      isModified, ...pdfState.toCacheSnapshot(), fileMtime, fileMtimeNs, originalFileSize, textLoadState: textState, draftEdited,
+      isModified: isTextFile(filePath) && isModified, ...pdfState.toCacheSnapshot(), fileMtime, fileMtimeNs, originalFileSize, textLoadState: textState, draftEdited,
       ...tocState.toCacheSnapshot(() => previewPane?.getTocSelectedIndex() ?? -1),
       tocScrollTop: previewPane?.getTocScrollTop() ?? 0,
     });
@@ -495,7 +497,7 @@
     return {
       mode: current ? mode : 'global-normal',
       previewScrollTop: current ? (previewPane?.getScrollTop() ?? 0) : 0,
-      isModified: current && isModified, pdfCurrentPage: current ? pdfState.getPdfCurrentPage() : 0,
+      isModified: current && !!filePath && isTextFile(filePath) && isModified, pdfCurrentPage: current ? pdfState.getPdfCurrentPage() : 0,
       tocOpen: tocState.getTocOpen(), tocExpandedLines: collectExpandedLines(tocState.getTocHeadings()),
     };
   }
@@ -686,7 +688,7 @@
   });
 
   export function getMode(): string { return mode; }
-  export function getIsModified(): boolean { return !!filePath && isDisplaying(renderTabId, filePath) && isModified; }
+  export function getIsModified(): boolean { return !!filePath && isTextFile(filePath) && isDisplaying(renderTabId, filePath) && isModified; }
   export function getIsModifiedFor(tabId: number, path: string | null): boolean {
     return !!path && tabId === renderTabId && path === filePath && getIsModified();
   }
@@ -893,7 +895,11 @@
         generation: gen,
         content,
       };
-      isModified = content !== savedContent;
+      isModified = restoredPreviewIsModified(cached, isTextFile(path));
+      if (!isTextFile(path)) {
+        cached.isModified = false;
+        onModifiedChange(previewTabId ?? currentTabId, slotId, path, false);
+      }
       pdfState.fromCacheSnapshot(cached);
       pdfReadyPath = isPdfFile(path) ? path : null;
       if (isPdfFile(path) && pdfState.getPdfPageDimensions().length === 0) {
@@ -934,6 +940,13 @@
       invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path })
         .then(async meta => {
           if (gen !== loadGeneration || loadTabId !== renderTabId || filePath !== path) return;
+          // Older image cache entries may have been saved before their metadata
+          // arrived. Treat the first observed version as their baseline.
+          if (isImageFile(path) && establishImageCacheVersion(cached, meta)) {
+            fileWatcher.setFileMtime(meta.modified);
+            fileMtimeNs = meta.modified_ns;
+            originalFileSize = meta.size;
+          }
           const shouldReload = shouldReloadCachedFile(cached, meta, isTextFile(path));
           if (isTextFile(path)) logInfo('file-load', `CACHE_METADATA tabId=${loadTabId} gen=${gen} path=${path} diskSize=${meta.size} diskVersion=${meta.modified_ns} cachedSize=${cached.originalFileSize} cachedVersion=${cached.fileMtimeNs ?? 'unknown'} reload=${shouldReload}`);
           if (cached.isModified && isTextFile(path)
@@ -1064,8 +1077,20 @@
       const result = await loadImage(ctx, checkGen);
       if ('aborted' in result) return;
       content = result.content; binaryContent = result.binaryContent; thumbnailMeta = result.thumbnailMeta;
+      originalFileSize = result.thumbnailMeta?.originalSize ?? 0;
       mode = 'global-normal'; renderTrigger++;
       loadedPreviewIdentity = { tabId: loadTabId, path, generation: gen };
+      invoke<{ size: number; modified: number; modified_ns: string }>('get_file_metadata', { path })
+        .then(meta => {
+          if (gen === loadGeneration && loadTabId === renderTabId && filePath === path) {
+            fileWatcher.setFileMtime(meta.modified);
+            fileMtimeNs = meta.modified_ns;
+            originalFileSize = meta.size;
+          }
+          const entry = tabCache.get(loadTabId);
+          if (entry?.filePath === path) establishImageCacheVersion(entry, meta);
+        })
+        .catch(e => logError('PreviewEditor', `get_file_metadata failed: ${e}`));
       return;
     }
 
@@ -1177,6 +1202,11 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (mode !== 'global-normal') return;
+    if (filePath && isImageFile(filePath) && activeColumn === 'preview' && previewPane?.handleImageKeydown(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     // PDF mode: let PdfPreviewPanel handle all non-modifier keys
     if (filePath && isPdfFile(filePath) && !event.ctrlKey && !event.altKey && !event.metaKey) return;
     if (event.code === 'KeyE' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -1208,6 +1238,22 @@
     else if (event.code === 'KeyG' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const ggSlot = previewPane?.getActiveSlot(); if (ggSlot) ggSlot.scrollTop = 0; }
     else if (event.code === 'KeyG' && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); const gSlot = previewPane?.getActiveSlot(); if (gSlot) gSlot.scrollTop = gSlot.scrollHeight; }
     else if (event.ctrlKey && event.code === 'KeyS') { event.preventDefault(); saveFile(); }
+  }
+
+  function handleWheel(event: WheelEvent) {
+    if (!ownsImageZoom(event.target)) return;
+    if (previewPane?.handleImageWheel(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  export function ownsImageZoom(target?: EventTarget | null): boolean {
+    if (mode !== 'global-normal' || activeColumn !== 'preview' || !filePath || !isImageFile(filePath)
+        || !panelElement?.contains(document.activeElement)) return false;
+    const slot = previewPane?.getActiveSlot();
+    return !!slot && slot.classList.contains('image-preview-slot')
+      && (target === undefined || (target instanceof Node && slot.contains(target)));
   }
 
   export async function saveCurrentContent(entry = 'editor'): Promise<boolean> {
@@ -1305,6 +1351,7 @@
   class="preview-editor"
   bind:this={panelElement}
   onkeydown={handleKeydown}
+  onwheel={handleWheel}
   onfocus={handlePanelFocus}
   role="region"
   aria-label="Preview/Editor"
@@ -1643,7 +1690,9 @@
   :global(.hex-dump) { margin: 0; line-height: 1.5; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
   :global(.hex-dump code) { font-family: var(--font-mono); font-size: 12px; }
 
-  :global(.preview-image) { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; }
+  :global(.preview-image) { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  :global(.tab-preview-slot.image-preview-slot) { display: flex; flex-direction: column; overflow: hidden; }
+  :global(.preview-image img) { position: absolute; max-width: none; max-height: none; user-select: none; -webkit-user-drag: none; }
   :global(.image-info-bar) { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background-color: var(--bg-secondary); border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; flex-shrink: 0; }
   :global(.image-view-original) { background: none; border: 1px solid var(--border); color: var(--text-primary); padding: 1px 6px; cursor: pointer; font-size: 11px; font-family: var(--font-mono); }
   :global(.image-view-original:hover) { background-color: var(--bg-hover); }

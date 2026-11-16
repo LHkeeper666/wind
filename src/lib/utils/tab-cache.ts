@@ -60,6 +60,18 @@ export function shouldReloadCachedFile(entry: TabEditorCache, meta: { size: numb
     || (!!entry.fileMtimeNs && !!meta.modified_ns && meta.modified_ns !== entry.fileMtimeNs);
 }
 
+export function establishImageCacheVersion(entry: TabEditorCache, meta: { size: number; modified: number; modified_ns?: string }): boolean {
+  if (!entry.binaryContent || entry.fileMtime !== 0) return false;
+  entry.fileMtime = meta.modified;
+  entry.fileMtimeNs = meta.modified_ns ?? '';
+  entry.originalFileSize = meta.size;
+  return true;
+}
+
+export function restoredPreviewIsModified(entry: TabEditorCache, isText: boolean): boolean {
+  return isText && entry.content !== entry.savedContent;
+}
+
 export function isSamePreviewIdentity(
   current: { tabId: number; path: string | null },
   target: { tabId: number; path: string | null },

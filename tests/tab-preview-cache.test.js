@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isSamePreviewIdentity, isValidTextCache, shouldReloadCachedFile, TabCacheManager, textEditAction, textSaveRejection } from '../src/lib/utils/tab-cache.ts';
+import { isSamePreviewIdentity, isValidTextCache, shouldReloadCachedFile, establishImageCacheVersion, restoredPreviewIsModified, TabCacheManager, textEditAction, textSaveRejection } from '../src/lib/utils/tab-cache.ts';
 import { previewSlotKey } from '../src/lib/utils/preview-slot-key.ts';
 
 const identity = (workspaceId, slotId, path) => ({ tabId: previewSlotKey(workspaceId, slotId), path });
@@ -58,6 +58,23 @@ test('damaged empty text reloads even with unchanged mtime, without reloading PD
   assert.equal(shouldReloadCachedFile(empty, { size: 4, modified: 123 }, false), false);
   assert.equal(shouldReloadCachedFile(cached({ content: '', isModified: true, fileMtime: 123 }), { size: 4, modified: 123 }, true), false);
   assert.equal(shouldReloadCachedFile(cached({ content: '', originalFileSize: 0, fileMtime: 123 }), { size: 0, modified: 123 }, true), false);
+});
+
+test('first image metadata becomes the cache baseline without a second load', () => {
+  const entry = cached({ filePath: 'photo.jpg', binaryContent: new ArrayBuffer(4), fileMtime: 0 });
+  const meta = { size: 4096, modified: 123, modified_ns: '123000000001' };
+  assert.equal(shouldReloadCachedFile(entry, meta, false), true);
+  assert.equal(establishImageCacheVersion(entry, meta), true);
+  assert.equal(shouldReloadCachedFile(entry, meta, false), false);
+  assert.equal(entry.originalFileSize, 4096);
+  assert.equal(establishImageCacheVersion(entry, { ...meta, modified: 124 }), false);
+  assert.equal(shouldReloadCachedFile(entry, { ...meta, modified: 124 }, false), true);
+});
+
+test('binary image placeholder never becomes a modified draft on restore', () => {
+  const image = cached({ filePath: 'photo.jpg', content: '[Binary Image]', savedContent: '', binaryContent: new ArrayBuffer(4) });
+  assert.equal(restoredPreviewIsModified(image, false), false);
+  assert.equal(restoredPreviewIsModified(cached({ content: 'edited', savedContent: 'body' }), true), true);
 });
 
 test('same-second changes invalidate cached text through nanosecond version', () => {
