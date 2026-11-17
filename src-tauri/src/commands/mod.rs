@@ -8,6 +8,7 @@ pub mod ftp_cmd;
 pub mod misc;
 pub mod recycle;
 pub mod search;
+pub mod selection_stats;
 pub mod terminal_cmd;
 pub mod transfer_cmd;
 pub mod watchers;

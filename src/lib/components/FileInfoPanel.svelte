@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { formatSize } from '$lib/utils/file-types';
+  import type { SelectionStatsProgress, SelectionStatsRoot } from '$lib/types/selection-stats';
 
   interface FileInfo {
     name: string;
@@ -21,10 +22,12 @@
   let {
     visible = false,
     info = null as FileInfo | null,
+    selectionRoots = null as SelectionStatsRoot[] | null,
     onClose = () => {},
   }: {
     visible?: boolean;
     info?: FileInfo | null;
+    selectionRoots?: SelectionStatsRoot[] | null;
     onClose?: () => void;
   } = $props();
 
@@ -32,6 +35,54 @@
   let folderSize: number = $state(0);
   let folderFileCount: number = $state(0);
   let isCalculating: boolean = $state(false);
+  let selectionProgress: SelectionStatsProgress | null = $state(null);
+  let selectionCalculating = $state(false);
+
+  $effect(() => {
+    const roots = selectionRoots;
+    if (!visible || !roots?.length) return;
+    const requestId = crypto.randomUUID();
+    let active = true;
+    let started = false;
+    let unlistenTick: UnlistenFn | undefined;
+    let unlistenDone: UnlistenFn | undefined;
+    selectionProgress = {
+      request_id: requestId, selected_items: roots.length, files: 0, dirs: 0,
+      total_bytes: 0, incomplete: false, cancelled: false,
+    };
+    selectionCalculating = true;
+    void (async () => {
+      try {
+        unlistenTick = await listen<SelectionStatsProgress>('selection-stats-tick', event => {
+          if (active && event.payload.request_id === requestId) selectionProgress = event.payload;
+        });
+        if (!active) { unlistenTick(); return; }
+        unlistenDone = await listen<SelectionStatsProgress>('selection-stats-done', event => {
+          if (active && event.payload.request_id === requestId) {
+            selectionProgress = event.payload;
+            selectionCalculating = false;
+          }
+        });
+        if (!active) { unlistenTick(); unlistenDone(); return; }
+        started = true;
+        await invoke('calculate_selection_stats', { requestId, roots });
+      } catch (error) {
+        if (active) {
+          selectionCalculating = false;
+          selectionProgress = { request_id: requestId, selected_items: roots.length,
+            files: 0, dirs: 0, total_bytes: 0, incomplete: true, cancelled: false };
+          console.error('Selection statistics failed:', error);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+      if (started) void invoke('cancel_selection_stats', { requestId });
+      unlistenTick?.();
+      unlistenDone?.();
+      selectionCalculating = false;
+    };
+  });
 
   $effect(() => {
     if (visible && info?.is_dir) {
@@ -86,11 +137,22 @@
   }
 </script>
 
-{#if visible && info}
+{#if visible && (info || selectionRoots)}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="file-info-overlay" bind:this={overlayEl} tabindex="-1" role="dialog" aria-modal="true" aria-label="File information" onkeydown={handleKeydown} onclick={onClose}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="file-info-panel" onclick={(e) => e.stopPropagation()}>
+      {#if selectionRoots}
+      <div class="info-header">Selected items</div>
+      <div class="info-rows">
+        <div class="info-row"><span class="info-label">Selected</span><span class="info-value">{selectionProgress?.selected_items ?? selectionRoots.length}</span></div>
+        <div class="info-row"><span class="info-label">Files</span><span class="info-value">{selectionProgress?.files ?? 0}</span></div>
+        <div class="info-row"><span class="info-label">Directories</span><span class="info-value">{selectionProgress?.dirs ?? 0}</span></div>
+        <div class="info-row"><span class="info-label">Size</span><span class="info-value">{formatSize(selectionProgress?.total_bytes ?? 0)}</span></div>
+        {#if selectionCalculating}<div class="info-row"><span class="info-label">Status</span><span class="info-value">Calculating…</span></div>{/if}
+        {#if selectionProgress?.incomplete}<div class="info-row"><span class="info-label">Status</span><span class="info-value">Incomplete: some items could not be read</span></div>{/if}
+      </div>
+      {:else if info}
       <div class="info-header">{info.name}{info.is_dir ? '/' : ''}</div>
       <div class="info-rows">
         <div class="info-row">
@@ -153,6 +215,7 @@
           </span>
         </div>
       </div>
+      {/if}
       <div class="info-hint">Press any key to close</div>
     </div>
   </div>

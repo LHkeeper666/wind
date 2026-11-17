@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { FileEntry } from '$lib/types/file-explorer';
+import type { SelectionStatsRoot } from '$lib/types/selection-stats';
 
 interface ArchiveState {
   archivePath: string;
@@ -21,6 +22,7 @@ interface DialogDeps {
   onBatchRenameStart: (files: { path: string; name: string }[]) => void;
   refocusPanel: () => void;
   collectEntriesToOperate: () => { path: string; name: string }[];
+  getExplicitSelection: () => SelectionStatsRoot[];
   setFilterPattern: (pattern: string) => void;
   setFilterMode: (mode: 'prefix' | 'wildcard') => void;
 }
@@ -37,6 +39,7 @@ export interface DirectoryDialogsAPI {
   // File info state
   getShowFileInfo: () => boolean;
   getFileInfo: () => any;
+  getSelectionStatsRoots: () => SelectionStatsRoot[] | null;
 
   // Actions
   startRename: () => void;
@@ -69,6 +72,7 @@ export function createDirectoryDialogs(deps: DialogDeps): DirectoryDialogsAPI {
   // File info state
   let showFileInfo: boolean = $state(false);
   let fileInfo: any = $state(null);
+  let selectionStatsRoots: SelectionStatsRoot[] | null = $state(null);
 
   function startRename() {
     const selectedIndex = deps.getSelectedIndex();
@@ -270,6 +274,13 @@ export function createDirectoryDialogs(deps: DialogDeps): DirectoryDialogsAPI {
     if (showFileInfo) {
       showFileInfo = false;
       fileInfo = null;
+      selectionStatsRoots = null;
+      return;
+    }
+    const selected = deps.getExplicitSelection();
+    if (!deps.isArchiveMode() && selected.length > 0 && selected.every(item => !item.path.startsWith('ftp://'))) {
+      selectionStatsRoots = selected;
+      showFileInfo = true;
       return;
     }
     const selectedIndex = deps.getSelectedIndex();
@@ -288,6 +299,7 @@ export function createDirectoryDialogs(deps: DialogDeps): DirectoryDialogsAPI {
   function closeFileInfo() {
     showFileInfo = false;
     fileInfo = null;
+    selectionStatsRoots = null;
     deps.refocusPanel();
   }
 
@@ -300,6 +312,7 @@ export function createDirectoryDialogs(deps: DialogDeps): DirectoryDialogsAPI {
     getDeleteIsPermanent: () => deleteIsPermanent,
     getShowFileInfo: () => showFileInfo,
     getFileInfo: () => fileInfo,
+    getSelectionStatsRoots: () => selectionStatsRoots,
 
     startRename,
     startCreateFile,

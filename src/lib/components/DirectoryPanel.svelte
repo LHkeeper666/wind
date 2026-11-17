@@ -160,6 +160,9 @@
     onBatchRenameStart,
     refocusPanel,
     collectEntriesToOperate,
+    getExplicitSelection: () => checkHasSelection()
+      ? getEntriesToOperate(selectionState, files, displayFiles, selectedIndex, projectTree.getProjectMode(), projectTree.findTreeNode)
+      : [],
     setFilterPattern: sortFilter.setFilterPattern,
     setFilterMode: sortFilter.setFilterMode,
   });
@@ -1394,6 +1397,7 @@
   <FileInfoPanel
     visible={dialogs.getShowFileInfo()}
     info={dialogs.getFileInfo()}
+    selectionRoots={dialogs.getSelectionStatsRoots()}
     onClose={dialogs.closeFileInfo}
   />
 

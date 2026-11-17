@@ -258,6 +258,8 @@ pub fn run() {
             commands::file_info::get_file_info,
             commands::directory::calculate_folder_size,
             commands::directory::cancel_folder_size,
+            commands::selection_stats::calculate_selection_stats,
+            commands::selection_stats::cancel_selection_stats,
             commands::file_io::open_file,
             commands::file_io::open_with_dialog,
             commands::file_io::read_file,
