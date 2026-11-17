@@ -39,7 +39,9 @@
     onRenderComplete = () => {},
     onTocHeadingsChange = (_headings: TocHeading[]) => {},
     onTocActiveLineChange = (_line: number) => {},
-    onOpenLinkedFile = (_path: string, _newSlot: boolean) => {},
+    onOpenLinkedFile = (_path: string, _newSlot: boolean, _fragment?: string) => {},
+    pendingLinkedFragment = null as { tabId: number; path: string; fragment: string; requestId: number } | null,
+    onLinkedFragmentHandled = (_requestId: number) => {},
     onToast = (_message: string) => {},
   }: {
     filePath: string | null;
@@ -69,7 +71,9 @@
     onRenderComplete?: () => void;
     onTocHeadingsChange?: (headings: TocHeading[]) => void;
     onTocActiveLineChange?: (line: number) => void;
-    onOpenLinkedFile?: (path: string, newSlot: boolean) => void;
+    onOpenLinkedFile?: (path: string, newSlot: boolean, fragment?: string) => void;
+    pendingLinkedFragment?: { tabId: number; path: string; fragment: string; requestId: number } | null;
+    onLinkedFragmentHandled?: (requestId: number) => void;
     onToast?: (message: string) => void;
   } = $props();
 
@@ -247,7 +251,7 @@
       void renderDirectoryPreview();
     } else if (codeFileDirectEdit && content) {
       renderSimpleCodePreview();
-    } else if (content || binaryContent) {
+    } else if (content || binaryContent || (isMarkdown && renderReady)) {
       // Guard: if filePath changed but binaryContent is still from the previous file,
       // skip render to prevent stale image/video flash.
       // binaryContent will be cleared by the load effect and re-rendered when new data arrives.
@@ -313,6 +317,7 @@
       logInfo('PreviewPane', `renderPreviewOnce SKIP (cached) path=${path.split(/[/\\]/).pop()}`);
       slot.dataset.renderVersion = String(tabVersion);
       restoreScrollAfterRender(slot, tabId, path, tabVersion);
+      scheduleLinkedFragment();
       if (isMarkdown) { requestAnimationFrame(() => setupScrollObserver()); }
       return;
     }
@@ -366,6 +371,7 @@
     }
     if (isMarkdown) { setupScrollObserver(); }
     onRenderComplete();
+    scheduleLinkedFragment();
   }
 
   function restoreScrollAfterRender(slot: HTMLDivElement, tabId: number, path: string, version: number) {
@@ -587,6 +593,43 @@
     onTocFocusChange(focused);
   }
 
+  function scrollToFragment(slot: HTMLDivElement, fragment: string): boolean {
+    if (!fragment) { slot.scrollTo({ top: 0, behavior: 'smooth' }); return true; }
+    let destination = Array.from(slot.querySelectorAll<HTMLElement>('[id]'))
+      .find(element => element.id === fragment);
+    if (!destination) {
+      const headings = Array.from(slot.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
+      const ids = headingAnchorIds(headings.map(heading => heading.textContent ?? ''));
+      destination = headings.find((heading, index) => ids[index] === fragment);
+    }
+    if (!destination) return false;
+    slot.scrollTo({ top: slot.scrollTop + destination.getBoundingClientRect().top - slot.getBoundingClientRect().top, behavior: 'smooth' });
+    return true;
+  }
+
+  function scheduleLinkedFragment() {
+    const pending = pendingLinkedFragment;
+    if (!pending || pending.tabId !== renderTabId || pending.path !== filePath || !renderReady) return;
+    const targetIsMarkdown = /\.(?:md|markdown)$/i.test(pending.path);
+    const slot = getActiveSlot();
+    if (targetIsMarkdown && (!slot || slot.dataset.filePath !== filePath || slot.dataset.rendered !== 'true')) return;
+    requestAnimationFrame(() => {
+      if (pendingLinkedFragment?.requestId !== pending.requestId || renderTabId !== pending.tabId || filePath !== pending.path) return;
+      const target = getActiveSlot();
+      if (!targetIsMarkdown) onToast('无法在该文件中定位锚点');
+      else if (!target || target.dataset.filePath !== pending.path || !scrollToFragment(target, pending.fragment)) onToast('未找到文档锚点');
+      onLinkedFragmentHandled(pending.requestId);
+    });
+  }
+
+  $effect(() => {
+    pendingLinkedFragment;
+    renderReady;
+    renderTabId;
+    filePath;
+    scheduleLinkedFragment();
+  });
+
   async function handlePreviewLinkClick(event: MouseEvent) {
     const activeSlot = getActiveSlot();
     const target = event.target;
@@ -602,16 +645,7 @@
     const link = classifyPreviewLink(anchor.getAttribute('href') ?? '', sourcePath);
     if (link.kind === 'unsupported') { onToast('不支持此链接'); return; }
     if (link.kind === 'anchor') {
-      if (!link.id) { activeSlot.scrollTo({ top: 0, behavior: 'smooth' }); return; }
-      let destination = Array.from(activeSlot.querySelectorAll<HTMLElement>('[id]'))
-        .find(element => element.id === link.id);
-      if (!destination) {
-        const headings = Array.from(activeSlot.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
-        const ids = headingAnchorIds(headings.map(heading => heading.textContent ?? ''));
-        destination = headings.find((heading, index) => ids[index] === link.id);
-      }
-      if (!destination) { onToast('未找到文档锚点'); return; }
-      activeSlot.scrollTo({ top: activeSlot.scrollTop + destination.getBoundingClientRect().top - activeSlot.getBoundingClientRect().top, behavior: 'smooth' });
+      if (!scrollToFragment(activeSlot, link.id)) onToast('未找到文档锚点');
       return;
     }
     if (link.kind === 'url') {
@@ -623,7 +657,7 @@
       const info = await invoke<{ is_dir: boolean }>('get_file_info', { path: link.path });
       if (sourcePath !== filePath || sourceTabId !== renderTabId || activeSlot !== getActiveSlot()) return;
       if (info.is_dir) { onToast('链接目标不是文件'); return; }
-      onOpenLinkedFile(link.path, event.ctrlKey);
+      onOpenLinkedFile(link.path, event.ctrlKey, link.fragment);
     } catch {
       if (sourcePath === filePath && sourceTabId === renderTabId) onToast('链接文件不存在或无法读取');
     }

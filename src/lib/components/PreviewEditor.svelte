@@ -53,7 +53,9 @@
     onToast = (message: string) => {},
     onModifiedChange = (_tabId: number, _slotId: number, _path: string, _modified: boolean) => {},
     onToggleLayout = () => {},
-    onOpenLinkedFile = (_path: string, _newSlot: boolean) => {},
+    onOpenLinkedFile = (_path: string, _newSlot: boolean, _fragment?: string) => {},
+    pendingLinkedFragment = null as { tabId: number; path: string; fragment: string; requestId: number } | null,
+    onLinkedFragmentHandled = (_requestId: number) => {},
     batchRenameTempPath = null as string | null,
     onBatchRenameSave = (_content: string) => {},
     onBatchRenameCancel = () => {},
@@ -74,7 +76,9 @@
     onToast?: (message: string) => void;
     onModifiedChange?: (tabId: number, slotId: number, path: string, modified: boolean) => void;
     onToggleLayout?: () => void;
-    onOpenLinkedFile?: (path: string, newSlot: boolean) => void;
+    onOpenLinkedFile?: (path: string, newSlot: boolean, fragment?: string) => void;
+    pendingLinkedFragment?: { tabId: number; path: string; fragment: string; requestId: number } | null;
+    onLinkedFragmentHandled?: (requestId: number) => void;
     batchRenameTempPath?: string | null;
     onBatchRenameSave?: (content: string) => void;
     onBatchRenameCancel?: () => void;
@@ -1483,6 +1487,8 @@
       onTocJump={(_line) => {}}
       onTocFocusChange={tocState.handleTocFocusChange}
       {onOpenLinkedFile}
+      {pendingLinkedFragment}
+      {onLinkedFragmentHandled}
       {onToast}
       onRenderComplete={() => {
         // Apply pending scroll ratio after async render completes.

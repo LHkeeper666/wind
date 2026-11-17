@@ -93,6 +93,15 @@
   // Keep preview tabs compact above 100% while their text follows panel zoom.
   let previewSlotScale = $derived(zoomLevel > 1 ? (1 + (zoomLevel - 1) * 0.5) / zoomLevel : 1);
   let previewEditor: PreviewEditor | undefined = $state(undefined);
+  let pendingLinkedFragment: { tabId: number; path: string; fragment: string; requestId: number } | null = $state(null);
+  let linkedFragmentRequestId = 0;
+
+  function queueLinkedFragment(path: string, fragment?: string) {
+    pendingLinkedFragment = fragment === undefined ? null : {
+      tabId: previewSlotKey(getActiveTab().id, getActiveTab().activeSlotId),
+      path, fragment, requestId: ++linkedFragmentRequestId,
+    };
+  }
   let fullscreenEditor: FullscreenEditor | undefined = $state(undefined);
   let floatingTerminal: FloatingTerminal | undefined = $state(undefined);
   let parentDirectoryPanel: DirectoryPanel | undefined = $state(undefined);
@@ -649,13 +658,14 @@
     tabs.selectEntry(filePath, isDir);
   }
 
-  function handleActivate(filePath: string) {
+  function handleActivate(filePath: string, fragment?: string) {
+    pendingLinkedFragment = null;
     const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === filePath.toLowerCase());
-    if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); focusActivatedFile(); return; }
-    if (existing) { tabs.hideSelectionPreview(); focusActivatedFile(); return; }
+    if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); queueLinkedFragment(filePath, fragment); focusActivatedFile(); return; }
+    if (existing) { tabs.hideSelectionPreview(); queueLinkedFragment(filePath, fragment); focusActivatedFile(); return; }
     // Check for unsaved changes before switching files
     if (previewEditor?.getIsModified()) {
-      pendingSlotAction = { kind: 'replace', slotId: getActiveTab().activeSlotId, path: filePath };
+      pendingSlotAction = { kind: 'replace', slotId: getActiveTab().activeSlotId, path: filePath, fragment };
       setShowUnsavedConfirm(true);
       return;
     }
@@ -663,6 +673,7 @@
     selectedFile = filePath;
     selectedFileIsDir = false;
     tabs.openInActiveSlot(filePath);
+    queueLinkedFragment(filePath, fragment);
     focusActivatedFile();
   }
 
@@ -694,6 +705,7 @@
   }
 
   function switchPreviewSlot(id: number, fromKeyboard = false, keepDirectoryFocus = false) {
+    pendingLinkedFragment = null;
     const keepCurrentFocus = fromKeyboard && $layout.activeColumn === 'current';
     const keepFocus = keepCurrentFocus || keepDirectoryFocus;
     if (id !== getActiveTab().activeSlotId) savePreviewSlot();
@@ -716,10 +728,12 @@
     restorePreviewSlot(!path || isPreviewVisible());
   }
 
-  function handleActivateNew(path: string) {
+  function handleActivateNew(path: string, fragment?: string) {
+    pendingLinkedFragment = null;
     const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === path.toLowerCase());
-    if (existing) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); focusActivatedFile(); return; }
+    if (existing) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); queueLinkedFragment(path, fragment); focusActivatedFile(); return; }
     createPreviewSlot(path);
+    queueLinkedFragment(path, fragment);
     focusActivatedFile();
   }
 
@@ -734,7 +748,7 @@
     finishClosePreviewSlot(id);
   }
 
-  let pendingSlotAction: { kind: 'replace' | 'close'; slotId: number; path?: string } | null = $state(null);
+  let pendingSlotAction: { kind: 'replace' | 'close'; slotId: number; path?: string; fragment?: string } | null = $state(null);
 
   function finishClosePreviewSlot(id: number) {
     const tab = getActiveTab();
@@ -757,12 +771,13 @@
       const snapshot = previewEditor?.getEditorStateSnapshot();
       if (snapshot) tabs.saveActiveSlot({ editorMode: snapshot.mode, isModified: false, previewScrollTop: snapshot.previewScrollTop, pdfCurrentPage: snapshot.pdfCurrentPage, tocOpen: snapshot.tocOpen });
       previewEditor?.clearTabCache(key);
-      handleActivate(action.path);
+      handleActivate(action.path, action.fragment);
     }
   }
 
   function cancelUnsavedSlot() {
     pendingSlotAction = null;
+    pendingLinkedFragment = null;
     setShowUnsavedConfirm(false);
   }
 
@@ -1273,7 +1288,9 @@
         onFullscreen={handleFullscreenEditor}
         onSwitchPanel={handleSwitchPanel}
         onToast={showToast}
-        onOpenLinkedFile={(path, newSlot) => newSlot ? handleActivateNew(path) : handleActivate(path)}
+        onOpenLinkedFile={(path, newSlot, fragment) => newSlot ? handleActivateNew(path, fragment) : handleActivate(path, fragment)}
+        {pendingLinkedFragment}
+        onLinkedFragmentHandled={(requestId) => { if (pendingLinkedFragment?.requestId === requestId) pendingLinkedFragment = null; }}
         onModifiedChange={(tabId, slotId, path, modified) => tabs.setSlotModified(tabId, slotId, path, modified)}
         onToggleLayout={togglePreviewLayout}
         batchRenameTempPath={batchRenameTempPath}

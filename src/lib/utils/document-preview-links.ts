@@ -1,7 +1,7 @@
 export type PreviewLink =
   | { kind: 'anchor'; id: string }
   | { kind: 'url'; url: string }
-  | { kind: 'file'; path: string }
+  | { kind: 'file'; path: string; fragment?: string }
   | { kind: 'unsupported' };
 
 export function headingAnchorId(text: string): string {
@@ -62,17 +62,21 @@ export function classifyPreviewLink(href: string, sourcePath: string): PreviewLi
         ? `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`
         : pathname.replace(/^\/(?=[A-Za-z]:)/, '');
       const normalized = normalizeWindowsPath(path);
-      return normalized ? { kind: 'file', path: normalized } : { kind: 'unsupported' };
+      const hashIndex = raw.indexOf('#');
+      const fragment = hashIndex < 0 ? undefined : decodeURIComponent(raw.slice(hashIndex + 1));
+      return normalized ? { kind: 'file', path: normalized, ...(fragment === undefined ? {} : { fragment }) } : { kind: 'unsupported' };
     } catch { return { kind: 'unsupported' }; }
   }
   if (!/^[A-Za-z]:[\\/]/.test(raw) && /^(?:[A-Za-z][\w+.-]*:|\/\/)/.test(raw)) return { kind: 'unsupported' };
   try {
-    const pathPart = decodeURIComponent(raw.split(/[?#]/, 1)[0]);
+    const hashIndex = raw.indexOf('#');
+    const pathPart = decodeURIComponent(raw.slice(0, hashIndex < 0 ? undefined : hashIndex).split('?', 1)[0]);
     if (!pathPart || pathPart.includes('\0')) return { kind: 'unsupported' };
     const base = sourcePath.replace(/[\\/][^\\/]*$/, '');
     const path = /^[A-Za-z]:[\\/]/.test(pathPart) || /^\\\\/.test(pathPart)
       ? pathPart : `${base}\\${pathPart}`;
     const normalized = normalizeWindowsPath(path);
-    return normalized ? { kind: 'file', path: normalized } : { kind: 'unsupported' };
+    const fragment = hashIndex < 0 ? undefined : decodeURIComponent(raw.slice(hashIndex + 1));
+    return normalized ? { kind: 'file', path: normalized, ...(fragment === undefined ? {} : { fragment }) } : { kind: 'unsupported' };
   } catch { return { kind: 'unsupported' }; }
 }
