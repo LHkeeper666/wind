@@ -12,12 +12,16 @@ let compressMarkPaths: string[] = $state([]);
 // Paste conflict
 let showConfirmModal: boolean = $state(false);
 let confirmFileName: string = $state('');
-let pasteResolve: ((choice: 'overwrite' | 'skip' | 'abort') => void) | null = null;
+let pasteAllowAll: boolean = $state(false);
+type PasteChoice = 'overwrite' | 'skip' | 'keep-copy' | 'keep-copy-all' | 'abort';
+let pasteResolve: ((choice: PasteChoice) => void) | null = null;
 
 // Streaming conflict
 let streamConflictVisible: boolean = $state(false);
 let streamConflictName: string = $state('');
-let streamConflictResolve: ((choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') => void) | null = null;
+type StreamChoice = 'overwrite' | 'skip' | 'keep-copy' | 'keep-copy-all' | 'overwrite-all' | 'skip-all' | 'abort';
+let streamConflictResolve: ((choice: StreamChoice) => void) | null = null;
+let streamConflictLocal: boolean = $state(false);
 let scanningConflicts: boolean = $state(false);
 
 // Unsaved changes
@@ -39,8 +43,10 @@ export function getCompressDialogValue() { return compressDialogValue; }
 export function getCompressMarkPaths() { return compressMarkPaths; }
 export function getShowConfirmModal() { return showConfirmModal; }
 export function getConfirmFileName() { return confirmFileName; }
+export function getPasteAllowAll() { return pasteAllowAll; }
 export function getStreamConflictVisible() { return streamConflictVisible; }
 export function getStreamConflictName() { return streamConflictName; }
+export function getStreamConflictLocal() { return streamConflictLocal; }
 export function getScanningConflicts() { return scanningConflicts; }
 export function getShowUnsavedConfirm() { return showUnsavedConfirm; }
 export function getPendingActionPath() { return pendingActionPath; }
@@ -78,23 +84,25 @@ export function initDialogDeps(deps: {
 
 // --- Prompt functions (used by paste/scan operations) ---
 
-export function promptConflict(fileName: string): Promise<'overwrite' | 'skip' | 'abort'> {
+export function promptConflict(fileName: string, allowAll = false): Promise<PasteChoice> {
   return new Promise(resolve => {
     confirmFileName = fileName;
+    pasteAllowAll = allowAll;
     showConfirmModal = true;
     pasteResolve = resolve;
   });
 }
 
-export function promptConflictStream(fileName: string): Promise<'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort'> {
+export function promptConflictStream(fileName: string, local = false): Promise<StreamChoice> {
   return new Promise(resolve => {
     streamConflictName = fileName;
+    streamConflictLocal = local;
     streamConflictVisible = true;
     streamConflictResolve = resolve;
   });
 }
 
-export function resolveStreamConflict(choice: 'overwrite' | 'skip' | 'overwrite-all' | 'skip-all' | 'abort') {
+export function resolveStreamConflict(choice: StreamChoice) {
   streamConflictVisible = false;
   streamConflictResolve?.(choice);
   streamConflictResolve = null;
@@ -111,6 +119,18 @@ export function handleConfirmOverwrite() {
 export function handleConfirmSkip() {
   showConfirmModal = false;
   pasteResolve?.('skip');
+  pasteResolve = null;
+}
+
+export function handleConfirmKeepCopy() {
+  showConfirmModal = false;
+  pasteResolve?.('keep-copy');
+  pasteResolve = null;
+}
+
+export function handleConfirmKeepCopyAll() {
+  showConfirmModal = false;
+  pasteResolve?.('keep-copy-all');
   pasteResolve = null;
 }
 

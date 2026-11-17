@@ -14,6 +14,9 @@
     buttons = [] as ConfirmButton[],
     onOverwrite = () => {},
     onSkip = () => {},
+    onKeepCopy = () => {},
+    onKeepCopyAll = () => {},
+    showKeepCopyAll = false,
     onAbort = () => {},
   }: {
     visible?: boolean;
@@ -22,6 +25,9 @@
     buttons?: ConfirmButton[];
     onOverwrite?: () => void;
     onSkip?: () => void;
+    onKeepCopy?: () => void;
+    onKeepCopyAll?: () => void;
+    showKeepCopyAll?: boolean;
     onAbort?: () => void;
   } = $props();
 
@@ -32,6 +38,8 @@
     buttons.length > 0 ? buttons : [
       { key: 'O', label: 'verwrite', action: onOverwrite, style: 'danger' },
       { key: 'S', label: 'kip', action: onSkip },
+      { key: 'K', label: 'eep Copy', action: onKeepCopy },
+      ...(showKeepCopyAll ? [{ key: 'D', label: 'uplicate All', action: onKeepCopyAll }] : []),
       { key: 'A', label: 'bort', action: onAbort },
     ]
   );

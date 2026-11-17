@@ -79,7 +79,7 @@ fn local_copy_blocking(
     let copy_result = if src.is_dir() {
         copy_dir_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit, &mut created, &skip, src)
     } else {
-        copy_file_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit)
+        copy_file_with_progress(src, dst, cancel_flag, app, task, &mut total, &mut last_emit, task.keep_copy)
     };
 
     if let Err(e) = copy_result {
@@ -120,10 +120,15 @@ fn copy_file_with_progress(
     cancel_flag: &Arc<AtomicBool>,
     app: &AppHandle, task: &TransferTask,
     total: &mut u64, last_emit: &mut Instant,
+    keep_copy: bool,
 ) -> Result<(), String> {
     let mut reader = fs::File::open(src)
         .map_err(|e| format!("Failed to open: {}", e))?;
-    let mut writer = fs::File::create(dst)
+    let mut writer = if keep_copy {
+        fs::OpenOptions::new().write(true).create_new(true).open(dst)
+    } else {
+        fs::File::create(dst)
+    }
         .map_err(|e| format!("Failed to create: {}", e))?;
     let mut buf = [0u8; 65536];
     let source_str = task.source.clone();
@@ -181,7 +186,6 @@ fn copy_dir_with_progress(
         }
         let entry = entry.map_err(|e| format!("Entry error: {}", e))?;
         let path = entry.path();
-        let dst_path = dst.join(entry.file_name());
 
         let rel = path.strip_prefix(root)
             .map(|p| p.to_string_lossy().to_string())
@@ -190,10 +194,21 @@ fn copy_dir_with_progress(
             continue;
         }
 
+        let renamed = task.rename_rel_paths.get(&rel);
+        if let Some(name) = renamed {
+            if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name.as_str()) || name == "." || name == ".." {
+                return Err(format!("Invalid copy name: {name}"));
+            }
+        }
+        let dst_path = match renamed {
+            Some(name) => dst.join(name),
+            None => dst.join(entry.file_name()),
+        };
+
         if path.is_dir() {
             copy_dir_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit, created, skip, root)?;
         } else {
-            copy_file_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit)?;
+            copy_file_with_progress(&path, &dst_path, cancel_flag, app, task, total, last_emit, renamed.is_some())?;
             created.push(dst_path);
         }
     }

@@ -95,6 +95,8 @@ interface EnqueueTask {
   total_bytes: number;
   conn_name?: string;
   skip_rel_paths?: string[];
+  rename_rel_paths?: Record<string, string>;
+  keep_copy?: boolean;
   permanent?: boolean;
   password?: string;
   internal_paths?: string[];

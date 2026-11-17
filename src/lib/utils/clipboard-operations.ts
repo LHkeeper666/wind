@@ -4,6 +4,7 @@ import { get } from 'svelte/store';
 import { layout } from '$lib/stores/layout';
 import { clipboard } from '$lib/stores/clipboard';
 import { transfer } from '$lib/stores/transfer';
+import { firstAvailableCopyPath, buildLocalPasteTasks } from '$lib/utils/copy-naming';
 import { invokeArchiveWithOptionalPassword, getCachedArchivePassword } from '$lib/utils/archive-password';
 import { promptConflict, promptConflictStream, setScanningConflicts } from '$lib/composables/dialog-state.svelte';
 import {
@@ -48,11 +49,14 @@ export function getFtpDestPath(dirPath: string, name: string): string {
 
 export async function scanConflicts(
   startScan: () => Promise<unknown>,
-): Promise<{ dirSkipMap: Map<string, string[]>; fileSkipSet: Set<string> } | null> {
+  local = false,
+  reserved = new Set<string>(),
+): Promise<{ dirSkipMap: Map<string, string[]>; fileSkipSet: Set<string>; dirRenameMap: Map<string, Record<string, string>>; keepCopyAll: boolean } | null> {
   const dirSkipMap = new Map<string, string[]>();
+  const dirRenameMap = new Map<string, Record<string, string>>();
   const fileSkipSet = new Set<string>();
-  let applyToAll: 'overwrite' | 'skip' | null = null;
-  let queue: Array<{ kind: string; dir_source: string; rel_path: string }> = [];
+  let applyToAll: 'overwrite' | 'skip' | 'keep-copy' | null = null;
+  let queue: Array<{ kind: string; dir_source: string; rel_path: string; destination: string; source: string }> = [];
   let processing = false;
   let finished = false;
   let aborted = false;
@@ -66,6 +70,14 @@ export async function scanConflicts(
     }
   };
 
+  const addKeepCopy = async (c: { kind: string; dir_source: string; rel_path: string; destination: string; source: string }) => {
+    if (!local || c.kind !== 'dir') return;
+    const sourceDir = c.source.slice(0, Math.max(c.source.lastIndexOf('\\'), c.source.lastIndexOf('/')) + 1);
+    const newPath = await firstAvailableCopyPath(c.destination, reserved, path => invoke<boolean>('file_exists', { path }), sourceDir);
+    if (!dirRenameMap.has(c.dir_source)) dirRenameMap.set(c.dir_source, {});
+    dirRenameMap.get(c.dir_source)![c.rel_path] = newPath.slice(Math.max(newPath.lastIndexOf('\\'), newPath.lastIndexOf('/')) + 1);
+  };
+
   return new Promise((resolve) => {
     let unlistenFound: (() => void) | null = null;
     let unlistenDone: (() => void) | null = null;
@@ -74,7 +86,7 @@ export async function scanConflicts(
       if (finished && !processing && queue.length === 0) {
         unlistenFound?.();
         unlistenDone?.();
-        resolve(aborted ? null : { dirSkipMap, fileSkipSet });
+        resolve(aborted ? null : { dirSkipMap, fileSkipSet, dirRenameMap, keepCopyAll: applyToAll === 'keep-copy' });
       }
     };
 
@@ -87,9 +99,15 @@ export async function scanConflicts(
           addSkip(c.kind, c.dir_source, c.rel_path);
         } else if (applyToAll === 'overwrite') {
           // 覆盖所有：不 skip
+        } else if (applyToAll === 'keep-copy') {
+          try { await addKeepCopy(c); } catch { aborted = true; }
         } else {
-          const choice = await promptConflictStream(c.rel_path);
+          const choice = await promptConflictStream(c.rel_path, local);
           if (choice === 'skip') addSkip(c.kind, c.dir_source, c.rel_path);
+          else if (choice === 'keep-copy' || choice === 'keep-copy-all') {
+            if (choice === 'keep-copy-all') applyToAll = 'keep-copy';
+            try { await addKeepCopy(c); } catch { aborted = true; }
+          }
           else if (choice === 'overwrite-all') applyToAll = 'overwrite';
           else if (choice === 'skip-all') { applyToAll = 'skip'; addSkip(c.kind, c.dir_source, c.rel_path); }
           else if (choice === 'abort') aborted = true;
@@ -443,9 +461,15 @@ export async function handlePaste(
   let firstPastedPath: string | null = null;
   const resolvedSources: string[] = [];
   const skipMap = new Map<string, string[]>();
+  const renameMap = new Map<string, Record<string, string>>();
+  const destinations = new Map<string, string>();
+  const keepCopySources = new Set<string>();
+  let keepCopyAll = false;
+  const reserved = new Set<string>();
 
   const dirEntries = entries.filter((e: any) => e.is_dir);
   const fileEntries = entries.filter((e: any) => !e.is_dir);
+  for (const file of fileEntries) reserved.add((destDir + '\\' + file.name).toLowerCase());
 
   // Phase 1a: directories — stream conflict detection
   if (dirEntries.length > 0) {
@@ -463,24 +487,27 @@ export async function handlePaste(
         skip_rel_paths: entry.skip_rel_paths || [],
       }));
       setScanningConflicts(true);
-      const result = await scanConflicts(() => invoke('scan_transfer_conflicts', { tasks: dirTasks }));
+      const result = await scanConflicts(() => invoke('scan_transfer_conflicts', { tasks: dirTasks }), true, reserved);
       setScanningConflicts(false);
       if (result === null) {
         deps.showToast('Paste aborted');
         return;
       }
+      keepCopyAll = result.keepCopyAll;
       for (const dir of dirEntries) {
         resolvedSources.push(dir.path);
         if (!firstPastedPath) firstPastedPath = destDir + '\\' + dir.name;
         const skip = result.dirSkipMap.get(dir.path);
         if (skip) skipMap.set(dir.path, skip);
+        const renames = result.dirRenameMap.get(dir.path);
+        if (renames) renameMap.set(dir.path, renames);
       }
     }
   }
 
   // Phase 1b: files — existing sync conflict check
   for (const entry of fileEntries) {
-    const destPath = destDir + '\\' + entry.name;
+    let destPath = destDir + '\\' + entry.name;
 
     let exists = false;
     try {
@@ -491,7 +518,7 @@ export async function handlePaste(
 
     if (exists) {
       if (!force) {
-        const choice = await promptConflict(entry.name);
+        const choice = keepCopyAll ? 'keep-copy' : await promptConflict(entry.name, entries.length > 1);
         if (choice === 'abort') {
           deps.showToast(`Paste aborted (${processed}/${entries.length} done)`);
           return;
@@ -499,33 +526,32 @@ export async function handlePaste(
         if (choice === 'skip') {
           continue;
         }
+        if (choice === 'keep-copy' || choice === 'keep-copy-all') {
+          if (choice === 'keep-copy-all') keepCopyAll = true;
+          destPath = await firstAvailableCopyPath(destPath, reserved, path => invoke<boolean>('file_exists', { path }));
+          keepCopySources.add(entry.path);
+        }
       }
-      // Overwrite: delete existing first
-      try {
-        await invoke('delete_file', { path: destPath });
-      } catch (e) {
-        deps.showToast(`Failed to overwrite ${entry.name}: ${e}`);
-        continue;
+      if (!keepCopySources.has(entry.path)) {
+        // Overwrite: delete existing first
+        try {
+          await invoke('delete_file', { path: destPath });
+        } catch (e) {
+          deps.showToast(`Failed to overwrite ${entry.name}: ${e}`);
+          continue;
+        }
       }
     }
 
     resolvedSources.push(entry.path);
+    destinations.set(entry.path, destPath);
     if (!firstPastedPath) firstPastedPath = destPath;
   }
 
   if (resolvedSources.length === 0) return;
 
   // Phase 2: execute via TransferManager
-  const tasks = resolvedSources.map((src: string) => {
-    const origEntry = entries.find((e: any) => e.path === src);
-    return {
-      op_type: operation === 'copy' ? 'copy' : 'move',
-      source: src,
-      destination: destDir + '\\' + (src.split(/[/\\]/).pop() || src),
-      total_bytes: origEntry?.size || 0,
-      skip_rel_paths: [...(origEntry?.skip_rel_paths || []), ...(skipMap.get(src) || [])],
-    };
-  });
+  const tasks = buildLocalPasteTasks(resolvedSources, entries, destDir, operation, destinations, skipMap, renameMap, keepCopySources);
   const ids = await transfer.enqueueTransfers(tasks);
   deps.showToast(`Queued ${ids.length} transfer(s)`);
   if (ids.length > 0) deps.onOpenTransfer();

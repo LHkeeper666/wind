@@ -24,15 +24,15 @@
   import FullscreenPdfViewer from './FullscreenPdfViewer.svelte';
   import {
     getCompressDialogVisible, getCompressDialogValue, getCompressMarkPaths,
-    getShowConfirmModal, getConfirmFileName,
-    getStreamConflictVisible, getStreamConflictName, getScanningConflicts,
+    getShowConfirmModal, getConfirmFileName, getPasteAllowAll,
+    getStreamConflictVisible, getStreamConflictName, getStreamConflictLocal, getScanningConflicts,
     getShowUnsavedConfirm, getPendingActionPath, getPendingAction,
     setCompressDialogVisible, setCompressDialogValue, setCompressMarkPaths,
     setShowConfirmModal, setConfirmFileName,
     setStreamConflictVisible, setStreamConflictName, setScanningConflicts,
     setShowUnsavedConfirm, setPendingActionPath, setPendingAction,
     resolveStreamConflict,
-    handleConfirmOverwrite, handleConfirmSkip, handleConfirmAbort,
+    handleConfirmOverwrite, handleConfirmSkip, handleConfirmKeepCopy, handleConfirmKeepCopyAll, handleConfirmAbort,
     handleUnsavedSave, handleUnsavedDiscard, handleUnsavedCancel,
     handleCompressDialogConfirm as doCompressConfirm, handleCompressDialogCancel,
     initDialogDeps,
@@ -1443,6 +1443,9 @@
     fileName={getConfirmFileName()}
     onOverwrite={handleConfirmOverwrite}
     onSkip={handleConfirmSkip}
+    onKeepCopy={handleConfirmKeepCopy}
+    onKeepCopyAll={handleConfirmKeepCopyAll}
+    showKeepCopyAll={getPasteAllowAll()}
     onAbort={handleConfirmAbort}
   />
 
@@ -1454,8 +1457,10 @@
     buttons={[
       { key: 'o', label: 'verwrite', action: () => resolveStreamConflict('overwrite'), style: 'danger' },
       { key: 's', label: 'kip', action: () => resolveStreamConflict('skip') },
+      ...(getStreamConflictLocal() ? [{ key: 'k', label: 'eep Copy', action: () => resolveStreamConflict('keep-copy' as const) }] : []),
       { key: 'a', label: 'll overwrite', action: () => resolveStreamConflict('overwrite-all'), style: 'danger' },
       { key: 'i', label: 'gnore all', action: () => resolveStreamConflict('skip-all') },
+      ...(getStreamConflictLocal() ? [{ key: 'd', label: 'uplicate All', action: () => resolveStreamConflict('keep-copy-all' as const) }] : []),
       { key: 'c', label: 'ancel', action: () => resolveStreamConflict('abort') },
     ]}
   />

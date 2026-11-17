@@ -54,6 +54,10 @@ pub struct TransferTask {
     #[serde(skip)]
     pub skip_rel_paths: Vec<String>,
     #[serde(skip)]
+    pub rename_rel_paths: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub keep_copy: bool,
+    #[serde(skip)]
     pub permanent: bool,
     /// Archive password for Extract tasks.
     #[serde(skip)]
@@ -88,6 +92,10 @@ pub struct EnqueueTask {
     pub conn_name: Option<String>,
     #[serde(default)]
     pub skip_rel_paths: Vec<String>,
+    #[serde(default)]
+    pub rename_rel_paths: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub keep_copy: bool,
     #[serde(default)]
     pub permanent: bool,
     /// Archive password for Extract tasks.
