@@ -239,9 +239,11 @@ pub async fn search_files(
     // FTP: search within current directory by listing + filtering
     if root_path.starts_with("ftp://") {
         let (conn_name, remote_path) = crate::commands::ftp_cmd::parse_ftp_url(&root_path)?;
-        let mgr = state.ftp_manager.lock().await;
-        let entries = crate::commands::ftp_cmd::try_list_dir(&mgr, conn_name, remote_path).await?;
-        drop(mgr);
+        let session = {
+            let mgr = state.ftp_manager.lock().await;
+            mgr.get(conn_name)?
+        };
+        let entries = crate::commands::ftp_cmd::try_list_dir(session, conn_name, remote_path).await?;
         let lower = pattern.to_lowercase();
         let results: Vec<SearchResult> = entries
             .iter()

@@ -305,6 +305,8 @@ pub fn run() {
             commands::ftp_cmd::ftp_create_file,
             commands::ftp_cmd::ftp_mkdir,
             commands::ftp_cmd::list_ftp_connections,
+            commands::ftp_cmd::get_ftp_connection_for_edit,
+            commands::ftp_cmd::update_ftp_connection,
             commands::ftp_cmd::check_ftp_connection,
             python_completion::get_package_api,
             frontend_log,

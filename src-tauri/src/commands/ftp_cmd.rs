@@ -28,11 +28,10 @@ fn rename_rejected(error: &str) -> String {
 }
 
 pub async fn try_list_dir(
-    mgr: &crate::ftp::FtpManager,
+    session: std::sync::Arc<tokio::sync::Mutex<crate::ftp::FtpSession>>,
     conn_name: &str,
     remote_path: &str,
 ) -> Result<Vec<FileEntry>, String> {
-    let session = mgr.get(conn_name)?;
     let mut ftp = session.lock().await;
 
     // Try MLSD first, fall back to LIST
@@ -169,22 +168,27 @@ pub async fn ftp_read_directory(
         conn_name, remote_path
     );
 
-    // Try listing; if session is stale, reconnect once and retry
-    let mut mgr = state.ftp_manager.lock().await;
-    let entries = match try_list_dir(&mgr, conn_name, remote_path).await {
-        Ok(entries) => entries,
-        Err(e) => {
-            warn!(
-                "[FTP] read_directory: listing failed ({}), reconnecting...",
-                e
-            );
-            mgr.ensure_connected(conn_name).await?;
-            try_list_dir(&mgr, conn_name, remote_path).await?
-        }
+    // Never hold the manager lock while awaiting the FTP server.
+    let existing = {
+        let mgr = state.ftp_manager.lock().await;
+        mgr.get(conn_name).ok()
     };
-    drop(mgr);
-
-    Ok(entries)
+    if let Some(session) = existing {
+        match try_list_dir(session, conn_name, remote_path).await {
+            Ok(entries) => return Ok(entries),
+            Err(e) => warn!("[FTP] read_directory: listing failed ({}), reconnecting...", e),
+        }
+    }
+    let config = {
+        let mgr = state.ftp_manager.lock().await;
+        mgr.get_config(conn_name).ok_or_else(|| format!("Connection '{}' not found", conn_name))?
+    };
+    let session = crate::ftp::FtpManager::open_session(&config).await?;
+    {
+        let mut mgr = state.ftp_manager.lock().await;
+        mgr.install_session_if_config_matches(&config, session.clone())?;
+    }
+    try_list_dir(session, conn_name, remote_path).await
 }
 
 #[tauri::command]
@@ -497,9 +501,49 @@ pub async fn list_ftp_connections(
 }
 
 #[tauri::command]
+pub async fn get_ftp_connection_for_edit(
+    name: String,
+) -> Result<crate::ftp::FtpConnectionSummary, String> {
+    tokio::task::spawn_blocking(move || crate::ftp::FtpManager::read_config_summary(&name))
+        .await
+        .map_err(|e| format!("Failed to load connection: {}", e))?
+}
+
+#[tauri::command]
+pub async fn update_ftp_connection(
+    name: String,
+    host: String,
+    port: u16,
+    user: String,
+    password: Option<String>,
+    reconnect: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let config = {
+        let mut mgr = state.ftp_manager.lock().await;
+        mgr.update_config(&name, &host, port, &user, password.as_deref())?;
+        if !reconnect { return Ok(()); }
+        mgr.get_config(&name).ok_or_else(|| format!("Connection '{}' not found", name))?
+    };
+    let session = crate::ftp::FtpManager::open_session(&config).await?;
+    let mut mgr = state.ftp_manager.lock().await;
+    mgr.install_session_if_config_matches(&config, session)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn check_ftp_connection(name: String, state: tauri::State<'_, AppState>) -> Result<bool, String> {
     info!("[FTP] command check_ftp_connection: name={}", name);
+    let (existing, config) = {
+        let mgr = state.ftp_manager.lock().await;
+        let config = mgr.get_config(&name).ok_or_else(|| format!("Connection '{}' not found", name))?;
+        (mgr.get(&name).ok(), config)
+    };
+    if let Some(session) = existing {
+        if session.lock().await.client.noop().await.is_ok() { return Ok(true); }
+    }
+    let session = crate::ftp::FtpManager::open_session(&config).await?;
     let mut mgr = state.ftp_manager.lock().await;
-    mgr.ensure_connected(&name).await?;
+    mgr.install_session_if_config_matches(&config, session)?;
     Ok(true)
 }

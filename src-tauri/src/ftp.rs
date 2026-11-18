@@ -10,13 +10,22 @@ use log::{info, warn, error, debug};
 
 use crate::app_paths;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FtpConnectionConfig {
     pub name: String,
     pub host: String,
     pub port: u16,
     pub user: String,
     pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FtpConnectionSummary {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub has_password: bool,
 }
 
 pub struct FtpSession {
@@ -149,6 +158,65 @@ impl FtpManager {
         self.configs.get(name).cloned()
     }
 
+    pub fn read_config_summary(name: &str) -> Result<FtpConnectionSummary, String> {
+        let manager = Self::new();
+        let config = manager.load_configs_from_file()?
+            .into_iter()
+            .find(|config| config.name == name)
+            .ok_or_else(|| format!("Connection '{}' not found", name))?;
+        Ok(FtpConnectionSummary {
+            name: config.name,
+            host: config.host,
+            port: config.port,
+            user: config.user,
+            has_password: !config.password.is_empty(),
+        })
+    }
+
+    pub fn update_config(&mut self, name: &str, host: &str, port: u16, user: &str, password: Option<&str>) -> Result<(), String> {
+        let old = self.configs.get(name).ok_or_else(|| format!("Connection '{}' not found", name))?;
+        let updated = Self::edited_config(old, host, port, user, password)?;
+        let mut candidate = self.configs.clone();
+        candidate.insert(name.to_string(), updated);
+        self.persist_config_map(&candidate)?;
+        self.configs = candidate;
+        Ok(())
+    }
+
+    fn edited_config(old: &FtpConnectionConfig, host: &str, port: u16, user: &str, password: Option<&str>) -> Result<FtpConnectionConfig, String> {
+        let host = host.trim();
+        let user = user.trim();
+        if host.is_empty() { return Err("Host is required".into()); }
+        if user.is_empty() { return Err("User is required".into()); }
+        if port == 0 { return Err("Port must be between 1 and 65535".into()); }
+        Ok(FtpConnectionConfig {
+            name: old.name.clone(), host: host.to_string(), port, user: user.to_string(),
+            password: password.filter(|value| !value.is_empty()).unwrap_or(&old.password).to_string(),
+        })
+    }
+
+    pub async fn open_session(config: &FtpConnectionConfig) -> Result<Arc<Mutex<FtpSession>>, String> {
+        let addr = format!("{}:{}", config.host, config.port);
+        let mut client = AsyncRustlsFtpStream::connect(&addr).await
+            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+        client.login(&config.user, &config.password).await
+            .map_err(|e| format!("Login failed: {}", e))?;
+        if let Err(e) = client.opts("UTF8", Some("ON")).await {
+            warn!("[FTP] reconnect updated '{}': OPTS UTF8 ON failed: {}", config.name, e);
+        }
+        client.transfer_type(FileType::Binary).await
+            .map_err(|e| format!("Failed to set binary transfer mode: {}", e))?;
+        Ok(Arc::new(Mutex::new(FtpSession { client })))
+    }
+
+    pub fn install_session_if_config_matches(&mut self, config: &FtpConnectionConfig, session: Arc<Mutex<FtpSession>>) -> Result<(), String> {
+        if self.configs.get(&config.name) != Some(config) {
+            return Err("Connection settings changed while reconnecting; retry".into());
+        }
+        self.sessions.insert(config.name.clone(), session);
+        Ok(())
+    }
+
     /// Create an independent session for background transfers.
     /// Does NOT replace the main session — the caller is responsible for cleanup.
     pub async fn create_independent(&self, name: &str) -> Result<Arc<Mutex<FtpSession>>, String> {
@@ -223,7 +291,11 @@ impl FtpManager {
     }
 
     fn persist_configs(&self) -> Result<(), String> {
-        let configs: Vec<&FtpConnectionConfig> = self.configs.values().collect();
+        self.persist_config_map(&self.configs)
+    }
+
+    fn persist_config_map(&self, configs_map: &HashMap<String, FtpConnectionConfig>) -> Result<(), String> {
+        let configs: Vec<&FtpConnectionConfig> = configs_map.values().collect();
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config dir: {}", e))?;
@@ -250,6 +322,36 @@ impl FtpManager {
             .map_err(|e| format!("Failed to parse config file: {}", e))?;
         debug!("[FTP] load_configs: read {} connection(s)", configs.len());
         Ok(configs)
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn config() -> FtpConnectionConfig {
+        FtpConnectionConfig { name: "saved".into(), host: "old.example".into(), port: 21, user: "old".into(), password: "secret".into() }
+    }
+
+    #[test]
+    fn editing_keeps_or_replaces_password_and_validates_fields() {
+        let original = config();
+        let kept = FtpManager::edited_config(&original, " new.example ", 2121, " new ", None).unwrap();
+        assert_eq!((kept.name.as_str(), kept.host.as_str(), kept.user.as_str(), kept.password.as_str()), ("saved", "new.example", "new", "secret"));
+        assert_eq!(FtpManager::edited_config(&original, "host", 21, "user", Some("")).unwrap().password, "secret");
+        assert_eq!(FtpManager::edited_config(&original, "host", 21, "user", Some("changed")).unwrap().password, "changed");
+        assert!(FtpManager::edited_config(&original, " ", 21, "user", None).is_err());
+        assert!(FtpManager::edited_config(&original, "host", 0, "user", None).is_err());
+        assert!(FtpManager::edited_config(&original, "host", 21, " ", None).is_err());
+    }
+
+    #[test]
+    fn failed_write_does_not_change_memory() {
+        let mut mgr = FtpManager::new();
+        mgr.config_path = std::env::current_dir().unwrap(); // A directory cannot be overwritten as a file.
+        mgr.configs.insert("saved".into(), config());
+        assert!(mgr.update_config("saved", "new.example", 21, "new", None).is_err());
+        assert_eq!(mgr.get_config("saved").unwrap().host, "old.example");
     }
 }
 

@@ -11,6 +11,7 @@
   import InputDialog from './InputDialog.svelte';
   import ConfirmModal from './ConfirmModal.svelte';
   import FileInfoPanel from './FileInfoPanel.svelte';
+  import FtpConnectionEditor from './FtpConnectionEditor.svelte';
   import { directoryCache } from '$lib/utils/directory-cache';
   import { invokeArchiveWithOptionalPassword, getCachedArchivePassword } from '$lib/utils/archive-password';
   import { directoryKeyId, normalizeDirectoryKey, type DirectoryKey } from '$lib/utils/directory-refresh';
@@ -112,6 +113,7 @@
   let scrollRafId: number = 0;
   let pendingSelectName: string | null = null;
   let isSearchModalOpen: boolean = $state(false);
+  let editingFtpName: string | null = $state(null);
   let searchMode: 'current' | 'recursive' = $state('current');
 
   // Multi-select state
@@ -258,6 +260,26 @@
 
   function isVirtualRoot(dirPath: string): boolean {
     return dirPath === '/' || dirPath === '\\';
+  }
+
+  function openSelectedInfo() {
+    const entry = selectedIndex >= 0 ? displayFiles[selectedIndex] : null;
+    const match = isVirtualRoot(path) && !projectTree.getProjectMode() && entry?.name.startsWith('[FTP] ')
+      ? /^ftp:\/\/([^/]+)\/$/.exec(entry.path)
+      : null;
+    if (match) editingFtpName = match[1];
+    else dialogs.toggleFileInfo();
+  }
+
+  function closeFtpEditor() {
+    editingFtpName = null;
+    refocusPanel();
+  }
+
+  function ftpEditorSaved(reconnected: boolean) {
+    closeFtpEditor();
+    refresh();
+    onToast(reconnected ? 'FTP connection saved and reconnected' : 'FTP connection saved');
   }
 
   function isDriveRoot(dirPath: string): boolean {
@@ -913,7 +935,7 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (!isFocused) return;
-    if (dialogs.getShowDeleteConfirm() || dialogs.getInputVisible() || isSearchModalOpen || dialogs.getShowFileInfo()) {
+    if (dialogs.getShowDeleteConfirm() || dialogs.getInputVisible() || isSearchModalOpen || dialogs.getShowFileInfo() || editingFtpName) {
       event.stopPropagation();
       return;
     }
@@ -1139,7 +1161,7 @@
           }
         }
         return true;
-      case 'i': event.preventDefault(); dialogs.toggleFileInfo(); return true;
+      case 'i': event.preventDefault(); openSelectedInfo(); return true;
       case 'f': event.preventDefault(); dialogs.startFilter('wildcard'); return true;
       case 'o': event.preventDefault(); openSelectedFile(); return true;
       case 'O': event.preventDefault(); openSelectedFileWith(); return true;
@@ -1400,6 +1422,10 @@
     selectionRoots={dialogs.getSelectionStatsRoots()}
     onClose={dialogs.closeFileInfo}
   />
+
+  {#if editingFtpName}
+    <FtpConnectionEditor name={editingFtpName} onClose={closeFtpEditor} onSaved={ftpEditorSaved} />
+  {/if}
 
 </div>
 
