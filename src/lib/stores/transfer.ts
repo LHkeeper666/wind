@@ -65,10 +65,10 @@ function opTypeLabel(opType: string): string {
 
 const speedSamples = new Map<number, { lastBytes: number; lastTime: number; emaSpeed: number }>();
 
-function computeEta(id: number, bytesDone: number, totalBytes: number, status: string): number {
+function computeProgressMetrics(id: number, bytesDone: number, totalBytes: number, status: string): { etaSecs: number; speedBps: number } {
   if (status !== 'running') {
     speedSamples.delete(id);
-    return 0;
+    return { etaSecs: 0, speedBps: 0 };
   }
   const now = Date.now();
   const prev = speedSamples.get(id);
@@ -84,10 +84,10 @@ function computeEta(id: number, bytesDone: number, totalBytes: number, status: s
     }
   }
   speedSamples.set(id, { lastBytes: bytesDone, lastTime: now, emaSpeed });
-  if (emaSpeed > 0 && totalBytes > 0 && bytesDone < totalBytes) {
-    return Math.round((totalBytes - bytesDone) / emaSpeed);
-  }
-  return 0;
+  const etaSecs = emaSpeed > 0 && totalBytes > 0 && bytesDone < totalBytes
+    ? Math.round((totalBytes - bytesDone) / emaSpeed)
+    : 0;
+  return { etaSecs, speedBps: emaSpeed };
 }
 
 interface EnqueueTask {
@@ -127,19 +127,24 @@ function createTransferStore() {
         const bytesDone = p.bytes_done as number;
         const totalBytes = p.total_bytes as number;
         const status = p.status as TransferEntry['status'];
-        const etaSecs = computeEta(id, bytesDone, totalBytes, status);
+        const { etaSecs, speedBps } = computeProgressMetrics(id, bytesDone, totalBytes, status);
+        const opType = p.op_type as TransferEntry['opType'];
         update(entries => {
           const idx = entries.findIndex(e => e.id === id);
           const prev = idx >= 0 ? entries[idx] : undefined;
           const updated = { ...(prev ?? {}),
             id,
             batchId: p.batch_id as number,
-            opType: p.op_type as TransferEntry['opType'],
+            opType,
             source: p.source as string,
             destination: p.destination as string,
             totalBytes: totalBytes || (prev ? prev.totalBytes : 0),
             bytesDone,
-            speedBps: p.speed_bps as number,
+            speedBps: opType === 'ftp-download' || opType === 'ftp-upload'
+              ? (p.speed_bps as number)
+              : opType === 'ftp-copy' && (p.speed_bps as number) > 0
+                ? (p.speed_bps as number)
+                : speedBps,
             status: status || (prev ? prev.status : 'queued'),
             startTime: (prev ? prev.startTime : 0) || Date.now(),
             etaSecs,

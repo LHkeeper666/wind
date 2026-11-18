@@ -61,7 +61,9 @@ pub async fn execute_ftp_copy(
         let mut reader = ProgressAsyncReader {
             inner: file, done: 0, total: done, task_id: task.id, batch_id: task.batch_id,
             op_type: task.op_type, source: task.source.clone(), dest: task.destination.clone(),
-            last_emit: Instant::now(), start: Instant::now(), cancel_flag: cancel_flag.clone(), app: app.clone(),
+            last_emit: Instant::now(), speed_sample_at: Instant::now(),
+            speed_sample_bytes: 0, current_speed_bps: 0,
+            cancel_flag: cancel_flag.clone(), app: app.clone(),
         };
         let upload = tokio::time::timeout(std::time::Duration::from_secs(300), ftp.client.put_file(destination, &mut reader)).await
             .map_err(|_| "FTP upload timed out".to_string())?.map_err(|e| format!("FTP upload failed: {e}"));
@@ -94,9 +96,11 @@ pub async fn execute_ftp_download(
     };
     info!("[transfer] FTP download: conn={conn_name} remote={remote_path} → local={}", task.destination);
 
+    let setup_started = Instant::now();
     let mgr = ftp_manager.lock().await;
     let session = mgr.create_independent(conn_name).await?;
     drop(mgr);
+    info!("[transfer] FTP download task {} session ready in {} ms", task.id, setup_started.elapsed().as_millis());
 
     let mut ftp = session.lock().await;
 
@@ -106,6 +110,7 @@ pub async fn execute_ftp_download(
         Err(e) => { warn!("[transfer] FTP SIZE failed (ignored): {e}"); 0 }
     };
 
+    let retr_started = Instant::now();
     let mut stream = ftp.client.retr_as_stream(remote_path)
         .await
         .map_err(|e| {
@@ -113,6 +118,7 @@ pub async fn execute_ftp_download(
             error!("[transfer] {msg}");
             msg
         })?;
+    info!("[transfer] FTP download task {} RETR ready in {} ms", task.id, retr_started.elapsed().as_millis());
 
     let local = Path::new(&task.destination);
     if let Some(parent) = local.parent() {
@@ -141,6 +147,14 @@ pub async fn execute_ftp_download(
     }
     let mut last_emit = Instant::now();
     let start = Instant::now();
+    let mut speed_sample_at = start;
+    let mut speed_sample_bytes = 0u64;
+    let mut current_speed_bps = 0u64;
+    let mut last_diagnostic = start;
+    let mut diagnostic_bytes = 0u64;
+    let mut read_wait = std::time::Duration::ZERO;
+    let mut write_wait = std::time::Duration::ZERO;
+    let mut reads = 0u64;
 
     loop {
         if check_cancelled(cancel_flag) {
@@ -150,25 +164,49 @@ pub async fn execute_ftp_download(
         }
 
         use tokio::io::AsyncReadExt;
+        let read_started = Instant::now();
         let n = tokio::time::timeout(std::time::Duration::from_secs(30), stream.read(&mut buf))
             .await.map_err(|_| "Download read timed out".to_string())?
             .map_err(|e| format!("Download read error: {}", e))?;
+        read_wait += read_started.elapsed();
         if n == 0 { break; }
 
+        let write_started = Instant::now();
         file.write_all(&buf[..n])
             .await
             .map_err(|e| format!("Download write error: {}", e))?;
+        write_wait += write_started.elapsed();
 
         done += n as u64;
+        reads += 1;
         let now = Instant::now();
+        let sample_elapsed = now.duration_since(speed_sample_at).as_secs_f64();
+        if sample_elapsed >= 1.0 {
+            current_speed_bps = ((done - speed_sample_bytes) as f64 / sample_elapsed) as u64;
+            speed_sample_at = now;
+            speed_sample_bytes = done;
+        }
+        if now.duration_since(last_diagnostic).as_secs() >= 5 {
+            let interval = now.duration_since(last_diagnostic).as_secs_f64();
+            info!(
+                "[transfer] FTP download task {}: bytes={}/{}, interval_mib_s={:.2}, avg_mib_s={:.2}, read_wait_ms={}, write_wait_ms={}, reads={}",
+                task.id, done, total,
+                (done - diagnostic_bytes) as f64 / interval / 1_048_576.0,
+                done as f64 / start.elapsed().as_secs_f64() / 1_048_576.0,
+                read_wait.as_millis(), write_wait.as_millis(), reads,
+            );
+            last_diagnostic = now;
+            diagnostic_bytes = done;
+            read_wait = std::time::Duration::ZERO;
+            write_wait = std::time::Duration::ZERO;
+            reads = 0;
+        }
         if now.duration_since(last_emit).as_millis() >= 100 {
-            let elapsed = start.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 { (done as f64 / elapsed) as u64 } else { 0 };
             if let Err(e) = app.emit("transfer-progress", serde_json::json!({
                 "id": task.id, "batch_id": task.batch_id,
                 "op_type": task.op_type, "status": "running",
                 "bytes_done": done, "total_bytes": total,
-                "speed_bps": speed,
+                "speed_bps": current_speed_bps,
                 "source": task.source, "destination": task.destination,
             })) {
                 log::debug!("[emit] transfer-progress failed: {}", e);
@@ -180,6 +218,7 @@ pub async fn execute_ftp_download(
     file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
     ftp.client.finalize_retr_stream(stream).await
         .map_err(|e| format!("Download finalize error: {e}"))?;
+    info!("[transfer] FTP download task {} completed: bytes={}, elapsed_ms={}", task.id, done, start.elapsed().as_millis());
     let _ = ftp.client.quit().await;
     Ok(done)
 }
@@ -225,7 +264,9 @@ pub async fn execute_ftp_upload(
         source: task.source.clone(),
         dest: task.destination.clone(),
         last_emit: Instant::now(),
-        start: Instant::now(),
+        speed_sample_at: Instant::now(),
+        speed_sample_bytes: 0,
+        current_speed_bps: 0,
         cancel_flag: cancel_flag.clone(),
         app: app.clone(),
     };
@@ -321,7 +362,9 @@ struct ProgressAsyncReader {
     source: String,
     dest: String,
     last_emit: Instant,
-    start: Instant,
+    speed_sample_at: Instant,
+    speed_sample_bytes: u64,
+    current_speed_bps: u64,
     cancel_flag: Arc<AtomicBool>,
     app: AppHandle,
 }
@@ -344,14 +387,18 @@ impl AsyncRead for ProgressAsyncReader {
             if n > 0 {
                 this.done += n;
                 let now = Instant::now();
+                let sample_elapsed = now.duration_since(this.speed_sample_at).as_secs_f64();
+                if sample_elapsed >= 1.0 {
+                    this.current_speed_bps = ((this.done - this.speed_sample_bytes) as f64 / sample_elapsed) as u64;
+                    this.speed_sample_at = now;
+                    this.speed_sample_bytes = this.done;
+                }
                 if now.duration_since(this.last_emit).as_millis() >= 100 {
-                    let elapsed = this.start.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.0 { (this.done as f64 / elapsed) as u64 } else { 0 };
                     if let Err(e) = this.app.emit("transfer-progress", serde_json::json!({
                         "id": this.task_id, "batch_id": this.batch_id,
                         "op_type": this.op_type, "status": "running",
                         "bytes_done": this.done, "total_bytes": this.total,
-                        "speed_bps": speed,
+                        "speed_bps": this.current_speed_bps,
                         "source": this.source, "destination": this.dest,
                     })) {
                         log::debug!("[emit] transfer-progress failed: {}", e);
