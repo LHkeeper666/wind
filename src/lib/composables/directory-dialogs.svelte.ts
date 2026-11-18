@@ -150,7 +150,7 @@ export function createDirectoryDialogs(deps: DialogDeps): DirectoryDialogsAPI {
           deps.onToast(`Renamed to ${value}`);
         } else if (entry.path.startsWith('ftp://')) {
           const parentBase = path.replace(/\/+$/, '');
-          const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value });
+          const newPath = await invoke<string>('ftp_rename', { oldPath: entry.path, newPath: parentBase + '/' + value, isDir: entry.is_dir });
           deps.loadDirectory(path, true);
           deps.onSelect(newPath, false);
           deps.onToast(`Renamed to ${value}`);

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,6 +27,46 @@ struct ActiveTask {
     dest: String,
 }
 
+#[derive(Clone)]
+struct MoveGroup {
+    source: String,
+    destination: String,
+    is_dir: bool,
+    tasks: Vec<TransferTask>,
+}
+
+fn move_group_result(ids: &[u64], outcomes: &HashMap<u64, Result<u64, String>>) -> Option<Result<(), String>> {
+    if !ids.iter().all(|id| outcomes.contains_key(id)) { return None; }
+    match ids.iter().find_map(|id| outcomes.get(id).and_then(|outcome| outcome.as_ref().err())) {
+        Some(error) => Some(Err(error.clone())),
+        None => Some(Ok(())),
+    }
+}
+
+fn move_terminal_status(outcome: &Result<(), String>) -> &'static str {
+    match outcome {
+        Ok(()) => "done",
+        Err(error) if error.starts_with("PARTIAL:") => "partial",
+        Err(_) => "failed",
+    }
+}
+
+fn ftp_copy_file_tasks(conn_name: &str, source_dir: &str, destination_dir: &str, entries: Vec<(String, u64, bool)>) -> Vec<EnqueueTask> {
+    entries.into_iter().filter(|(_, _, is_dir)| !*is_dir)
+        .map(|(path, size, _)| {
+            let relative = path.strip_prefix(source_dir.trim_end_matches('/')).unwrap_or("");
+            EnqueueTask {
+                op_type: TransferType::FtpCopy,
+                source: format!("ftp://{conn_name}{path}"),
+                destination: format!("ftp://{conn_name}{}{relative}", destination_dir.trim_end_matches('/')),
+                total_bytes: size,
+                conn_name: Some(conn_name.to_string()),
+                skip_rel_paths: Vec::new(), rename_rel_paths: Default::default(),
+                keep_copy: false, permanent: false, password: None, internal_paths: None,
+            }
+        }).collect()
+}
+
 pub struct TransferScheduler {
     pub(super) app: AppHandle,
     pub(super) ftp_manager: Arc<TokioMutex<FtpManager>>,
@@ -36,6 +76,11 @@ pub struct TransferScheduler {
     next_batch_id: AtomicU64,
     history: Vec<TransferHistoryRecord>,
     history_path: PathBuf,
+    task_outcomes: HashMap<u64, Result<u64, String>>,
+    cancelled_task_ids: HashSet<u64>,
+    task_index: HashMap<u64, TransferTask>,
+    move_groups: HashMap<u64, MoveGroup>,
+    next_move_id: AtomicU64,
 
     ftp_conn_slots: HashMap<String, usize>,
     ftp_max_per_conn: usize,
@@ -62,6 +107,11 @@ impl TransferScheduler {
             next_batch_id: AtomicU64::new(1),
             history: Vec::new(),
             history_path,
+            task_outcomes: HashMap::new(),
+            cancelled_task_ids: HashSet::new(),
+            task_index: HashMap::new(),
+            move_groups: HashMap::new(),
+            next_move_id: AtomicU64::new(1),
             ftp_conn_slots: HashMap::new(),
             ftp_max_per_conn: 2, // Each transfer uses create_independent() for its own TCP connection
             local_slots_used: 0,
@@ -95,7 +145,7 @@ impl TransferScheduler {
                 task.total_bytes
             } else {
                 match task.op_type {
-                    TransferType::FtpDownload => 0, // source is FTP URL, can't stat
+                    TransferType::FtpDownload | TransferType::FtpCopy => 0, // source is FTP URL, can't stat
                     TransferType::FtpUpload => {
                         // source is local path, can look up
                         let path = Path::new(&task.source);
@@ -146,6 +196,7 @@ impl TransferScheduler {
                 log::debug!("[emit] transfer-progress failed: {}", e);
             }
             self.queue.push_back(entry);
+            self.task_index.insert(id, self.queue.back().unwrap().clone());
         }
 
         self.dispatch_pending(sched);
@@ -278,6 +329,8 @@ impl TransferScheduler {
                 status: TaskStatus::Cancelled, error_message: None,
                 started_at: 0, completed_at: now_secs(), avg_speed_bps: None,
             });
+            self.task_outcomes.insert(id, Err("Cancelled".into()));
+            self.check_move_groups();
             self.dispatch_pending(sched);
             return true;
         }
@@ -286,6 +339,7 @@ impl TransferScheduler {
         // The task's callback handles cleanup: removing from active, freeing slot, dispatching next.
         if let Some(active) = self.active.get(&id) {
             active.cancel_flag.store(true, Ordering::Relaxed);
+            self.cancelled_task_ids.insert(id);
             // Emit cancelled immediately so the UI updates
             self.emit_cancelled(id, 0, &active.source, &active.dest, active.op_type);
             return true;
@@ -305,6 +359,7 @@ impl TransferScheduler {
             let source = task.source.clone();
             let dest = task.destination.clone();
             cancelled_ids.push(task.id);
+            self.task_outcomes.insert(task.id, Err("Cancelled".into()));
             self.save_to_history(&TransferHistoryRecord {
                 id: task.id, batch_id: task.batch_id, transfer_type: op_type,
                 source, destination: dest,
@@ -313,10 +368,12 @@ impl TransferScheduler {
                 started_at: 0, completed_at: now_secs(), avg_speed_bps: None,
             });
         }
+        self.check_move_groups();
 
         // Cancel active tasks by setting their flag; workers clean up their own slots.
         for (id, active) in &self.active {
             active.cancel_flag.store(true, Ordering::Relaxed);
+            self.cancelled_task_ids.insert(*id);
             cancelled_ids.push(*id);
         }
 
@@ -383,8 +440,11 @@ impl TransferScheduler {
             let sched_clone = sched.clone();
 
             let handle = tokio::spawn(async move {
-                let _result = execute_transfer(&task_clone, &cancel_flag, &app, &ftp_mgr).await;
+                let result = execute_transfer(&task_clone, &cancel_flag, &app, &ftp_mgr).await;
                 let mut s = sched_clone.lock().await;
+                let result = if s.cancelled_task_ids.remove(&id) { Err("Cancelled".into()) } else { result };
+                s.task_outcomes.insert(id, result);
+                s.check_move_groups();
                 s.active.remove(&id);
                 s.free_slot_direct(op_type, &source2, &dest2);
                 s.cleanup_finished();
@@ -403,7 +463,7 @@ impl TransferScheduler {
 
     fn can_take_slot(&self, task: &TransferTask) -> bool {
         match task.op_type {
-            TransferType::FtpDownload | TransferType::FtpUpload => {
+            TransferType::FtpDownload | TransferType::FtpUpload | TransferType::FtpCopy => {
                 let conn = extract_ftp_conn(&task.source).or_else(|| extract_ftp_conn(&task.destination));
                 if let Some(conn) = conn {
                     let used = self.ftp_conn_slots.get(&conn).copied().unwrap_or(0);
@@ -434,7 +494,7 @@ impl TransferScheduler {
 
     fn take_slot(&mut self, task: &TransferTask) {
         match task.op_type {
-            TransferType::FtpDownload | TransferType::FtpUpload => {
+            TransferType::FtpDownload | TransferType::FtpUpload | TransferType::FtpCopy => {
                 let conn = extract_ftp_conn(&task.source)
                     .or_else(|| extract_ftp_conn(&task.destination))
                     .unwrap_or_default();
@@ -451,7 +511,7 @@ impl TransferScheduler {
 
     fn free_slot_direct(&mut self, op_type: TransferType, source: &str, dest: &str) {
         match op_type {
-            TransferType::FtpDownload | TransferType::FtpUpload => {
+            TransferType::FtpDownload | TransferType::FtpUpload | TransferType::FtpCopy => {
                 let conn = extract_ftp_conn(source)
                     .or_else(|| extract_ftp_conn(dest))
                     .unwrap_or_default();
@@ -631,6 +691,9 @@ impl TransferScheduler {
 
         if file_paths.is_empty() {
             // No files to transfer — just created directory structure
+            if move_mode {
+                self.register_move(Vec::new(), format!("ftp://{conn_name}{remote_dir_path}"), local_target_dir.to_string(), true)?;
+            }
             return Ok((0, Vec::new()));
         }
 
@@ -651,15 +714,37 @@ impl TransferScheduler {
             }
         }).collect();
 
-        let batch_id = self.next_batch_id();
         let ids = self.enqueue(tasks, sched.clone());
 
-        // Save move_mode for later cleanup (stored in history)
         if move_mode {
-            self.save_batch_meta(batch_id, conn_name, remote_dir_path);
+            self.register_move(ids.clone(), format!("ftp://{conn_name}{remote_dir_path}"), local_target_dir.to_string(), true)?;
         }
 
         Ok((total_bytes, ids))
+    }
+
+    pub async fn enqueue_ftp_folder_copy(
+        &mut self,
+        sched: Arc<TokioMutex<TransferScheduler>>,
+        conn_name: &str,
+        source_dir: &str,
+        destination_dir: &str,
+    ) -> Result<Vec<u64>, String> {
+        let mgr = self.ftp_manager.lock().await;
+        let session = mgr.create_independent(conn_name).await?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        let entries = crate::ftp::list_dir_recursive(&mut ftp.client, source_dir).await?;
+        ensure_remote_dir(&mut ftp.client, destination_dir).await?;
+        for (path, _, is_dir) in &entries {
+            if *is_dir {
+                let relative = path.strip_prefix(source_dir.trim_end_matches('/')).ok_or("Invalid FTP directory entry")?;
+                ensure_remote_dir(&mut ftp.client, &format!("{}{}", destination_dir.trim_end_matches('/'), relative)).await?;
+            }
+        }
+        let _ = ftp.client.quit().await;
+        let tasks = ftp_copy_file_tasks(conn_name, source_dir, destination_dir, entries);
+        Ok(self.enqueue(tasks, sched))
     }
 
     pub async fn enqueue_ftp_folder_upload(
@@ -762,22 +847,84 @@ impl TransferScheduler {
             .collect();
 
         if tasks.is_empty() {
+            if move_mode {
+                self.register_move(Vec::new(), local_dir_path.to_string(), format!("ftp://{conn_name}{remote_target_dir}"), true)?;
+            }
             return Ok((0, Vec::new()));
         }
 
-        let batch_id = self.next_batch_id();
         let ids = self.enqueue(tasks, sched.clone());
 
         if move_mode {
-            self.save_batch_meta(batch_id, conn_name, local_dir_path);
+            self.register_move(ids.clone(), local_dir_path.to_string(), format!("ftp://{conn_name}{remote_target_dir}"), true)?;
         }
 
         Ok((total_bytes, ids))
     }
 
-    fn save_batch_meta(&mut self, _batch_id: u64, _conn_name: &str, _source_path: &str) {
-        // Store move-mode metadata for deferred cleanup.
-        // Cleanup is handled by the Tauri command after verifying all tasks succeeded.
+    pub fn register_move(&mut self, ids: Vec<u64>, source: String, destination: String, is_dir: bool) -> Result<u64, String> {
+        let src = source.trim_end_matches('/');
+        let dst = destination.trim_end_matches('/');
+        if src == dst || (is_dir && dst.starts_with(&format!("{src}/"))) {
+            return Err("Cannot move an entry into itself or its descendant".into());
+        }
+        let tasks = ids.iter().map(|id| self.task_index.get(id).cloned()
+            .ok_or_else(|| format!("Unknown transfer task {id}"))).collect::<Result<Vec<_>, _>>()?;
+        if !is_dir && tasks.len() != 1 { return Err("A file move requires exactly one transfer task".into()); }
+        if ids.len() != ids.iter().copied().collect::<HashSet<_>>().len() {
+            return Err("Duplicate move task ID".into());
+        }
+        for task in &tasks {
+            if !matches!(task.op_type, TransferType::FtpCopy | TransferType::FtpDownload | TransferType::FtpUpload) {
+                return Err("Move group contains a non-FTP transfer task".into());
+            }
+            if is_dir {
+                let source_prefix = format!("{}/", source.replace('\\', "/").trim_end_matches('/'));
+                let dest_prefix = format!("{}/", destination.replace('\\', "/").trim_end_matches('/'));
+                let normalized_source = task.source.replace('\\', "/");
+                let normalized_dest = task.destination.replace('\\', "/");
+                if !normalized_source.starts_with(&source_prefix)
+                    || !normalized_dest.starts_with(&dest_prefix)
+                    || normalized_source[source_prefix.len()..] != normalized_dest[dest_prefix.len()..] {
+                    return Err(format!("Move task {} is outside its source or destination directory", task.id));
+                }
+            } else if task.source != source || task.destination != destination {
+                return Err("Move task does not match the selected file".into());
+            }
+        }
+        let move_id = self.next_move_id.fetch_add(1, Ordering::Relaxed);
+        self.move_groups.insert(move_id, MoveGroup { source, destination, is_dir, tasks });
+        self.check_move_groups();
+        Ok(move_id)
+    }
+
+    fn check_move_groups(&mut self) {
+        let ready: Vec<u64> = self.move_groups.iter()
+            .filter(|(_, group)| move_group_result(&group.tasks.iter().map(|task| task.id).collect::<Vec<_>>(), &self.task_outcomes).is_some())
+            .map(|(id, _)| *id).collect();
+        for move_id in ready {
+            let group = self.move_groups.remove(&move_id).unwrap();
+            let transfer_result = move_group_result(&group.tasks.iter().map(|task| task.id).collect::<Vec<_>>(), &self.task_outcomes).unwrap();
+            for task in &group.tasks {
+                self.task_outcomes.remove(&task.id);
+                self.task_index.remove(&task.id);
+            }
+            let app = self.app.clone();
+            let ftp_manager = self.ftp_manager.clone();
+            tokio::spawn(async move {
+                let outcome = match transfer_result {
+                    Ok(()) => super::move_group::verify_and_cleanup(&group.source, &group.destination, group.is_dir, &group.tasks, &ftp_manager).await,
+                    Err(error) => Err(error),
+                };
+                let status = move_terminal_status(&outcome);
+                let error = outcome.err();
+                log::info!("[transfer] move group {move_id}: status={status} source={} destination={} error={:?}", group.source, group.destination, error);
+                let _ = app.emit("transfer-move-terminal", serde_json::json!({
+                    "move_id": move_id, "source": group.source, "destination": group.destination,
+                    "status": status, "error": error,
+                }));
+            });
+        }
     }
 
     pub fn cleanup_finished(&mut self) {
@@ -795,5 +942,50 @@ impl TransferScheduler {
         for (op_type, source, dest) in finished {
             self.free_slot_direct(op_type, &source, &dest);
         }
+    }
+}
+
+#[cfg(test)]
+mod move_group_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_waits_for_every_child() {
+        let mut outcomes = HashMap::new();
+        outcomes.insert(1, Ok(10));
+        assert!(move_group_result(&[1, 2], &outcomes).is_none());
+        outcomes.insert(2, Ok(20));
+        assert_eq!(move_group_result(&[1, 2], &outcomes), Some(Ok(())));
+        assert_eq!(move_group_result(&[], &outcomes), Some(Ok(())));
+    }
+
+    #[test]
+    fn failure_or_cancellation_prevents_cleanup() {
+        let mut outcomes = HashMap::new();
+        outcomes.insert(1, Ok(10));
+        outcomes.insert(2, Err("Cancelled".into()));
+        assert_eq!(move_group_result(&[1, 2], &outcomes), Some(Err("Cancelled".into())));
+        outcomes.insert(2, Err("Download failed".into()));
+        assert_eq!(move_group_result(&[1, 2], &outcomes), Some(Err("Download failed".into())));
+    }
+
+    #[test]
+    fn recursive_copy_tasks_never_retrieve_directories() {
+        let tasks = ftp_copy_file_tasks("one", "/src", "/dst", vec![
+            ("/src/empty".into(), 0, true),
+            ("/src/nested".into(), 0, true),
+            ("/src/nested/file.txt".into(), 9, false),
+        ]);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].source, "ftp://one/src/nested/file.txt");
+        assert_eq!(tasks[0].destination, "ftp://one/dst/nested/file.txt");
+        assert!(ftp_copy_file_tasks("one", "/src", "/dst", vec![]).is_empty());
+    }
+
+    #[test]
+    fn cleanup_failure_is_reported_as_partial_move() {
+        assert_eq!(move_terminal_status(&Err("PARTIAL: source cleanup failed".into())), "partial");
+        assert_eq!(move_terminal_status(&Err("Download failed".into())), "failed");
+        assert_eq!(move_terminal_status(&Ok(())), "done");
     }
 }

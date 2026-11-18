@@ -5,6 +5,7 @@ import { layout } from '$lib/stores/layout';
 import { clipboard } from '$lib/stores/clipboard';
 import { transfer } from '$lib/stores/transfer';
 import { firstAvailableCopyPath, buildLocalPasteTasks } from '$lib/utils/copy-naming';
+import { ftpConflictDecision, queuedMoveMessage, summarizeMoveOutcomes } from '$lib/utils/ftp-move-policy';
 import { invokeArchiveWithOptionalPassword, getCachedArchivePassword } from '$lib/utils/archive-password';
 import { promptConflict, promptConflictStream, setScanningConflicts } from '$lib/composables/dialog-state.svelte';
 import {
@@ -22,6 +23,34 @@ let _deps: ClipboardDeps | null = null;
 
 export function initClipboardDeps(deps: ClipboardDeps) {
   _deps = deps;
+}
+
+interface MoveTerminal {
+  move_id: number;
+  source: string;
+  destination: string;
+  status: 'done' | 'failed' | 'partial';
+  error?: string;
+}
+
+async function registerAndWaitForMove(ids: number[], source: string, destination: string, isDir: boolean): Promise<MoveTerminal> {
+  transfer.markMoveTasks(ids);
+  let moveId: number | null = null;
+  let resolveResult!: (result: MoveTerminal) => void;
+  const result = new Promise<MoveTerminal>(resolve => { resolveResult = resolve; });
+  const pending: MoveTerminal[] = [];
+  const unlisten = await listen<MoveTerminal>('transfer-move-terminal', event => {
+    if (moveId === null) { pending.push(event.payload); return; }
+    if (event.payload.move_id === moveId) resolveResult(event.payload);
+  });
+  try {
+    moveId = await invoke<number>('transfer_register_move', { ids, source, destination, isDir });
+    const early = pending.find(event => event.move_id === moveId);
+    if (early) resolveResult(early);
+    const outcome = await result;
+    transfer.setMoveOutcome(ids, outcome.status, outcome.error);
+    return outcome;
+  } finally { unlisten(); }
 }
 
 // --- FTP utility functions ---
@@ -43,6 +72,11 @@ export function getFtpRemotePath(p: string): string {
 export function getFtpDestPath(dirPath: string, name: string): string {
   const base = dirPath.replace(/\/$/, '');
   return base + '/' + name;
+}
+
+function parentDirectory(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return slash < 0 ? path : path.slice(0, slash);
 }
 
 // --- Conflict scanning ---
@@ -255,6 +289,14 @@ export async function handlePaste(
 
   // Cross-backend paste: skip local conflict detection
   if (isCrossBackend) {
+    const pendingMoves: Array<Promise<{ entry: (typeof entries)[number]; result: MoveTerminal }>> = [];
+    const failedToQueue: Array<(typeof entries)[number]> = [];
+    const queueMove = (entry: (typeof entries)[number], ids: number[], destination: string) => {
+      if (ids.length === 0 && !entry.is_dir) { failedToQueue.push(entry); return; }
+      pendingMoves.push(registerAndWaitForMove(ids, entry.path, destination, entry.is_dir)
+        .then(result => ({ entry, result }))
+        .catch(error => ({ entry, result: { move_id: -1, source: entry.path, destination, status: 'failed' as const, error: String(error) } })));
+    };
     if (srcIsFtp && !destIsFtp) {
       // FTP → Local: download via TransferManager
       const destDir = destinationPath.replace(/[\\\/]+$/, '');
@@ -291,14 +333,23 @@ export async function handlePaste(
       // Download folders as batch downloads (skip internal conflicting files)
       for (const dir of dirs) {
         const skipRel = skipDirMap.get(dir.path) || [];
-        await invoke('ftp_download_folder', {
-          connName: getFtpConnName(dir.path),
-          remotePath: getFtpRemotePath(dir.path),
-          localPath: destDir + '\\' + dir.name,
-          moveMode: operation === 'cut',
-          skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
-        });
-        totalQueued++;
+        try {
+          const response = await invoke<string>('ftp_download_folder', {
+            connName: getFtpConnName(dir.path),
+            remotePath: getFtpRemotePath(dir.path),
+            localPath: destDir + '\\' + dir.name,
+            moveMode: false,
+            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
+          });
+          if (operation === 'cut') {
+            if (skipRel.length > 0 || (dir.skip_rel_paths || []).length > 0) failedToQueue.push(dir);
+            else queueMove(dir, JSON.parse(response).task_ids, destDir + '\\' + dir.name);
+          }
+          totalQueued++;
+        } catch (error) {
+          deps.showToast(`Download failed to queue: ${error}`);
+          if (operation === 'cut') failedToQueue.push(dir);
+        }
       }
 
       // Download files as individual transfers (skip conflicting files)
@@ -313,6 +364,7 @@ export async function handlePaste(
         }));
         const ids = await transfer.enqueueTransfers(tasks);
         totalQueued += ids.length;
+        if (operation === 'cut') downloadFiles.forEach((entry: any, index: number) => queueMove(entry, ids[index] === undefined ? [] : [ids[index]], destDir + '\\' + entry.name));
       }
 
       if (totalQueued > 0) {
@@ -320,17 +372,7 @@ export async function handlePaste(
         deps.onOpenTransfer();
       }
 
-      if (operation === 'cut') {
-        for (const entry of files) {
-          if (skipFiles.has(entry.name)) continue;
-          await invoke('ftp_delete', { path: entry.path, permanent: true }).catch(() => {});
-        }
-        for (const dir of dirs) {
-          const hasSkipped = (skipDirMap.get(dir.path) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
-          if (hasSkipped) continue;
-          await invoke('ftp_delete', { path: dir.path, permanent: true }).catch(() => {});
-        }
-      }
+      if (operation === 'cut') files.filter((f: any) => skipFiles.has(f.name)).forEach((entry: any) => failedToQueue.push(entry));
     } else if (!srcIsFtp && destIsFtp) {
       // Local → FTP: upload via TransferManager
       const destConn = getFtpConnName(destinationPath);
@@ -368,14 +410,23 @@ export async function handlePaste(
       // Upload folders as batch uploads (skip internal conflicting files)
       for (const dir of dirs) {
         const skipRel = skipDirMap.get(dir.name) || [];
-        await invoke('ftp_upload_folder', {
-          connName: destConn,
-          localPath: dir.path,
-          remotePath: `${destBase}/${dir.name}`,
-          moveMode: operation === 'cut',
-          skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
-        });
-        totalQueued++;
+        try {
+          const response = await invoke<string>('ftp_upload_folder', {
+            connName: destConn,
+            localPath: dir.path,
+            remotePath: `${destBase}/${dir.name}`,
+            moveMode: false,
+            skipRelPaths: [...skipRel, ...(dir.skip_rel_paths || [])],
+          });
+          if (operation === 'cut') {
+            if (skipRel.length > 0 || (dir.skip_rel_paths || []).length > 0) failedToQueue.push(dir);
+            else queueMove(dir, JSON.parse(response).task_ids, `ftp://${destConn}${destBase}/${dir.name}`);
+          }
+          totalQueued++;
+        } catch (error) {
+          deps.showToast(`Upload failed to queue: ${error}`);
+          if (operation === 'cut') failedToQueue.push(dir);
+        }
       }
 
       // Upload files as individual transfers (skip conflicting files)
@@ -390,6 +441,7 @@ export async function handlePaste(
         }));
         const ids = await transfer.enqueueTransfers(tasks);
         totalQueued += ids.length;
+        if (operation === 'cut') uploadFiles.forEach((entry: any, index: number) => queueMove(entry, ids[index] === undefined ? [] : [ids[index]], `ftp://${destConn}${destBase}/${entry.name}`));
       }
 
       if (totalQueued > 0) {
@@ -397,61 +449,96 @@ export async function handlePaste(
         deps.onOpenTransfer();
       }
 
-      if (operation === 'cut') {
-        const delEntries = entries.filter((e: any) => !e.is_dir && !skipFiles.has(e.name));
-        if (delEntries.length > 0) {
-          const delTasks = delEntries.map((entry: any) => ({
-            op_type: 'delete' as const,
-            source: entry.path,
-            destination: '',
-            total_bytes: entry.size || 0,
-          }));
-          await transfer.enqueueTransfers(delTasks);
-        }
-        for (const dir of dirs) {
-          const hasSkipped = (skipDirMap.get(dir.name) || []).length > 0 || (dir.skip_rel_paths || []).length > 0;
-          if (hasSkipped) continue;
-          await invoke('delete_file', { path: dir.path }).catch(() => {});
-        }
-      }
+      if (operation === 'cut') files.filter((f: any) => skipFiles.has(f.name)).forEach((entry: any) => failedToQueue.push(entry));
     } else if (srcIsFtp && destIsFtp) {
       // FTP → FTP
       const srcConn = getFtpConnName(entries[0].path);
       const destConn = getFtpConnName(destinationPath);
+      if (entries.some((entry: any) => getFtpConnName(entry.path) !== srcConn)) {
+        deps.showToast('Clipboard contains multiple FTP connections');
+        return;
+      }
       if (srcConn === destConn) {
         const destBase = getFtpDestPath(destinationPath, '').replace(/\/+$/, '');
+        let listing: Array<{ name: string }>;
+        try { listing = await invoke<Array<{ name: string }>>('ftp_read_directory', { path: destinationPath }); }
+        catch (error) { deps.showToast(`Could not read destination: ${error}`); return; }
+        const occupied = new Set(listing.map(item => item.name));
         if (operation === 'cut') {
-          for (const entry of entries) {
-            const newFullPath = destBase + '/' + entry.name;
+          let moved = 0;
+          for (const [index, entry] of entries.entries()) {
+            let targetName = entry.name;
+            if (occupied.has(targetName) && !force) {
+              const choice = await promptConflict(entry.name, entries.length > 1);
+              const decision = ftpConflictDecision(entry.name, occupied, choice);
+              if (decision.action === 'abort') { failedToQueue.push(...entries.slice(index)); break; }
+              if (decision.action === 'skip') { failedToQueue.push(entry); continue; }
+              targetName = decision.targetName;
+            }
+            occupied.add(targetName);
+            const newFullPath = destBase + '/' + targetName;
+            if (entry.path === newFullPath) { deps.showToast('Cannot move an entry onto itself'); failedToQueue.push(entry); continue; }
             try {
-              await invoke('ftp_rename', { oldPath: entry.path, newPath: newFullPath });
+              if (force && listing.some(item => item.name === targetName)) throw new Error('FTP_RENAME_REJECTED: destination exists');
+              await invoke('ftp_rename', { oldPath: entry.path, newPath: newFullPath, isDir: entry.is_dir });
+              moved++;
             } catch (e: any) {
-              deps.showToast(`Move failed: ${e}`);
+              if (!String(e).includes('FTP_RENAME_REJECTED')) { deps.showToast(`Move failed: ${e}`); failedToQueue.push(entry); continue; }
+              try {
+                const ids = entry.is_dir
+                  ? await invoke<number[]>('ftp_copy_folder', { connName: srcConn, sourceDir: getFtpRemotePath(entry.path), destinationDir: getFtpRemotePath(newFullPath) })
+                  : await transfer.enqueueTransfers([{ op_type: 'ftp-copy', source: entry.path, destination: newFullPath, total_bytes: entry.size || 0, conn_name: srcConn }]);
+                queueMove(entry, ids, newFullPath);
+              } catch (copyError) { deps.showToast(`Move failed: ${copyError}`); failedToQueue.push(entry); }
             }
           }
-          deps.showToast(`Moved ${entries.length} item(s) on ${srcConn}`);
-        } else {
-          let done = 0;
-          for (const entry of entries) {
-            deps.showToast(`Copying ${entry.name} (${done + 1}/${entries.length})...`);
-            const newRemote = destBase + '/' + entry.name;
-            await invoke('ftp_copy', {
-              connName: srcConn,
-              srcPath: getFtpRemotePath(entry.path),
-              dstPath: newRemote,
-            }).catch((e: any) => { deps.showToast(`Copy failed: ${e}`); });
-            done++;
+          if (pendingMoves.length > 0) { deps.showToast(queuedMoveMessage(pendingMoves.length)); deps.onOpenTransfer(); }
+          const results = await Promise.all(pendingMoves);
+          const { failed, moved: completed } = summarizeMoveOutcomes(results, failedToQueue, moved);
+          const current = get(clipboard);
+          if (current.operation === 'cut' && current.entries.map(e => e.path).join('\n') === entries.map((e: any) => e.path).join('\n')) {
+            if (failed.length > 0) { clipboard.cut(failed); layout.setMark('cut', failed.map((e: any) => e.path)); }
+            else { clipboard.clear(); layout.clearMark(); }
           }
-          deps.showToast(`Copied ${entries.length} item(s) on ${srcConn}`);
+          for (const { result } of results) if (result.status !== 'done') deps.showToast(`Move ${result.status}: ${result.error || 'unknown error'}`);
+          deps.showToast(`${completed} moved, ${failed.length} retained for retry`);
+          await deps.refreshPanels([destinationPath, ...entries.map((e: any) => parentDirectory(e.path))]);
+          return;
+        } else {
+          let queued = 0;
+          for (const entry of entries) {
+            const newRemote = destBase + '/' + entry.name;
+            try {
+              if (entry.is_dir) {
+                const ids = await invoke<number[]>('ftp_copy_folder', { connName: srcConn, sourceDir: getFtpRemotePath(entry.path), destinationDir: getFtpRemotePath(newRemote) });
+                queued += ids.length;
+              } else {
+                const ids = await transfer.enqueueTransfers([{ op_type: 'ftp-copy', source: entry.path, destination: newRemote, total_bytes: entry.size || 0, conn_name: srcConn }]);
+                queued += ids.length;
+              }
+            } catch (e) { deps.showToast(`Copy failed: ${e}`); }
+          }
+          deps.showToast(`Queued ${queued} FTP copy task(s)`);
+          if (queued > 0) deps.onOpenTransfer();
         }
       } else {
         deps.showToast('Cross-server transfer not yet supported');
       }
     }
 
-    if (operation === 'cut') {
-      clipboard.clear();
-    }
+    if (operation === 'cut' && (srcIsFtp !== destIsFtp)) {
+      if (pendingMoves.length > 0) deps.showToast(queuedMoveMessage(pendingMoves.length));
+      const results = await Promise.all(pendingMoves);
+      const { failed, moved } = summarizeMoveOutcomes(results, failedToQueue);
+      const current = get(clipboard);
+      if (current.operation === 'cut' && current.entries.map(e => e.path).join('\n') === entries.map((e: any) => e.path).join('\n')) {
+        if (failed.length > 0) { clipboard.cut(failed); layout.setMark('cut', failed.map((e: any) => e.path)); }
+        else { clipboard.clear(); layout.clearMark(); }
+      }
+      for (const { result } of results) if (result.status !== 'done') deps.showToast(`Move ${result.status}: ${result.error || 'unknown error'}`);
+      deps.showToast(`${moved} moved, ${failed.length} retained for retry`);
+      await deps.refreshPanels([destinationPath, ...entries.map((e: any) => parentDirectory(e.path))]);
+    } else if (operation === 'cut') clipboard.clear();
     return;
   }
 

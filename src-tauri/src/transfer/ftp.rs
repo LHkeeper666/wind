@@ -16,6 +16,67 @@ use crate::ftp::FtpManager;
 use super::TransferTask;
 use super::helpers::{check_cancelled, extract_ftp_conn};
 
+pub async fn execute_ftp_copy(
+    task: &TransferTask,
+    cancel_flag: &Arc<AtomicBool>,
+    app: &AppHandle,
+    ftp_manager: &Arc<TokioMutex<FtpManager>>,
+) -> Result<u64, String> {
+    let conn = task.conn_name.clone().or_else(|| extract_ftp_conn(&task.source))
+        .ok_or("Missing FTP connection")?;
+    let source = task.source.strip_prefix(&format!("ftp://{conn}")).ok_or("Invalid FTP source")?;
+    let destination = task.destination.strip_prefix(&format!("ftp://{conn}")).ok_or("Invalid FTP destination")?;
+    let temp = std::env::temp_dir().join(format!("wind_ftp_copy_{}_{}", std::process::id(), task.id));
+    let result = async {
+        let mgr = ftp_manager.lock().await;
+        let session = mgr.create_independent(&conn).await?;
+        drop(mgr);
+        let mut ftp = session.lock().await;
+        let mut stream = tokio::time::timeout(std::time::Duration::from_secs(30), ftp.client.retr_as_stream(source)).await
+            .map_err(|_| "FTP RETR timed out".to_string())?.map_err(|e| format!("FTP RETR failed: {e}"))?;
+        let mut file = tokio::fs::File::create(&temp).await.map_err(|e| e.to_string())?;
+        let mut buffer = vec![0u8; 65536];
+        let mut done = 0u64;
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".into()); }
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let n = tokio::time::timeout(std::time::Duration::from_secs(30), stream.read(&mut buffer)).await
+                .map_err(|_| "FTP read timed out".to_string())?.map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            file.write_all(&buffer[..n]).await.map_err(|e| e.to_string())?;
+            done += n as u64;
+            let _ = app.emit("transfer-progress", serde_json::json!({
+                "id": task.id, "batch_id": task.batch_id, "op_type": task.op_type, "status": "running",
+                "bytes_done": done, "total_bytes": task.total_bytes, "speed_bps": 0,
+                "source": task.source, "destination": task.destination,
+            }));
+        }
+        use tokio::io::AsyncWriteExt;
+        file.flush().await.map_err(|e| e.to_string())?;
+        drop(file);
+        tokio::time::timeout(std::time::Duration::from_secs(30), ftp.client.finalize_retr_stream(stream)).await
+            .map_err(|_| "FTP RETR finalize timed out".to_string())?.map_err(|e| format!("FTP RETR finalize failed: {e}"))?;
+        if cancel_flag.load(Ordering::Relaxed) { return Err("Cancelled".into()); }
+        let file = tokio::fs::File::open(&temp).await.map_err(|e| e.to_string())?;
+        let mut reader = ProgressAsyncReader {
+            inner: file, done: 0, total: done, task_id: task.id, batch_id: task.batch_id,
+            op_type: task.op_type, source: task.source.clone(), dest: task.destination.clone(),
+            last_emit: Instant::now(), start: Instant::now(), cancel_flag: cancel_flag.clone(), app: app.clone(),
+        };
+        let upload = tokio::time::timeout(std::time::Duration::from_secs(300), ftp.client.put_file(destination, &mut reader)).await
+            .map_err(|_| "FTP upload timed out".to_string())?.map_err(|e| format!("FTP upload failed: {e}"));
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = ftp.client.rm(destination).await;
+            return Err("Cancelled".into());
+        }
+        upload?;
+        let _ = ftp.client.quit().await;
+        Ok(done)
+    }.await;
+    let _ = tokio::fs::remove_file(&temp).await;
+    result
+}
+
 pub async fn execute_ftp_download(
     task: &TransferTask,
     cancel_flag: &Arc<AtomicBool>,
@@ -89,8 +150,8 @@ pub async fn execute_ftp_download(
         }
 
         use tokio::io::AsyncReadExt;
-        let n = stream.read(&mut buf)
-            .await
+        let n = tokio::time::timeout(std::time::Duration::from_secs(30), stream.read(&mut buf))
+            .await.map_err(|_| "Download read timed out".to_string())?
             .map_err(|e| format!("Download read error: {}", e))?;
         if n == 0 { break; }
 
@@ -117,6 +178,8 @@ pub async fn execute_ftp_download(
     }
 
     file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+    ftp.client.finalize_retr_stream(stream).await
+        .map_err(|e| format!("Download finalize error: {e}"))?;
     let _ = ftp.client.quit().await;
     Ok(done)
 }

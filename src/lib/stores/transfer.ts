@@ -8,7 +8,8 @@ import { logError } from '$lib/utils/log';
 export interface TransferEntry {
   id: number;
   batchId: number;
-  opType: 'copy' | 'move' | 'delete' | 'ftp-download' | 'ftp-upload' | 'extract';
+  opType: 'copy' | 'move' | 'delete' | 'ftp-download' | 'ftp-upload' | 'ftp-copy' | 'extract';
+  moveGroup?: boolean;
   source: string;
   destination: string;
   totalBytes: number;
@@ -56,6 +57,7 @@ function opTypeLabel(opType: string): string {
     case 'delete': return 'Delete';
     case 'ftp-download': return 'FTP Download';
     case 'ftp-upload': return 'FTP Upload';
+    case 'ftp-copy': return 'FTP Copy';
     case 'extract': return 'Extract';
     default: return opType;
   }
@@ -162,7 +164,7 @@ function createTransferStore() {
           const newEntries = [...entries];
           newEntries[idx] = {
             ...newEntries[idx],
-            status: 'done' as const,
+            status: newEntries[idx].moveGroup ? 'running' as const : 'done' as const,
             bytesDone: (p.bytes_done as number) || newEntries[idx].totalBytes,
             totalBytes: (p.bytes_done as number) || newEntries[idx].totalBytes,
             elapsedMs: p.elapsed_ms as number,
@@ -236,6 +238,20 @@ function createTransferStore() {
       logError('transfer', `enqueue failed: ${e}`);
       return [];
     }
+  }
+
+  function markMoveTasks(ids: number[]) {
+    const selected = new Set(ids);
+    update(entries => entries.map(entry => selected.has(entry.id)
+      ? { ...entry, moveGroup: true, status: entry.status === 'done' ? 'running' as const : entry.status }
+      : entry));
+  }
+
+  function setMoveOutcome(ids: number[], status: 'done' | 'failed' | 'partial', error?: string) {
+    const selected = new Set(ids);
+    update(entries => entries.map(entry => selected.has(entry.id)
+      ? { ...entry, moveGroup: true, status: status === 'done' ? 'done' as const : 'failed' as const, error }
+      : entry));
   }
 
   async function enqueueExtract(opts: {
@@ -382,6 +398,8 @@ function createTransferStore() {
   return {
     subscribe,
     enqueueTransfers,
+    markMoveTasks,
+    setMoveOutcome,
     enqueueExtract,
     cancelTransfer,
     cancelAllTransfers,

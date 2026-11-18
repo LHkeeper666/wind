@@ -17,6 +17,16 @@ pub fn parse_ftp_url(url: &str) -> Result<(&str, &str), String> {
     Ok((name, path))
 }
 
+fn invalid_move_target(source: &str, target: &str, is_dir: bool) -> bool {
+    let source = source.trim_end_matches('/');
+    let target = target.trim_end_matches('/');
+    source == target || (is_dir && target.starts_with(&format!("{source}/")))
+}
+
+fn rename_rejected(error: &str) -> String {
+    format!("FTP_RENAME_REJECTED: {error}")
+}
+
 pub async fn try_list_dir(
     mgr: &crate::ftp::FtpManager,
     conn_name: &str,
@@ -216,10 +226,17 @@ pub async fn ftp_delete(
 pub async fn ftp_rename(
     old_path: String,
     new_path: String,
+    is_dir: Option<bool>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let (conn_name, remote_path) = parse_ftp_url(&old_path)?;
-    let (_, new_remote) = parse_ftp_url(&new_path)?;
+    let (new_conn_name, new_remote) = parse_ftp_url(&new_path)?;
+    if conn_name != new_conn_name {
+        return Err("Cannot rename across FTP connections".into());
+    }
+    if invalid_move_target(remote_path, new_remote, is_dir == Some(true)) {
+        return Err("Cannot move a directory into itself or its descendant".into());
+    }
     info!(
         "[FTP] command ftp_rename: conn={} from={} to={}",
         conn_name, remote_path, new_remote
@@ -238,82 +255,27 @@ pub async fn ftp_rename(
             }
             Err(e) => {
                 warn!(
-                    "[FTP] rename: server-side rename failed ({}), falling back to copy+delete",
+                    "[FTP] rename: server-side rename failed ({}); caller may queue a tracked copy",
                     e
                 );
+                return Err(rename_rejected(&e.to_string()));
             }
         }
     }
 
-    // Fallback: download → re-upload → delete source
-    ftp_copy_move_fallback(conn_name, remote_path, new_remote, &state).await?;
-    info!("[FTP] rename: copy+delete fallback completed");
-    Ok(new_path.to_string())
 }
 
-async fn ftp_copy_move_fallback(
-    conn_name: &str,
-    src_remote: &str,
-    dst_remote: &str,
-    state: &tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join(format!(
-        "wind_ftp_move_{}_{}",
-        std::process::id(),
-        src_remote.rsplit('/').next().unwrap_or("file")
-    ));
+#[cfg(test)]
+mod move_tests {
+    use super::{invalid_move_target, rename_rejected};
 
-    // Download
-    debug!("[FTP] move-fallback: downloading to temp {}", tmp.display());
-    {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(conn_name)?;
-        drop(mgr);
-        let mut ftp = session.lock().await;
-        let mut stream = ftp
-            .client
-            .retr_as_stream(src_remote)
-            .await
-            .map_err(|e| format!("Failed to open download: {}", e))?;
-        let mut file = tokio::fs::File::create(&tmp)
-            .await
-            .map_err(|e| format!("Failed to create temp: {}", e))?;
-        tokio::io::copy(&mut stream, &mut file)
-            .await
-            .map_err(|e| format!("Failed to download: {}", e))?;
+    #[test]
+    fn rejected_server_rename_is_routed_to_tracked_fallback() {
+        assert!(rename_rejected("550 Error during rename operation").starts_with("FTP_RENAME_REJECTED:"));
+        assert!(invalid_move_target("/src", "/src/nested", true));
+        assert!(invalid_move_target("/src/file", "/src/file", false));
+        assert!(!invalid_move_target("/src", "/other", true));
     }
-
-    // Upload
-    debug!("[FTP] move-fallback: uploading to {}", dst_remote);
-    {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(conn_name)?;
-        drop(mgr);
-        let mut ftp = session.lock().await;
-        let mut file = tokio::fs::File::open(&tmp)
-            .await
-            .map_err(|e| format!("Failed to read temp: {}", e))?;
-        ftp.client
-            .put_file(dst_remote, &mut file)
-            .await
-            .map_err(|e| format!("Failed to upload: {}", e))?;
-    }
-
-    // Delete source
-    debug!("[FTP] move-fallback: deleting source {}", src_remote);
-    {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(conn_name)?;
-        drop(mgr);
-        let mut ftp = session.lock().await;
-        ftp.client
-            .rm(src_remote)
-            .await
-            .map_err(|e| format!("Failed to delete source: {}", e))?;
-    }
-
-    let _ = tokio::fs::remove_file(&tmp).await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -507,6 +469,18 @@ pub async fn ftp_upload_folder(
         )
         .await?;
     Ok(serde_json::json!({ "total_bytes": total_bytes, "task_ids": ids }).to_string())
+}
+
+#[tauri::command]
+pub async fn ftp_copy_folder(
+    conn_name: String,
+    source_dir: String,
+    destination_dir: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<u64>, String> {
+    let sched = state.transfer_scheduler.clone();
+    let mut scheduler = sched.lock().await;
+    scheduler.enqueue_ftp_folder_copy(sched.clone(), &conn_name, &source_dir, &destination_dir).await
 }
 
 #[tauri::command]

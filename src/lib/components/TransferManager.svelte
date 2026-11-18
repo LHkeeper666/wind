@@ -266,11 +266,11 @@
         <!-- Batch divider -->
         <div class="batch-divider" class:active={batch.isActive}>
           {#if batch.isActive}
-            ──── Now · {transfer.util.opTypeLabel(batch.opType)} ({
+            ──── Now · {batch.entries.some(e => e.moveGroup) ? 'Move' : transfer.util.opTypeLabel(batch.opType)} ({
               batch.entries.filter(e => e.status === 'done' || e.status === 'failed').length
             }/{batch.entries.length} done) ────
           {:else}
-            ──── {new Date(batch.entries[0]?.startTime || Date.now()).toLocaleDateString()} {new Date(batch.entries[0]?.startTime || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {transfer.util.opTypeLabel(batch.opType)} ────
+            ──── {new Date(batch.entries[0]?.startTime || Date.now()).toLocaleDateString()} {new Date(batch.entries[0]?.startTime || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {batch.entries.some(e => e.moveGroup) ? 'Move' : transfer.util.opTypeLabel(batch.opType)} ────
           {/if}
         </div>
 

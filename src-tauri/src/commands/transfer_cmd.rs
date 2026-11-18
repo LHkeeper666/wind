@@ -14,6 +14,18 @@ pub async fn transfer_enqueue(
 }
 
 #[tauri::command]
+pub async fn transfer_register_move(
+    ids: Vec<u64>,
+    source: String,
+    destination: String,
+    is_dir: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<u64, String> {
+    let mut scheduler = state.transfer_scheduler.lock().await;
+    scheduler.register_move(ids, source, destination, is_dir)
+}
+
+#[tauri::command]
 pub async fn transfer_cancel(id: u64, state: tauri::State<'_, AppState>) -> Result<bool, String> {
     log::info!("[transfer_cmd] transfer_cancel: id={}", id);
     let sched = state.transfer_scheduler.clone();

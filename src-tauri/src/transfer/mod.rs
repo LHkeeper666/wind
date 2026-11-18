@@ -3,6 +3,7 @@ mod extract;
 mod ftp;
 mod helpers;
 mod local;
+mod move_group;
 mod scheduler;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +26,7 @@ pub enum TransferType {
     Delete,
     FtpDownload,
     FtpUpload,
+    FtpCopy,
     Extract,
 }
 
@@ -113,7 +115,7 @@ async fn execute_transfer(
     cancel_flag: &Arc<AtomicBool>,
     app: &AppHandle,
     ftp_manager: &Arc<TokioMutex<FtpManager>>,
-) {
+) -> Result<u64, String> {
     let start = Instant::now();
     let result = match task.op_type {
         TransferType::FtpDownload => {
@@ -121,6 +123,9 @@ async fn execute_transfer(
         }
         TransferType::FtpUpload => {
             ftp::execute_ftp_upload(task, cancel_flag, app, ftp_manager).await
+        }
+        TransferType::FtpCopy => {
+            ftp::execute_ftp_copy(task, cancel_flag, app, ftp_manager).await
         }
         TransferType::Copy | TransferType::Move => {
             local::execute_local_copy(task, cancel_flag, app).await
@@ -140,10 +145,10 @@ async fn execute_transfer(
     let elapsed = start.elapsed();
     let elapsed_ms = elapsed.as_millis() as u64;
 
-    match result {
+    match &result {
         Ok(bytes_done) => {
             let avg_speed = if elapsed_ms > 0 {
-                (bytes_done as f64 / (elapsed_ms as f64 / 1000.0)) as u64
+                (*bytes_done as f64 / (elapsed_ms as f64 / 1000.0)) as u64
             } else {
                 0
             };
@@ -176,4 +181,5 @@ async fn execute_transfer(
             }
         }
     }
+    result
 }
