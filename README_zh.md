@@ -14,11 +14,6 @@ Wind 是面向 Windows 的 Vim 风格文件工作站，基于 Tauri 2、Rust 和
 
 ![Wind 三栏文件浏览与预览](assets/screenshots/01-file-browser.png)
 
-![Wind 全屏编辑器](assets/screenshots/02-editor.png)
-
-![Wind 浮动终端](assets/screenshots/03-terminal.png)
-
-
 ## 核心功能
 
 - **文件导航：**父目录、当前目录、预览/编辑器三栏布局，可调整列宽比例，并可切换项目树视图。

@@ -14,11 +14,6 @@ A Vim-style file workstation for Windows, built with Tauri 2, Rust, and Svelte 5
 
 ![Wind three-column file browser and preview](assets/screenshots/01-file-browser.png)
 
-![Wind fullscreen editor](assets/screenshots/02-editor.png)
-
-![Wind floating terminal](assets/screenshots/03-terminal.png)
-
-
 ## Highlights
 
 - **File navigation:** parent directory, current directory, and preview/editor panels; adjustable column ratios and a project tree view.
