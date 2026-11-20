@@ -336,19 +336,35 @@
         return;
       }
 
-      if (q === 'ftp connect') {
-        actions.onShowToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
+      if (q === 'ftp remove') {
+        actions.onShowToast('Usage: :ftp remove <name> (deletes the saved site)');
+        visible = false;
+        actions.focusPanel('current');
+        return;
+      }
+      if (q.startsWith('ftp remove ')) {
+        const name = q.substring(11).trim();
+        invoke('ftp_remove', { name }).then((msg: any) => { actions.onShowToast(msg); actions.onNavigate('\\'); })
+          .catch((e: any) => actions.onShowToast(`Error: ${e}`));
         visible = false;
         actions.focusPanel('current');
         return;
       }
 
-      if (q.startsWith('ftp connect ')) {
-        const rest = q.substring(12).trim();
+      if (q === 'ftp connect' || q === 'ftp add') {
+        actions.onShowToast('Usage: :ftp add <name> <host[:port]> [options] | :ftp connect <name> [<host[:port]>] [options]');
+        visible = false;
+        actions.focusPanel('current');
+        return;
+      }
+
+      if (q.startsWith('ftp connect ') || q.startsWith('ftp add ')) {
+        const addOnly = q.startsWith('ftp add ');
+        const rest = q.substring(addOnly ? 8 : 12).trim();
 
         const simpleRe = /^(\S+)$/;
         const simpleMatch = rest.match(simpleRe);
-        if (simpleMatch) {
+        if (simpleMatch && !addOnly) {
           const name = simpleMatch[1];
           invoke('check_ftp_connection', { name }).then(() => {
             actions.onShowToast(`Reconnected to ${name}`);
@@ -356,7 +372,7 @@
             actions.onNavigate(ftpPath);
           }).catch((e) => {
             logError('CommandPalette', `ftp connect command failed: ${name}, error: ${e}`);
-            actions.onShowToast(`No stored connection '${name}'. Use: :ftp connect ${name} <host> [--port N]`);
+            actions.onShowToast(`FTP connection failed: ${e}`);
           });
           visible = false;
           actions.focusPanel('current');
@@ -366,11 +382,11 @@
         const argRe = /^(\S+)\s+(\S+?)(?::(\d+))?(?:\s+--port[=:\s]+(\d+))?(?:\s+--user[=:\s]+(\S+))?(?:\s+--pass[=:\s]+(\S+))?$/;
         const match = rest.match(argRe);
         if (!match) {
-          actions.onShowToast('Usage: :ftp connect <name> [<host[:port]>] [--port N] [--user X] [--pass X]');
+          actions.onShowToast('Usage: :ftp add|connect <name> <host[:port]> [--port N] [--user X] [--pass X]');
         } else {
           const [, name, host, colonPort, optPort, user, pass] = match;
           const port = optPort || colonPort || null;
-          invoke('ftp_connect', {
+          invoke(addOnly ? 'ftp_add' : 'ftp_connect', {
             name,
             host,
             port: port ? parseInt(port) : null,
@@ -378,6 +394,7 @@
             password: pass || null,
           }).then((msg: any) => {
             actions.onShowToast(msg);
+            if (addOnly) { actions.onNavigate('\\'); return; }
             const ftpPath = `ftp://${name}/`;
             invoke('read_directory', { path: ftpPath }).then(() => {
               actions.onNavigate(ftpPath);

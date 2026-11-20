@@ -647,10 +647,8 @@ impl TransferScheduler {
         info!("[transfer] enqueue_ftp_folder_download: conn={conn_name} remote={remote_dir_path} → local={local_target_dir}");
 
         // 1. Get independent FTP session and list recursively
-        let mgr = self.ftp_manager.lock().await;
-        let session = mgr.create_independent(conn_name).await
+        let session = crate::ftp::independent_from_manager(&self.ftp_manager, conn_name).await
             .map_err(|e| format!("Failed to create FTP session for folder download: {e}"))?;
-        drop(mgr);
 
         let mut ftp = session.lock().await;
         let entries = crate::ftp::list_dir_recursive(&mut ftp.client, remote_dir_path).await
@@ -730,9 +728,7 @@ impl TransferScheduler {
         source_dir: &str,
         destination_dir: &str,
     ) -> Result<Vec<u64>, String> {
-        let mgr = self.ftp_manager.lock().await;
-        let session = mgr.create_independent(conn_name).await?;
-        drop(mgr);
+        let session = crate::ftp::independent_from_manager(&self.ftp_manager, conn_name).await?;
         let mut ftp = session.lock().await;
         let entries = crate::ftp::list_dir_recursive(&mut ftp.client, source_dir).await?;
         ensure_remote_dir(&mut ftp.client, destination_dir).await?;
@@ -771,10 +767,8 @@ impl TransferScheduler {
         info!("[transfer] local walk returned {} entries for {local_dir_path}", entries.len());
 
         // 2. Get independent FTP session and pre-create remote directories
-        let mgr = self.ftp_manager.lock().await;
-        let session = mgr.create_independent(conn_name).await
+        let session = crate::ftp::independent_from_manager(&self.ftp_manager, conn_name).await
             .map_err(|e| format!("Failed to create FTP session for folder upload: {e}"))?;
-        drop(mgr);
 
         let mut ftp = session.lock().await;
         let remote_base = remote_target_dir.trim_end_matches('/');

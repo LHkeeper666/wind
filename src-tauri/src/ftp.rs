@@ -36,6 +36,8 @@ pub struct FtpManager {
     sessions: HashMap<String, Arc<Mutex<FtpSession>>>,
     configs: HashMap<String, FtpConnectionConfig>,
     config_path: PathBuf,
+    connection_gates: HashMap<String, Arc<Mutex<()>>>,
+    epochs: HashMap<String, u64>,
 }
 
 impl FtpManager {
@@ -46,6 +48,8 @@ impl FtpManager {
             sessions: HashMap::new(),
             configs: HashMap::new(),
             config_path,
+            connection_gates: HashMap::new(),
+            epochs: HashMap::new(),
         }
     }
 
@@ -71,69 +75,43 @@ impl FtpManager {
         }
     }
 
-    pub async fn connect(&mut self, name: &str, host: &str, port: u16, user: &str, password: &str) -> Result<(), String> {
-        if self.sessions.contains_key(name) {
-            warn!("[FTP] connect '{}': already connected", name);
+    pub fn add_config(&mut self, name: &str, host: &str, port: u16, user: &str, password: &str) -> Result<(), String> {
+        if name.trim().is_empty() || name.contains('/') || host.trim().is_empty() || user.trim().is_empty() || port == 0 {
+            return Err("Invalid FTP site name, host, port or user".into());
+        }
+        if self.configs.contains_key(name) {
             return Err(format!("Connection '{}' already exists", name));
         }
-
-        info!("[FTP] connect '{}': {}:{} as {}", name, host, port, user);
-        let addr = format!("{}:{}", host, port);
-        let mut client = AsyncRustlsFtpStream::connect(&addr)
-            .await
-            .map_err(|e| {
-                error!("[FTP] connect '{}': TCP connect failed: {}", name, e);
-                format!("Failed to connect to {}: {}", addr, e)
-            })?;
-
-        client.login(user, password)
-            .await
-            .map_err(|e| {
-                error!("[FTP] connect '{}': login failed: {}", name, e);
-                format!("Login failed: {}", e)
-            })?;
-
-        // Enable UTF-8 for non-ASCII paths (Chinese, etc.)
-        if let Err(e) = client.opts("UTF8", Some("ON")).await {
-            warn!("[FTP] connect '{}': OPTS UTF8 ON failed (ignored): {}", name, e);
-        }
-
-        // Force binary transfer mode to prevent file corruption
-        client.transfer_type(FileType::Binary).await.map_err(|e| {
-            error!("[FTP] connect '{}': TYPE I failed: {}", name, e);
-            format!("Failed to set binary transfer mode: {}", e)
-        })?;
-
-        info!("[FTP] connect '{}': authenticated successfully", name);
-
-        let config = FtpConnectionConfig {
-            name: name.to_string(),
-            host: host.to_string(),
-            port,
-            user: user.to_string(),
-            password: password.to_string(),
-        };
-
-        let session = FtpSession { client };
-        self.sessions.insert(name.to_string(), Arc::new(Mutex::new(session)));
-        self.configs.insert(name.to_string(), config);
-        self.persist_configs()?;
-        info!("[FTP] connect '{}': session stored, config persisted", name);
+        let config = FtpConnectionConfig { name: name.into(), host: host.trim().into(), port, user: user.trim().into(), password: password.into() };
+        let mut candidate = self.configs.clone();
+        candidate.insert(name.into(), config);
+        self.persist_config_map(&candidate)?;
+        self.configs = candidate;
         Ok(())
     }
 
-    pub async fn disconnect(&mut self, name: &str) -> Result<(), String> {
-        info!("[FTP] disconnect '{}': closing session", name);
-        if let Some(session) = self.sessions.remove(name) {
-            let mut ftp = session.lock().await;
-            if let Err(e) = ftp.client.quit().await {
-                warn!("[FTP] disconnect '{}': QUIT error (ignored): {}", name, e);
-            }
-        }
-        self.configs.remove(name);
-        self.persist_configs()?;
-        info!("[FTP] disconnect '{}': removed, config persisted", name);
+    pub fn disconnect(&mut self, name: &str) -> Result<(), String> {
+        if !self.configs.contains_key(name) { return Err(format!("Connection '{}' not found", name)); }
+        self.sessions.remove(name);
+        self.bump_epoch(name);
         Ok(())
+    }
+
+    pub fn remove_config(&mut self, name: &str) -> Result<(), String> {
+        if !self.configs.contains_key(name) { return Err(format!("Connection '{}' not found", name)); }
+        let mut candidate = self.configs.clone();
+        candidate.remove(name);
+        self.persist_config_map(&candidate)?;
+        self.configs = candidate;
+        self.sessions.remove(name);
+        self.bump_epoch(name);
+        Ok(())
+    }
+
+    fn bump_epoch(&mut self, name: &str) { *self.epochs.entry(name.into()).or_default() += 1; }
+    pub fn epoch(&self, name: &str) -> u64 { *self.epochs.get(name).unwrap_or(&0) }
+    pub fn connection_gate(&mut self, name: &str) -> Arc<Mutex<()>> {
+        self.connection_gates.entry(name.into()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
     }
 
     pub fn get(&self, name: &str) -> Result<Arc<Mutex<FtpSession>>, String> {
@@ -180,6 +158,7 @@ impl FtpManager {
         candidate.insert(name.to_string(), updated);
         self.persist_config_map(&candidate)?;
         self.configs = candidate;
+        self.bump_epoch(name);
         Ok(())
     }
 
@@ -209,8 +188,8 @@ impl FtpManager {
         Ok(Arc::new(Mutex::new(FtpSession { client })))
     }
 
-    pub fn install_session_if_config_matches(&mut self, config: &FtpConnectionConfig, session: Arc<Mutex<FtpSession>>) -> Result<(), String> {
-        if self.configs.get(&config.name) != Some(config) {
+    pub fn install_session_if_config_matches(&mut self, config: &FtpConnectionConfig, epoch: u64, session: Arc<Mutex<FtpSession>>) -> Result<(), String> {
+        if self.configs.get(&config.name) != Some(config) || self.epoch(&config.name) != epoch {
             return Err("Connection settings changed while reconnecting; retry".into());
         }
         self.sessions.insert(config.name.clone(), session);
@@ -220,8 +199,11 @@ impl FtpManager {
     /// Create an independent session for background transfers.
     /// Does NOT replace the main session — the caller is responsible for cleanup.
     pub async fn create_independent(&self, name: &str) -> Result<Arc<Mutex<FtpSession>>, String> {
-        let config = self.configs.get(name)
-            .ok_or_else(|| format!("No config for connection '{}'", name))?.clone();
+        let config = self.get_config(name).ok_or_else(|| format!("Connection '{}' not found", name))?;
+        Self::open_independent(&config).await
+    }
+
+    pub async fn open_independent(config: &FtpConnectionConfig) -> Result<Arc<Mutex<FtpSession>>, String> {
         let addr = format!("{}:{}", config.host, config.port);
         let mut client = AsyncRustlsFtpStream::connect(&addr)
             .await
@@ -236,7 +218,7 @@ impl FtpManager {
             error!("[FTP] independent session: TYPE I failed: {}", e);
             format!("Failed to set binary transfer mode: {}", e)
         })?;
-        info!("[FTP] created independent session for '{name}'");
+        info!("[FTP] created independent session for '{}'", config.name);
         Ok(Arc::new(Mutex::new(FtpSession { client })))
     }
 
@@ -325,6 +307,12 @@ impl FtpManager {
     }
 }
 
+pub async fn independent_from_manager(manager: &Arc<Mutex<FtpManager>>, name: &str) -> Result<Arc<Mutex<FtpSession>>, String> {
+    let config = manager.lock().await.get_config(name)
+        .ok_or_else(|| format!("Connection '{}' not found", name))?;
+    FtpManager::open_independent(&config).await
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;
@@ -352,6 +340,66 @@ mod edit_tests {
         mgr.configs.insert("saved".into(), config());
         assert!(mgr.update_config("saved", "new.example", 21, "new", None).is_err());
         assert_eq!(mgr.get_config("saved").unwrap().host, "old.example");
+    }
+
+    #[test]
+    fn offline_add_and_disconnect_keep_saved_site() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut mgr = FtpManager::new();
+        mgr.config_path = directory.path().join("ftp-connections.json");
+        mgr.add_config("offline", "127.0.0.1", 1, "anonymous", "anonymous").unwrap();
+        assert!(mgr.get("offline").is_err());
+        assert!(mgr.add_config("offline", "127.0.0.1", 1, "anonymous", "anonymous").is_err());
+        assert_eq!(mgr.load_configs_from_file().unwrap().len(), 1);
+        mgr.disconnect("offline").unwrap();
+        assert!(mgr.get_config("offline").is_some());
+        assert_eq!(mgr.load_configs_from_file().unwrap().len(), 1);
+        mgr.remove_config("offline").unwrap();
+        assert!(mgr.get_config("offline").is_none());
+        assert!(mgr.load_configs_from_file().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_add_does_not_change_memory() {
+        let mut mgr = FtpManager::new();
+        mgr.config_path = std::env::current_dir().unwrap();
+        assert!(mgr.add_config("offline", "localhost", 21, "user", "pass").is_err());
+        assert!(mgr.get_config("offline").is_none());
+    }
+
+    #[test]
+    fn independent_connection_wait_does_not_hold_manager_lock() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let directory = tempfile::tempdir().unwrap();
+            let mut manager = FtpManager::new();
+            manager.config_path = directory.path().join("ftp-connections.json");
+            manager.add_config("waiting", "127.0.0.1", port, "user", "pass").unwrap();
+            let manager = Arc::new(Mutex::new(manager));
+            let task_manager = manager.clone();
+            let task = tokio::spawn(async move { independent_from_manager(&task_manager, "waiting").await });
+            let (_socket, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await.unwrap().unwrap();
+            let guard = tokio::time::timeout(std::time::Duration::from_millis(100), manager.lock()).await
+                .expect("FTP manager must be available during network wait");
+            assert!(guard.get_config("waiting").is_some());
+            drop(guard);
+            task.abort();
+        });
+    }
+
+    #[test]
+    fn edit_and_disconnect_advance_session_epoch() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager = FtpManager::new();
+        manager.config_path = directory.path().join("ftp-connections.json");
+        manager.add_config("site", "localhost", 21, "user", "pass").unwrap();
+        let initial = manager.epoch("site");
+        manager.update_config("site", "new-host", 21, "user", None).unwrap();
+        assert!(manager.epoch("site") > initial);
+        let updated = manager.epoch("site");
+        manager.disconnect("site").unwrap();
+        assert!(manager.epoch("site") > updated);
     }
 }
 

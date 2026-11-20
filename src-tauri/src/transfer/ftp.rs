@@ -28,9 +28,7 @@ pub async fn execute_ftp_copy(
     let destination = task.destination.strip_prefix(&format!("ftp://{conn}")).ok_or("Invalid FTP destination")?;
     let temp = std::env::temp_dir().join(format!("wind_ftp_copy_{}_{}", std::process::id(), task.id));
     let result = async {
-        let mgr = ftp_manager.lock().await;
-        let session = mgr.create_independent(&conn).await?;
-        drop(mgr);
+        let session = crate::ftp::independent_from_manager(ftp_manager, &conn).await?;
         let mut ftp = session.lock().await;
         let mut stream = tokio::time::timeout(std::time::Duration::from_secs(30), ftp.client.retr_as_stream(source)).await
             .map_err(|_| "FTP RETR timed out".to_string())?.map_err(|e| format!("FTP RETR failed: {e}"))?;
@@ -97,9 +95,7 @@ pub async fn execute_ftp_download(
     info!("[transfer] FTP download: conn={conn_name} remote={remote_path} → local={}", task.destination);
 
     let setup_started = Instant::now();
-    let mgr = ftp_manager.lock().await;
-    let session = mgr.create_independent(conn_name).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(ftp_manager, conn_name).await?;
     info!("[transfer] FTP download task {} session ready in {} ms", task.id, setup_started.elapsed().as_millis());
 
     let mut ftp = session.lock().await;
@@ -240,9 +236,7 @@ pub async fn execute_ftp_upload(
     };
     info!("[transfer] FTP upload: local={} → conn={conn_name} remote={remote_path}", task.source);
 
-    let mgr = ftp_manager.lock().await;
-    let session = mgr.create_independent(conn_name).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(ftp_manager, conn_name).await?;
 
     let mut ftp = session.lock().await;
     let local = Path::new(&task.source);
@@ -307,9 +301,7 @@ pub async fn execute_ftp_delete(
     };
     info!("[transfer] FTP delete: conn={conn_name} remote={remote_path}");
 
-    let mgr = ftp_manager.lock().await;
-    let session = mgr.create_independent(conn_name).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(ftp_manager, conn_name).await?;
 
     let mut ftp = session.lock().await;
 

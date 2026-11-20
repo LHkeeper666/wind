@@ -28,9 +28,7 @@ async fn size_compat(client: &mut suppaftp::tokio::AsyncRustlsFtpStream, remote:
 
 async fn remote_size(manager: &Arc<TokioMutex<FtpManager>>, path: &str) -> Result<u64, String> {
     let (conn, remote) = ftp_parts(path).ok_or("Invalid FTP path")?;
-    let mgr = manager.lock().await;
-    let session = mgr.create_independent(conn).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(manager, conn).await?;
     let mut ftp = session.lock().await;
     let size = size_compat(&mut ftp.client, remote).await?;
     let _ = ftp.client.quit().await;
@@ -60,9 +58,7 @@ fn local_files(root: &Path) -> Result<HashMap<String, u64>, String> {
 
 async fn remote_files(manager: &Arc<TokioMutex<FtpManager>>, path: &str) -> Result<HashMap<String, u64>, String> {
     let (conn, remote) = ftp_parts(path).ok_or("Invalid FTP path")?;
-    let mgr = manager.lock().await;
-    let session = mgr.create_independent(conn).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(manager, conn).await?;
     let mut ftp = session.lock().await;
     let entries = crate::ftp::list_dir_recursive(&mut ftp.client, remote).await?;
     let mut result = HashMap::new();
@@ -80,9 +76,7 @@ async fn remote_files(manager: &Arc<TokioMutex<FtpManager>>, path: &str) -> Resu
 
 async fn delete_remote(manager: &Arc<TokioMutex<FtpManager>>, path: &str, is_dir: bool, expected: &HashMap<String, u64>) -> Result<(), String> {
     let (conn, remote) = ftp_parts(path).ok_or("Invalid FTP path")?;
-    let mgr = manager.lock().await;
-    let session = mgr.create_independent(conn).await?;
-    drop(mgr);
+    let session = crate::ftp::independent_from_manager(manager, conn).await?;
     let mut ftp = session.lock().await;
     if is_dir {
         let entries = crate::ftp::list_dir_recursive(&mut ftp.client, remote).await?;
@@ -152,9 +146,7 @@ pub async fn verify_and_cleanup(
         if actual != expected { return Err("Source directory changed during transfer; source preserved".into()); }
         if ftp_parts(destination).is_some() {
             let (conn, remote) = ftp_parts(destination).ok_or("Invalid FTP destination")?;
-            let mgr = manager.lock().await;
-            let session = mgr.create_independent(conn).await?;
-            drop(mgr);
+            let session = crate::ftp::independent_from_manager(manager, conn).await?;
             let mut ftp = session.lock().await;
             ftp.client.cwd(remote).await.map_err(|e| format!("Destination directory missing: {e}"))?;
         } else if !Path::new(destination).is_dir() {

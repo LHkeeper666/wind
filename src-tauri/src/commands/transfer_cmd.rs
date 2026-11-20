@@ -75,15 +75,12 @@ pub async fn scan_ftp_upload_conflicts(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     log::info!("[transfer_cmd] scan_ftp_upload_conflicts: {} sources to {}:{}/{}", sources.len(), conn_name, remote_dir, "");
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr
-        .create_independent(&conn_name)
+    let session = crate::ftp::independent_from_manager(&state.ftp_manager, &conn_name)
         .await
         .map_err(|e| {
             log::error!("[transfer_cmd] scan_ftp_upload_conflicts failed: {}", e);
             format!("Failed to create FTP session for conflict scan: {e}")
         })?;
-    drop(mgr);
 
     let mut ftp = session.lock().await;
     let remote_entries = crate::ftp::list_dir_recursive(&mut ftp.client, &remote_dir)
@@ -175,15 +172,12 @@ pub async fn scan_ftp_download_conflicts(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     log::info!("[transfer_cmd] scan_ftp_download_conflicts: {} files, {} dirs from {}", files.len(), dirs.len(), conn_name);
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr
-        .create_independent(&conn_name)
+    let session = crate::ftp::independent_from_manager(&state.ftp_manager, &conn_name)
         .await
         .map_err(|e| {
             log::error!("[transfer_cmd] scan_ftp_download_conflicts failed: {}", e);
             format!("Failed to create FTP session for conflict scan: {e}")
         })?;
-    drop(mgr);
 
     let mut ftp = session.lock().await;
     let mut dir_trees: Vec<(String, Vec<(String, u64, bool)>)> = Vec::new();

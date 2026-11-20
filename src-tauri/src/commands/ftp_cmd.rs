@@ -1,5 +1,51 @@
 use crate::{AppState, FileEntry};
 use log::{info, warn, error, debug};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+pub async fn ensure_session(state: &AppState, name: &str) -> Result<Arc<Mutex<crate::ftp::FtpSession>>, String> {
+    let gate = {
+        let mut mgr = state.ftp_manager.lock().await;
+        mgr.connection_gate(name)
+    };
+    let _guard = gate.lock().await;
+    let (existing, config, epoch) = {
+        let mgr = state.ftp_manager.lock().await;
+        let config = mgr.get_config(name).ok_or_else(|| format!("Connection '{}' not found", name))?;
+        (mgr.get(name).ok(), config, mgr.epoch(name))
+    };
+    if let Some(session) = existing {
+        if session.lock().await.client.noop().await.is_ok() { return Ok(session); }
+        let mut mgr = state.ftp_manager.lock().await;
+        if mgr.get(name).ok().as_ref().is_some_and(|current| Arc::ptr_eq(current, &session)) {
+            mgr.disconnect(name)?;
+        }
+        drop(mgr);
+        let (config, epoch) = {
+            let mgr = state.ftp_manager.lock().await;
+            (mgr.get_config(name).ok_or_else(|| format!("Connection '{}' not found", name))?, mgr.epoch(name))
+        };
+        let replacement = crate::ftp::FtpManager::open_session(&config).await?;
+        state.ftp_manager.lock().await.install_session_if_config_matches(&config, epoch, replacement.clone())?;
+        return Ok(replacement);
+    }
+    let session = crate::ftp::FtpManager::open_session(&config).await?;
+    let mut mgr = state.ftp_manager.lock().await;
+    mgr.install_session_if_config_matches(&config, epoch, session.clone())?;
+    Ok(session)
+}
+
+async fn replace_session(state: &AppState, name: &str) -> Result<Arc<Mutex<crate::ftp::FtpSession>>, String> {
+    let gate = { state.ftp_manager.lock().await.connection_gate(name) };
+    let _guard = gate.lock().await;
+    let (config, epoch) = {
+        let mgr = state.ftp_manager.lock().await;
+        (mgr.get_config(name).ok_or_else(|| format!("Connection '{}' not found", name))?, mgr.epoch(name))
+    };
+    let session = crate::ftp::FtpManager::open_session(&config).await?;
+    state.ftp_manager.lock().await.install_session_if_config_matches(&config, epoch, session.clone())?;
+    Ok(session)
+}
 
 /// Parse `ftp://<name>/<path>` into (connection_name, remote_path).
 pub fn parse_ftp_url(url: &str) -> Result<(&str, &str), String> {
@@ -144,17 +190,29 @@ pub async fn ftp_connect(
         "[FTP] command ftp_connect: name={} host={}:{} user={}",
         name, host, port, user
     );
-    let mut mgr = state.ftp_manager.lock().await;
-    mgr.connect(&name, &host, port, &user, &password).await?;
+    state.ftp_manager.lock().await.add_config(&name, &host, port, &user, &password)?;
+    replace_session(&state, &name).await?;
     Ok(format!("Connected to {}", name))
+}
+
+#[tauri::command]
+pub async fn ftp_add(name: String, host: String, port: Option<u16>, user: Option<String>, password: Option<String>, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state.ftp_manager.lock().await.add_config(&name, &host, port.unwrap_or(21), &user.unwrap_or_else(|| "anonymous".into()), &password.unwrap_or_else(|| "anonymous".into()))?;
+    Ok(format!("Saved FTP site {}", name))
 }
 
 #[tauri::command]
 pub async fn ftp_disconnect(name: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
     info!("[FTP] command ftp_disconnect: name={}", name);
     let mut mgr = state.ftp_manager.lock().await;
-    mgr.disconnect(&name).await?;
+    mgr.disconnect(&name)?;
     Ok(format!("Disconnected from {}", name))
+}
+
+#[tauri::command]
+pub async fn ftp_remove(name: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state.ftp_manager.lock().await.remove_config(&name)?;
+    Ok(format!("Removed FTP site {}", name))
 }
 
 #[tauri::command]
@@ -169,26 +227,23 @@ pub async fn ftp_read_directory(
     );
 
     // Never hold the manager lock while awaiting the FTP server.
-    let existing = {
-        let mgr = state.ftp_manager.lock().await;
-        mgr.get(conn_name).ok()
-    };
-    if let Some(session) = existing {
-        match try_list_dir(session, conn_name, remote_path).await {
-            Ok(entries) => return Ok(entries),
-            Err(e) => warn!("[FTP] read_directory: listing failed ({}), reconnecting...", e),
+    let session = ensure_session(&state, conn_name).await?;
+    match try_list_dir(session.clone(), conn_name, remote_path).await {
+        Ok(entries) => Ok(entries),
+        Err(original) => {
+            // A permissions/path error leaves the control connection alive.
+            let healthy = session.lock().await.client.noop().await.is_ok();
+            if healthy { return Err(original); }
+            {
+                let mut mgr = state.ftp_manager.lock().await;
+                if mgr.get(conn_name).ok().as_ref().is_some_and(|current| Arc::ptr_eq(current, &session)) {
+                    mgr.disconnect(conn_name)?;
+                }
+            }
+            let replacement = ensure_session(&state, conn_name).await?;
+            try_list_dir(replacement, conn_name, remote_path).await
         }
     }
-    let config = {
-        let mgr = state.ftp_manager.lock().await;
-        mgr.get_config(conn_name).ok_or_else(|| format!("Connection '{}' not found", conn_name))?
-    };
-    let session = crate::ftp::FtpManager::open_session(&config).await?;
-    {
-        let mut mgr = state.ftp_manager.lock().await;
-        mgr.install_session_if_config_matches(&config, session.clone())?;
-    }
-    try_list_dir(session, conn_name, remote_path).await
 }
 
 #[tauri::command]
@@ -203,9 +258,7 @@ pub async fn ftp_delete(
         conn_name, remote_path
     );
 
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr.get(conn_name)?;
-    drop(mgr);
+    let session = ensure_session(&state, conn_name).await?;
 
     let mut ftp = session.lock().await;
     // Try file delete first, fall back to directory delete
@@ -248,9 +301,7 @@ pub async fn ftp_rename(
 
     // Try server-side rename first (fast path)
     {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(conn_name)?;
-        drop(mgr);
+        let session = ensure_session(&state, conn_name).await?;
         let mut ftp = session.lock().await;
         match ftp.client.rename(remote_path, new_remote).await {
             Ok(()) => {
@@ -305,9 +356,7 @@ pub async fn ftp_copy(
     debug!("[FTP] copy: downloading to temp {}", tmp.display());
     let bytes_dl: u64;
     {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(&conn_name)?;
-        drop(mgr);
+        let session = ensure_session(&state, &conn_name).await?;
         let mut ftp = session.lock().await;
 
         let mut stream = ftp
@@ -328,9 +377,7 @@ pub async fn ftp_copy(
     debug!("[FTP] copy: uploading from temp");
     let bytes_ul: u64;
     {
-        let mgr = state.ftp_manager.lock().await;
-        let session = mgr.get(&conn_name)?;
-        drop(mgr);
+        let session = ensure_session(&state, &conn_name).await?;
         let mut ftp = session.lock().await;
 
         let mut file = tokio::fs::File::open(&tmp)
@@ -358,9 +405,7 @@ pub async fn ftp_create_file(path: String, state: tauri::State<'_, AppState>) ->
         conn_name, remote_path
     );
 
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr.get(conn_name)?;
-    drop(mgr);
+    let session = ensure_session(&state, conn_name).await?;
 
     let mut ftp = session.lock().await;
     // Upload empty content
@@ -385,9 +430,7 @@ pub async fn ftp_mkdir(path: String, state: tauri::State<'_, AppState>) -> Resul
         conn_name, remote_path
     );
 
-    let mgr = state.ftp_manager.lock().await;
-    let session = mgr.get(conn_name)?;
-    drop(mgr);
+    let session = ensure_session(&state, conn_name).await?;
 
     let mut ftp = session.lock().await;
     // Accept 250/257/200 — Android FTP servers return 250 for MKD
@@ -519,31 +562,22 @@ pub async fn update_ftp_connection(
     reconnect: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let config = {
+    let (config, epoch) = {
         let mut mgr = state.ftp_manager.lock().await;
         mgr.update_config(&name, &host, port, &user, password.as_deref())?;
         if !reconnect { return Ok(()); }
-        mgr.get_config(&name).ok_or_else(|| format!("Connection '{}' not found", name))?
+        (mgr.get_config(&name).ok_or_else(|| format!("Connection '{}' not found", name))?, mgr.epoch(&name))
     };
     let session = crate::ftp::FtpManager::open_session(&config).await?;
     let mut mgr = state.ftp_manager.lock().await;
-    mgr.install_session_if_config_matches(&config, session)?;
+    mgr.install_session_if_config_matches(&config, epoch, session)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn check_ftp_connection(name: String, state: tauri::State<'_, AppState>) -> Result<bool, String> {
     info!("[FTP] command check_ftp_connection: name={}", name);
-    let (existing, config) = {
-        let mgr = state.ftp_manager.lock().await;
-        let config = mgr.get_config(&name).ok_or_else(|| format!("Connection '{}' not found", name))?;
-        (mgr.get(&name).ok(), config)
-    };
-    if let Some(session) = existing {
-        if session.lock().await.client.noop().await.is_ok() { return Ok(true); }
-    }
-    let session = crate::ftp::FtpManager::open_session(&config).await?;
-    let mut mgr = state.ftp_manager.lock().await;
-    mgr.install_session_if_config_matches(&config, session)?;
+    let session = ensure_session(&state, &name).await?;
+    if session.lock().await.client.noop().await.is_err() { replace_session(&state, &name).await?; }
     Ok(true)
 }
