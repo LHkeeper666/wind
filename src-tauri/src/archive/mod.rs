@@ -58,19 +58,6 @@ pub(crate) fn archive_busy_error(path: &str) -> String {
     format!("ARCHIVE_BUSY: {}", path)
 }
 
-fn is_rar_extension(lower: &str) -> bool {
-    if lower.ends_with(".rar") {
-        return true;
-    }
-    // Match .rXX pattern (e.g., .r00, .r01, .r99)
-    if let Some(rest) = lower.strip_suffix(|c: char| c.is_ascii_digit()) {
-        if let Some(rest2) = rest.strip_suffix(|c: char| c.is_ascii_digit()) {
-            return rest2.ends_with(".r");
-        }
-    }
-    false
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
     Zip,
@@ -127,7 +114,7 @@ impl ArchiveFormat {
             Some(ArchiveFormat::Zip)
         } else if lower.ends_with(".7z") {
             Some(ArchiveFormat::SevenZ)
-        } else if is_rar_extension(&lower) {
+        } else if password::rar_suffix(std::path::Path::new(path)).is_some() {
             Some(ArchiveFormat::Rar)
         } else {
             None
