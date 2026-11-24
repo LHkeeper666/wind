@@ -104,6 +104,7 @@
 
   .input-field {
     width: 100%;
+    box-sizing: border-box;
     background: none;
     border: 1px solid var(--border);
     outline: none;
