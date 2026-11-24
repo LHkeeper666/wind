@@ -384,6 +384,7 @@
     if (!path.startsWith('ftp://')) {
       path = path.replace(/\//g, '\\');
     }
+    savePreviewSlot();
     layout.setCurrentPath(path);
     currentPath = path;
   }
@@ -662,7 +663,13 @@
     pendingLinkedFragment = null;
     const existing = getActiveTab().slots.find((slot: { id: number; filePath: string | null }) => slot.filePath?.toLowerCase() === filePath.toLowerCase());
     if (existing && existing.id !== getActiveTab().activeSlotId) { switchPreviewSlot(existing.id, false, !isPreviewVisible()); queueLinkedFragment(filePath, fragment); focusActivatedFile(); return; }
-    if (existing) { tabs.hideSelectionPreview(); queueLinkedFragment(filePath, fragment); focusActivatedFile(); return; }
+    if (existing) {
+      if (selectedFile !== existing.filePath || get(layout).selectedFile !== existing.filePath) restorePreviewSlot(false);
+      tabs.hideSelectionPreview();
+      queueLinkedFragment(filePath, fragment);
+      focusActivatedFile();
+      return;
+    }
     // Check for unsaved changes before switching files
     if (previewEditor?.getIsModified()) {
       pendingSlotAction = { kind: 'replace', slotId: getActiveTab().activeSlotId, path: filePath, fragment };
