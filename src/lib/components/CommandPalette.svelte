@@ -58,10 +58,10 @@
   });
 
   // Tab completion state
-  let completions: { name: string; is_dir: boolean }[] = [];
+  let completions: { name: string; path: string; is_dir: boolean }[] = [];
   let completionIndex: number = -1;
-  let completionPrefix: string = '';
-  let completionDir: string = '';
+  let completionInput: string = '';
+  let completionQuery: string = '';
 
   const commands: Command[] = [
     { name: 'Open File', action: () => layout.setActiveColumn('current') },
@@ -115,8 +115,8 @@
   function resetCompletion() {
     completions = [];
     completionIndex = -1;
-    completionPrefix = '';
-    completionDir = '';
+    completionInput = '';
+    completionQuery = '';
   }
 
   async function triggerCompletion() {
@@ -140,55 +140,46 @@
       return;
     }
 
-    if (pathInput.endsWith('\\') && pathInput !== '\\') {
-      pathInput = pathInput.slice(0, -1);
-    }
+    const isCycling = completionQuery === commandQuery && completions.length > 1;
+    if (isCycling) pathInput = completionInput;
 
     let parentDir: string;
     let partial: string;
 
-    if (pathInput.includes('\\')) {
+    if (pathInput.endsWith('\\')) {
+      parentDir = resolvePath(pathInput);
+      partial = '';
+    } else if (pathInput.includes('\\')) {
       const lastSlash = pathInput.lastIndexOf('\\');
       const dirPart = pathInput.substring(0, lastSlash) || '\\';
       partial = pathInput.substring(lastSlash + 1);
-      parentDir = resolvePath(dirPart);
+      parentDir = /^[A-Za-z]:$/.test(dirPart) ? dirPart + '\\' : resolvePath(dirPart);
     } else {
       partial = pathInput;
       parentDir = currentPath;
     }
 
-    let doFetch = true;
-    if (completionDir === parentDir && completions.length > 0) {
-      const currentMatchIdx = completions.findIndex(c => c.name.toLowerCase() === partial.toLowerCase());
-      if (currentMatchIdx >= 0) {
-        doFetch = false;
-        const prefix = completionPrefix.toLowerCase();
-        for (let i = 1; i <= completions.length; i++) {
-          const idx = (currentMatchIdx + i) % completions.length;
-          if (completions[idx].name.toLowerCase().startsWith(prefix)) {
-            completionIndex = idx;
-            break;
-          }
-        }
-      }
-    }
-
-    if (doFetch) {
+    if (isCycling) {
+      completionIndex = (completionIndex + 1) % completions.length;
+    } else {
       try {
         const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>('read_directory', { path: parentDir });
         const filtered = entries
           .filter(e => e.name.toLowerCase().startsWith(partial.toLowerCase()) && (dirsOnly ? e.is_dir : true));
         if (filtered.length === 0) { resetCompletion(); return; }
         completions = filtered;
-        completionDir = parentDir;
-        completionPrefix = partial;
+        completionInput = pathInput;
         completionIndex = 0;
       } catch { resetCompletion(); return; }
     }
 
     const completed = completions[completionIndex];
     let newPath: string;
-    if (pathInput.includes('\\')) {
+    if (parentDir === '\\' && /^[A-Za-z]:\\$/.test(completed.path)) {
+      newPath = completed.path;
+    } else if (pathInput.endsWith('\\')) {
+      newPath = pathInput + completed.name;
+    } else if (pathInput.includes('\\')) {
       const lastSlash = pathInput.lastIndexOf('\\');
       newPath = pathInput.substring(0, lastSlash + 1) + completed.name;
     } else {
@@ -198,6 +189,7 @@
     if (completed.is_dir && !commandQuery.endsWith('\\')) {
       commandQuery += '\\';
     }
+    completionQuery = commandQuery;
   }
 
   function executeCommand(cmd: Command) {
