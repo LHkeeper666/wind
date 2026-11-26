@@ -42,7 +42,7 @@
       {#if cutPaths.has(file.path)}
         <span class="cut-marker">x</span>
       {/if}
-      <span class="file-name" class:is-dir={file.is_dir}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
+      <span class="file-name" class:is-dir={file.is_dir} title={file.name}>{file.name}{file.is_dir && !/[\\/]$/.test(file.name) ? '/' : ''}</span>
     </div>
   {/each}
 </div>
@@ -103,10 +103,17 @@
 
   .file-name {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--file-color);
+  }
+
+  .file-item.selected .file-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
   }
 
   .file-name.is-dir {

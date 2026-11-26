@@ -84,7 +84,7 @@
         }}
         ondblclick={(event) => event.stopPropagation()}
       ></button>
-      <span class="file-name" class:is-dir={node.entry.is_dir}>{node.entry.name}{node.entry.is_dir && !/[\\/]$/.test(node.entry.name) ? '/' : ''}</span>
+      <span class="file-name" class:is-dir={node.entry.is_dir} title={node.entry.name}>{node.entry.name}{node.entry.is_dir && !/[\\/]$/.test(node.entry.name) ? '/' : ''}</span>
     </div>
   {/each}
 </div>
@@ -200,10 +200,17 @@
   }
 
   .file-name {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--file-color);
+  }
+
+  .file-item.selected .file-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
   }
 
   .file-name.is-dir {
