@@ -4,11 +4,11 @@
 
 Wind 是面向 Windows 的 Vim 风格文件工作站，基于 Tauri 2、Rust 和 Svelte 5。在一个以键盘操作为主的窗口中浏览文件、预览内容、编辑文本并使用终端。
 
-**当前版本：**0.1.0 · **计划首发版本：**v0.1.0
+**最新版本：**v0.2.0
 
 [前往 GitHub Releases 下载](https://github.com/LHkeeper666/wind/releases) · [从源码构建](#从源码构建)
 
-> v0.1.0 发布后，下载文件将在 Releases 页面提供。下载前请查看发布资源和说明。
+Releases 页面提供当前 Windows 安装包和各版本的发布说明。
 
 ## 产品截图
 
@@ -28,7 +28,7 @@ Wind 是面向 Windows 的 Vim 风格文件工作站，基于 Tauri 2、Rust 和
 
 ### 下载后使用
 
-打开 [GitHub Releases](https://github.com/LHkeeper666/wind/releases)，在 v0.1.0 发布后选择合适的 Windows 发布资源，并按照该版本的发布说明使用。运行发布版本不需要安装 Node.js 或 Rust。具体文件名和安装步骤须待发布时确认。
+打开 [GitHub Releases](https://github.com/LHkeeper666/wind/releases)，下载最新版的 Windows x64 安装包并运行。运行发布版本不需要安装 Node.js 或 Rust。
 
 打开 Wind 后，使用 `j`/`k` 移动，按 `Enter` 进入目录或预览文件，按 `F1` 查看完整快捷键；按 `:` 打开命令面板。
 

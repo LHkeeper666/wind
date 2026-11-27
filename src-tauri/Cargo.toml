@@ -1,6 +1,6 @@
 [package]
 name = "wind"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wind - A vim-driven file workstation for Windows"
 authors = ["lhkeeper"]
 edition = "2021"

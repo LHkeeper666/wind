@@ -4,11 +4,11 @@
 
 A Vim-style file workstation for Windows, built with Tauri 2, Rust, and Svelte 5. Browse files, preview content, edit text, and work in a terminal from one keyboard-driven window.
 
-**Version:** 0.1.0 · **Planned first release:** v0.1.0
+**Latest release:** v0.2.0
 
 [Download from GitHub Releases](https://github.com/LHkeeper666/wind/releases) · [Build from source](#build-from-source)
 
-> The v0.1.0 download will be available on the Releases page once it is published. Check the release assets and notes before downloading.
+The Releases page contains the current Windows installer and notes for each version.
 
 ## Screenshots
 
@@ -28,7 +28,7 @@ Video thumbnails require an available FFmpeg executable. Video playback uses a l
 
 ### Download and use
 
-Open [GitHub Releases](https://github.com/LHkeeper666/wind/releases), choose the published v0.1.0 Windows asset that matches your needs, and follow its release notes. No Node.js or Rust setup is needed to run a release build. The exact asset names and installation steps must be confirmed when the release is published.
+Open [GitHub Releases](https://github.com/LHkeeper666/wind/releases), download the Windows x64 installer for the latest release, and run it. No Node.js or Rust setup is needed to run a release build.
 
 After opening Wind, navigate with `j`/`k`, press `Enter` to open a directory or preview a file, and press `F1` for the full shortcut reference. Press `:` to open the command palette.
 
