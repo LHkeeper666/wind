@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
 pub fn get_home_dir() -> String {
@@ -41,9 +42,9 @@ pub struct FileInfo {
     pub path: String,
     pub size: u64,
     pub is_dir: bool,
-    pub created: Option<String>,
-    pub modified: Option<String>,
-    pub accessed: Option<String>,
+    pub created: Option<i64>,
+    pub modified: Option<i64>,
+    pub accessed: Option<i64>,
     pub is_readonly: bool,
     pub is_hidden: bool,
     pub is_system: bool,
@@ -75,18 +76,9 @@ pub fn get_file_info(path: String) -> Result<FileInfo, String> {
     let is_hidden = name.starts_with('.') || (attrs & 0x2 != 0);
     let is_system = attrs & 0x4 != 0;
 
-    let format_time = |t: std::io::Result<std::time::SystemTime>| -> Option<String> {
-        t.ok().map(|t| {
-            let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            let secs = duration.as_secs();
-            let datetime = chrono_like(secs);
-            datetime
-        })
-    };
-
-    let created = format_time(metadata.created());
-    let modified = format_time(metadata.modified());
-    let accessed = format_time(metadata.accessed());
+    let created = metadata.created().ok().and_then(unix_millis);
+    let modified = metadata.modified().ok().and_then(unix_millis);
+    let accessed = metadata.accessed().ok().and_then(unix_millis);
 
     let item_count = if metadata.is_dir() {
         fs::read_dir(&path).ok().map(|entries| entries.count())
@@ -109,55 +101,21 @@ pub fn get_file_info(path: String) -> Result<FileInfo, String> {
     })
 }
 
-fn chrono_like(secs: u64) -> String {
-    let s = secs as i64;
-    let days = s / 86400;
-    let time_of_day = s % 86400;
-    let hour = time_of_day / 3600;
-    let minute = (time_of_day % 3600) / 60;
-    let second = time_of_day % 60;
-
-    let mut y = 1970;
-    let mut remaining_days = days;
-    loop {
-        let days_in_year = if is_leap(y) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        y += 1;
+fn unix_millis(time: SystemTime) -> Option<i64> {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_millis()).ok(),
+        Err(error) => i64::try_from(error.duration().as_millis()).ok()?.checked_neg(),
     }
-    let leap = is_leap(y);
-    let month_days: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    while m < 12 && remaining_days >= month_days[m] {
-        remaining_days -= month_days[m];
-        m += 1;
-    }
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        y,
-        m + 1,
-        remaining_days + 1,
-        hour,
-        minute,
-        second
-    )
 }
 
-fn is_leap(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+#[cfg(test)]
+mod tests {
+    use super::unix_millis;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn converts_times_on_both_sides_of_epoch() {
+        assert_eq!(unix_millis(UNIX_EPOCH + Duration::from_millis(1_234)), Some(1_234));
+        assert_eq!(unix_millis(UNIX_EPOCH - Duration::from_millis(1_234)), Some(-1_234));
+    }
 }

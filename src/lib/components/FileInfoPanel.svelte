@@ -10,9 +10,9 @@
     path: string;
     size: number;
     is_dir: boolean;
-    created: string | null;
-    modified: string | null;
-    accessed: string | null;
+    created: number | null;
+    modified: number | null;
+    accessed: number | null;
     is_readonly: boolean;
     is_hidden: boolean;
     is_system: boolean;
@@ -135,6 +135,16 @@
     event.stopPropagation();
     onClose();
   }
+
+  function formatTimestamp(value: number | null): string | null {
+    if (value === null || !Number.isFinite(value)) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toLocaleString('zh-CN', { hour12: false });
+  }
+
+  const createdTime = $derived(formatTimestamp(info?.created ?? null));
+  const modifiedTime = $derived(formatTimestamp(info?.modified ?? null));
+  const accessedTime = $derived(formatTimestamp(info?.accessed ?? null));
 </script>
 
 {#if visible && (info || selectionRoots)}
@@ -183,22 +193,22 @@
             <span class="info-value">{info.item_count}</span>
           </div>
         {/if}
-        {#if info.created}
+        {#if createdTime}
           <div class="info-row">
             <span class="info-label">Created</span>
-            <span class="info-value">{info.created}</span>
+            <span class="info-value">{createdTime}</span>
           </div>
         {/if}
-        {#if info.modified}
+        {#if modifiedTime}
           <div class="info-row">
             <span class="info-label">Modified</span>
-            <span class="info-value">{info.modified}</span>
+            <span class="info-value">{modifiedTime}</span>
           </div>
         {/if}
-        {#if info.accessed}
+        {#if accessedTime}
           <div class="info-row">
             <span class="info-label">Accessed</span>
-            <span class="info-value">{info.accessed}</span>
+            <span class="info-value">{accessedTime}</span>
           </div>
         {/if}
         <div class="info-row">
